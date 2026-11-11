@@ -263,6 +263,7 @@ python -m mas demo                        # 三个闭环场景
 | [docs/loop-engineering.md](docs/loop-engineering.md) | 方法论：闭环为什么这样设计 |
 | [docs/mcp.md](docs/mcp.md) | MCP 接入、握手、9 个工具、协议细节与排障 |
 | [docs/positioning.md](docs/positioning.md) | 定位说明：与「私有化代理团队」类项目的关系与传播口径 |
+| [docs/acceptance-report.md](docs/acceptance-report.md) | 安装与验收报告：本机实测证据、CI 结果、已知限制 |
 
 ---
 
