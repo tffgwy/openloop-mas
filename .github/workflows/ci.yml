@@ -13,6 +13,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13"]
+    env:
+      # The CLI prints Chinese; keep every runner on UTF-8 regardless of the
+      # host code page (Windows runners default to a legacy code page).
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

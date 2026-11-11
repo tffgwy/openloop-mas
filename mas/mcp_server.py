@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import sys
+
+from mas.util import force_utf8_output
 from typing import Any, Dict, List, Optional
 
 from mas import __version__
@@ -275,6 +277,7 @@ def serve(stdin=None, stdout=None) -> int:
 
 
 def main() -> int:
+    force_utf8_output()
     return serve()
 
 

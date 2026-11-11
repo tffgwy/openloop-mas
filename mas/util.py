@@ -7,6 +7,7 @@ import hashlib
 import json
 import pathlib
 import re
+import sys
 from typing import Any, Dict, Optional
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
@@ -68,3 +69,23 @@ def strip_reasoning(text: str) -> str:
     if not text:
         return text
     return _THINK_RE.sub("", text).strip()
+
+
+def force_utf8_output() -> None:
+    """Make stdout/stderr UTF-8 safe on legacy consoles.
+
+    Windows consoles still default to a legacy code page (cp1252, cp936, ...)
+    in plenty of environments. Printing Chinese there raises
+    ``UnicodeEncodeError`` and kills the process mid-run, which turns a
+    healthy loop into a crash. Reconfiguring the streams once at start-up
+    keeps the CLI and the MCP server alive on every code page.
+    """
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):  # pragma: no cover - platform dependent
+            pass

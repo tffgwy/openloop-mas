@@ -6,6 +6,8 @@ import argparse
 import json
 import pathlib
 import sys
+
+from mas.util import force_utf8_output
 from typing import Any, Dict, List
 
 from mas import __version__
@@ -280,6 +282,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: List[str] | None = None) -> int:
+    force_utf8_output()
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

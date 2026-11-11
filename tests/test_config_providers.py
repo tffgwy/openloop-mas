@@ -1,13 +1,15 @@
 """Config and provider tests."""
 
+import io
 import json
+import sys
 import os
 import tempfile
 import unittest
 
 from mas.config import DEFAULT_CONFIG, load_config, save_config
 from mas.providers import MockProvider, OpenAICompatProvider, build_provider
-from mas.util import parse_json_loose, strip_reasoning
+from mas.util import force_utf8_output, parse_json_loose, strip_reasoning
 
 
 class TestConfig(unittest.TestCase):
@@ -134,6 +136,41 @@ class TestStripReasoning(unittest.TestCase):
 
     def test_keeps_plain_text(self):
         self.assertEqual(strip_reasoning("# 交付物"), "# 交付物")
+
+
+class TestUtf8OutputSafety(unittest.TestCase):
+    def test_force_utf8_output_is_idempotent_and_safe(self):
+        import io
+
+        class _Legacy:
+            """A stream without ``reconfigure`` must not break the CLI."""
+
+            def __init__(self):
+                self.text = ""
+
+            def write(self, data):
+                self.text += data
+
+            def flush(self):
+                pass
+
+        original = sys.stdout
+        sys.stdout = _Legacy()
+        try:
+            force_utf8_output()
+            force_utf8_output()
+        finally:
+            sys.stdout = original
+
+    def test_reconfigure_is_applied_when_available(self):
+        buffer = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
+        original = sys.stdout
+        sys.stdout = buffer
+        try:
+            force_utf8_output()
+            self.assertEqual(buffer.encoding, "utf-8")
+        finally:
+            sys.stdout = original
 
 
 if __name__ == "__main__":

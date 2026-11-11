@@ -215,7 +215,7 @@ openloop-mas/
 │  ├─ demo.py           三个离线场景
 │  └─ teams/            团队模板（default / review / content）
 ├─ skills/              Agent Skill 包
-├─ tests/               29 个离线测试
+├─ tests/               31 个离线测试
 ├─ install.ps1          Windows 一键安装
 ├─ install.sh           macOS / Linux 一键安装
 └─ docs/                架构、方法论、MCP、定位说明
@@ -245,11 +245,11 @@ mas serve       # 以 MCP stdio 服务运行
 ## 开发与测试
 
 ```bash
-python -m unittest discover -s tests -v   # 29 个离线测试，不需要网络
+python -m unittest discover -s tests -v   # 31 个离线测试，不需要网络
 python -m mas demo                        # 三个闭环场景
 ```
 
-测试覆盖：机检规则、闭合/停滞/预算三条终止路径、规则判定压过模型判定、未判定标准不得通过、MCP 握手与工具调用、配置合并与环境变量覆盖、SSE 流折叠、思维链清洗。
+测试覆盖：机检规则、闭合/停滞/预算三条终止路径、规则判定压过模型判定、未判定标准不得通过、MCP 握手与工具调用、配置合并与环境变量覆盖、SSE 流折叠、思维链清洗、遗留代码页下的 UTF-8 输出安全。
 
 ---
 
