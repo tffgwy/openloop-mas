@@ -3,6 +3,7 @@
 > 一个 **零依赖、纯标准库** 的多智能体闭环运行时：把「规划 → 执行 → 验证 → 复盘」写成**有验收标准、有退出条件、有过程账本**的工程循环。
 > 一条命令安装，初学者也能跑起来。
 
+[![ci](https://github.com/tffgwy/openloop-mas/actions/workflows/ci.yml/badge.svg)](https://github.com/tffgwy/openloop-mas/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![deps](https://img.shields.io/badge/dependencies-0-orange.svg)]()
@@ -250,6 +251,18 @@ python -m mas demo                        # 三个闭环场景
 ```
 
 测试覆盖：机检规则、闭合/停滞/预算三条终止路径、规则判定压过模型判定、未判定标准不得通过、MCP 握手与工具调用、配置合并与环境变量覆盖、SSE 流折叠、思维链清洗、遗留代码页下的 UTF-8 输出安全。
+
+---
+
+## 延伸阅读
+
+| 文档 | 内容 |
+| --- | --- |
+| [docs/quickstart.md](docs/quickstart.md) | 5 分钟上手：安装 → 离线跑通 → 接真实模型 → 人机协同 |
+| [docs/architecture.md](docs/architecture.md) | 运行时架构与数据流 |
+| [docs/loop-engineering.md](docs/loop-engineering.md) | 方法论：闭环为什么这样设计 |
+| [docs/mcp.md](docs/mcp.md) | MCP 接入、握手、9 个工具、协议细节与排障 |
+| [docs/positioning.md](docs/positioning.md) | 定位说明：与「私有化代理团队」类项目的关系与传播口径 |
 
 ---
 
