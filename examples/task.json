@@ -1,0 +1,10 @@
+{
+  "goal": "写一份 v0.1.0 的发布说明",
+  "title": "release-notes",
+  "team": "default",
+  "criteria": [
+    { "id": "c1", "desc": "发布说明包含版本号", "check": { "type": "contains", "arg": "v0.1.0" } },
+    { "id": "c2", "desc": "至少列出 3 条变更", "check": { "type": "lines_min", "arg": 3 } },
+    { "id": "c3", "desc": "正文不少于 200 字", "check": { "type": "min_chars", "arg": 200 } }
+  ]
+}
