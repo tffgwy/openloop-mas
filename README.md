@@ -5,6 +5,14 @@
 
 **v0.2.0 加入了什么**：并行多候选竞争选优、对抗式交叉评审、多后端故障转移、HTTP/SSE 远程接入、闭环复盘报告与回放、交互式初始化向导、离线基准测试、真实闭环自检。
 
+**v0.4.0 修了什么**（全部来自真实模型端点的实测，详见 [真实模型验证报告](docs/live-model-verification.md)）：
+
+- 提示词不再把任务埋在 JSON 里 —— 真实模型终于知道自己要交付什么；
+- 请求同时携带 `messages` 与 `input` —— 兼容只读 `input` 的 OpenAI 兼容端点；
+- 评审结论归一化 —— 模型换一套 JSON 写法，结论不再被静默丢弃；
+- 回退端点可独立配置超时与重试 —— 故障转移真的能回退；
+- 环境变量不再被冻结进配置文件，API key 不落盘，测试不再读你的真实配置。
+
 [![ci](https://github.com/tffgwy/openloop-mas/actions/workflows/ci.yml/badge.svg)](https://github.com/tffgwy/openloop-mas/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)

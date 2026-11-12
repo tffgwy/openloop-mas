@@ -44,7 +44,8 @@ from mas.orchestration import (
 from mas.providers import Provider, ProviderError, build_provider, build_provider_chain
 from mas.roles import Roles
 from mas.tickets import TicketStore
-from mas.util import now_iso, parse_json_loose, sha256_text, short_sha, strip_reasoning
+from mas.util import (normalize_verdict, now_iso, parse_json_loose, sha256_text,
+                      short_sha, strip_reasoning)
 
 STATUS_CLOSED = "closed"
 STATUS_ESCALATED = "escalated"
@@ -642,6 +643,10 @@ class LoopEngine:
             expect_json=True,
         )
         data = parse_json_loose(response["text"]) or {}
+        if role == "verifier":
+            # A model that answers with its own JSON shape must not silently
+            # lose its verdict - normalize it into the canonical schema.
+            data = normalize_verdict(data)
         data["_usage"] = response.get("usage", {})
         data["_raw"] = response.get("text", "")
         return data

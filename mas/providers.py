@@ -197,6 +197,14 @@ class OpenAICompatProvider(_HttpProvider):
             "max_tokens": max_tokens,
             "temperature": float(self.options.get("temperature", 0.2)),
         }
+        # Some OpenAI-compatible gateways - the Codex Responses bridge in
+        # front of Claude models among them - ignore ``messages`` entirely
+        # and only read ``input``. Sending both makes the request work on
+        # strict OpenAI gateways (they read ``messages``) and on the
+        # Responses-style bridges (they read ``input``). When both are
+        # present the bridge prefers ``input``; a plain OpenAI endpoint
+        # ignores the unknown key.
+        payload["input"] = prompt
         if expect_json:
             payload["response_format"] = {"type": "json_object"}
         url = f"{base_url}/chat/completions"
@@ -466,8 +474,21 @@ def build_provider_chain(config: Dict[str, Any]) -> ProviderChain:
             continue
         merged = dict(config)
         # A fallback inherits the shared connection settings but not the
-        # primary model or endpoint.
-        for key in ("provider", "model", "base_url", "api_key", "api_key_env"):
+        # primary model or endpoint. Every connection setting can be
+        # overridden per fallback: a backup backend usually lives on a
+        # different network with a different latency profile, so forcing
+        # it to reuse the primary's timeout and retry count was wrong.
+        for key in (
+            "provider",
+            "model",
+            "base_url",
+            "api_key",
+            "api_key_env",
+            "timeout_sec",
+            "max_retries",
+            "extra_headers",
+            "temperature",
+        ):
             if key in spec:
                 merged[key] = spec[key]
         merged.pop("fallbacks", None)

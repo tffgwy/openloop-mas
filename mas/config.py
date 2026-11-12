@@ -6,7 +6,13 @@ import copy
 import json
 import os
 import pathlib
+import re
+import tempfile
 from typing import Any, Dict
+
+# The directory name that tempfile.mkdtemp() generates: "tmp" plus 8
+# random letters, digits or underscores.
+_TEMP_DIR_NAME_RE = re.compile(r"^tmp[A-Za-z0-9_]{8}$")
 
 APP_NAME = "openloop-mas"
 CONFIG_FILENAME = "config.json"
@@ -84,12 +90,22 @@ def user_config_path() -> pathlib.Path:
     return pathlib.Path(os.path.expanduser(DEFAULT_STATE_DIR)).resolve() / CONFIG_FILENAME
 
 
-def load_config(path: str | os.PathLike | None = None) -> Dict[str, Any]:
+def load_config(
+    path: str | os.PathLike | None = None,
+    *,
+    apply_env: bool = True,
+) -> Dict[str, Any]:
     """Load configuration merged on top of the defaults.
     Environment variables override file values so CI and one-off runs never
     need to touch the on-disk config:
       MAS_PROVIDER, MAS_MODEL, MAS_BASE_URL, MAS_API_KEY, MAS_STATE_DIR,
       MAS_TEAM, MAS_LANGUAGE
+
+    Pass ``apply_env=False`` to get the *persisted* view only - what the
+    configuration file actually says, without the process environment mixed
+    in. Anything that writes the configuration back to disk must use the
+    persisted view, otherwise a temporary ``MAS_STATE_DIR`` or an API key
+    coming from the environment gets frozen into the user's config file.
     """
     config = copy.deepcopy(DEFAULT_CONFIG)
     env_state = os.environ.get("MAS_STATE_DIR")
@@ -100,7 +116,10 @@ def load_config(path: str | os.PathLike | None = None) -> Dict[str, Any]:
         # v0.1 kept the configuration next to the state directory. The
         # installers still do that when they are pointed at a custom
         # directory, so keep reading that location when the well-known one
-        # does not exist.
+        # does not exist. The legacy file only wins when it actually
+        # exists - otherwise the defaults are used, and a caller that
+        # points at a fresh directory never picks up somebody else's
+        # settings by accident.
         legacy = config_path(config)
         if legacy.exists() and legacy != target:
             target = legacy
@@ -111,6 +130,8 @@ def load_config(path: str | os.PathLike | None = None) -> Dict[str, Any]:
             loaded = {}
         if isinstance(loaded, dict):
             config = _deep_merge(config, loaded)
+    if not apply_env:
+        return config
     overrides = {
         "provider": os.environ.get("MAS_PROVIDER"),
         "model": os.environ.get("MAS_MODEL"),
@@ -127,10 +148,82 @@ def load_config(path: str | os.PathLike | None = None) -> Dict[str, Any]:
     return config
 
 
+def load_persisted_config(path: str | os.PathLike | None = None) -> Dict[str, Any]:
+    """Load only what the configuration file says, ignoring the environment.
+
+    This is the view that must be written back to disk. It keeps the
+    environment authoritative for anything it overrides, so a temporary
+    ``MAS_STATE_DIR`` or an environment-provided API key never becomes a
+    permanent part of the user's configuration.
+    """
+    return load_config(path, apply_env=False)
+
+
+def persistable_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Strip environment-owned values so the config can be written to disk.
+
+    Two things must never be frozen into the configuration file:
+
+    * the API key - the wizard already promises "配置里不会存明文密钥";
+    * a ``state_dir`` that only exists in the environment.
+
+    The API key is replaced by the name of the environment variable that
+    holds it, which is exactly what ``resolve_api_key`` reads back.
+    """
+    payload = copy.deepcopy(config)
+    env_name = str(payload.get("api_key_env") or "MAS_API_KEY")
+    env_value = os.environ.get(env_name, "")
+    if payload.get("api_key"):
+        if not env_value or payload["api_key"] == env_value:
+            payload["api_key"] = ""
+    payload["api_key_env"] = env_name
+    state = str(payload.get("state_dir") or "")
+    if os.environ.get("MAS_STATE_DIR") and state == os.environ["MAS_STATE_DIR"]:
+        payload["state_dir"] = DEFAULT_STATE_DIR
+    elif state and _is_ephemeral_state_dir(state):
+        # A state directory inside the system temp folder is a run-time
+        # injection, not a deliberate choice: the temp folder is cleaned
+        # up by the OS, so a ledger kept there would vanish. Never persist
+        # it - fall back to the well-known location.
+        payload["state_dir"] = DEFAULT_STATE_DIR
+    return payload
+
+
+def _is_ephemeral_state_dir(state: str) -> bool:
+    """True when ``state`` is an auto-generated temporary directory.
+
+    Only the ``tmpXXXXXXXX`` shape that :func:`tempfile.mkdtemp` produces
+    counts. A directory the user named themselves inside the temp folder
+    is a deliberate choice and is kept.
+    """
+    try:
+        resolved = pathlib.Path(os.path.expanduser(os.path.expandvars(state))).resolve()
+        temp_root = pathlib.Path(tempfile.gettempdir()).resolve()
+    except (OSError, ValueError):  # pragma: no cover - defensive
+        return False
+    try:
+        relative = resolved.relative_to(temp_root)
+    except ValueError:
+        return False
+    parts = relative.parts
+    if len(parts) != 1:
+        return False
+    name = parts[0]
+    # tempfile.mkdtemp() uses 8 random characters from letters, digits and
+    # underscore, so the whole name is exactly "tmp" plus 8 characters.
+    return _TEMP_DIR_NAME_RE.match(name) is not None
+
+
 def save_config(config: Dict[str, Any], path: str | os.PathLike | None = None) -> pathlib.Path:
+    """Write the configuration to disk.
+
+    The payload is passed through :func:`persistable_config` first, so an
+    environment-provided API key or a temporary ``MAS_STATE_DIR`` is never
+    persisted.
+    """
     target = pathlib.Path(path) if path else user_config_path()
     target.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(config, ensure_ascii=False, indent=2, sort_keys=True)
+    payload = json.dumps(persistable_config(config), ensure_ascii=False, indent=2, sort_keys=True)
     target.write_text(payload + "\n", encoding="utf-8")
     return target
 

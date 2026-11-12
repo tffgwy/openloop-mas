@@ -11,7 +11,7 @@ from mas.util import force_utf8_output
 from typing import Any, Dict, List
 
 from mas import __version__
-from mas.config import load_config, save_config
+from mas.config import load_config, load_persisted_config, save_config
 from mas.demo import run_scenarios
 from mas.doctor import run_doctor, summarize
 from mas.bench import format_bench, run_bench
@@ -73,7 +73,10 @@ def cmd_init(args: argparse.Namespace) -> int:
     if getattr(args, "wizard", False):
         run_wizard()
         return 0
-    config = load_config()
+    # Start from the persisted view: the environment keeps overriding the
+    # values at runtime, so the file must not be rewritten with the
+    # environment merged into it.
+    config = load_persisted_config()
     if args.provider:
         config["provider"] = args.provider
     if args.model:

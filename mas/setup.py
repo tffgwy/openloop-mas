@@ -16,7 +16,7 @@ import tempfile
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from mas.config import DEFAULT_CONFIG, load_config, save_config
+from mas.config import DEFAULT_CONFIG, load_config, load_persisted_config, save_config
 from mas.engine import LoopEngine
 from mas.providers import ProviderError
 from mas.teams import load_team
@@ -82,7 +82,10 @@ def _ask_choice(prompt: str, options: List[Tuple[str, str]], default_index: int 
 
 def run_wizard(current: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Run the interactive setup wizard and return the resulting config."""
-    config = load_config() if current is None else json.loads(json.dumps(current))
+    # The wizard writes the configuration back, so it must start from the
+    # persisted view. Otherwise a temporary MAS_STATE_DIR from the
+    # environment would be baked into the user's configuration file.
+    config = load_persisted_config() if current is None else json.loads(json.dumps(current))
     print("OpenLoop MAS 初始化向导")
     print("=" * 40)
     print("回答几个问题即可生成配置；随时回车用默认值。")

@@ -89,3 +89,134 @@ def force_utf8_output() -> None:
             reconfigure(encoding="utf-8", errors="replace")
         except (ValueError, OSError):  # pragma: no cover - platform dependent
             pass
+
+
+_TRUE_WORDS = {"pass", "passed", "true", "yes", "ok", "success", "satisfied", "meet", "met", "符合", "通过"}
+_FALSE_WORDS = {"fail", "failed", "false", "no", "unsatisfied", "violated", "不通过", "未通过", "失败"}
+
+
+def _as_bool(value: Any) -> Optional[bool]:
+    """Best-effort conversion of a model's verdict value into a bool."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in _TRUE_WORDS:
+            return True
+        if text in _FALSE_WORDS:
+            return False
+    return None
+
+
+def normalize_verdict(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize a reviewer answer into the canonical verdict schema.
+
+    The engine expects::
+
+        {"verdict": "pass" | "fail",
+         "scores": [{"id": str, "pass": bool, "note": str}]}
+
+    Strong models answer with their own shape instead - ``overall_pass``
+    plus a ``criteria`` list, or ``passed``/``result`` fields. When that
+    happened the review was silently dropped: the aggregate saw zero
+    usable verdicts and the loop relied on the machine checks alone.
+
+    This function accepts the common variants and returns the canonical
+    shape. The original payload is kept under ``raw`` so nothing is lost.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    if payload.get("scores") and isinstance(payload["scores"], list):
+        # Already canonical - but normalise the individual score entries.
+        scores = []
+        for item in payload["scores"]:
+            if not isinstance(item, dict):
+                continue
+            passed = _as_bool(item.get("pass"))
+            if passed is None:
+                passed = _as_bool(item.get("passed"))
+            if passed is None:
+                passed = _as_bool(item.get("result"))
+            if passed is None:
+                passed = _as_bool(item.get("status"))
+            score = dict(item)
+            score["id"] = str(item.get("id") or item.get("criterion") or item.get("name") or "")
+            if passed is not None:
+                score["pass"] = passed
+            score.setdefault("note", str(item.get("note") or item.get("reason") or item.get("explanation") or ""))
+            scores.append(score)
+        result = dict(payload)
+        result["scores"] = scores
+        if not result.get("verdict"):
+            result["verdict"] = "pass" if scores and all(s.get("pass") for s in scores) else "fail"
+        return result
+
+    # Alternative shape: {"criteria": [...]} or {"results": [...]}.
+    raw_scores = None
+    for key in ("criteria", "results", "checks", "items", "findings"):
+        value = payload.get(key)
+        if isinstance(value, list) and value:
+            raw_scores = value
+            break
+
+    if raw_scores is None:
+        return payload
+
+    scores: List[Dict[str, Any]] = []
+    for item in raw_scores:
+        if not isinstance(item, dict):
+            continue
+        passed = _as_bool(item.get("pass"))
+        if passed is None:
+            passed = _as_bool(item.get("passed"))
+        if passed is None:
+            passed = _as_bool(item.get("result"))
+        if passed is None:
+            passed = _as_bool(item.get("status"))
+        if passed is None:
+            passed = _as_bool(item.get("outcome"))
+        if passed is None:
+            passed = _as_bool(item.get("satisfied"))
+        if passed is None:
+            passed = _as_bool(item.get("verdict"))
+        if passed is None:
+            passed = _as_bool(item.get("overall_pass"))
+        note = (
+            item.get("note")
+            or item.get("reason")
+            or item.get("explanation")
+            or item.get("justification")
+            or item.get("analysis")
+            or ""
+        )
+        if isinstance(note, list):
+            note = "; ".join(str(part) for part in note)
+        scores.append(
+            {
+                "id": str(item.get("id") or item.get("criterion") or item.get("name") or ""),
+                "pass": bool(passed),
+                "note": str(note),
+            }
+        )
+
+    if not scores:
+        return payload
+
+    overall = _as_bool(payload.get("overall_pass"))
+    if overall is None:
+        overall = _as_bool(payload.get("passed"))
+    if overall is None:
+        overall = _as_bool(payload.get("verdict"))
+    if overall is None:
+        overall = all(score["pass"] for score in scores)
+
+    result = dict(payload)
+    result["scores"] = scores
+    result["verdict"] = "pass" if overall else "fail"
+    result.setdefault("issues", [
+        str(item.get("required_fix") or item.get("reason") or "") for item in raw_scores
+        if isinstance(item, dict) and not _as_bool(item.get("pass", item.get("result")))
+    ])
+    return result

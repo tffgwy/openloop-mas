@@ -14,7 +14,7 @@ from mas.util import force_utf8_output
 from typing import Any, Dict, List, Optional
 
 from mas import __version__
-from mas.config import load_config, save_config
+from mas.config import load_config, load_persisted_config, save_config
 from mas.doctor import run_doctor, summarize
 from mas.engine import LoopEngine
 from mas.report import build_report, ledger_markdown, replay_trace, render_markdown
@@ -276,7 +276,10 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         action = str(arguments.get("action", "get"))
         if action == "set":
             values = arguments.get("values") or {}
-            merged = dict(config)
+            # Write back the persisted view, not the environment-merged one,
+            # so a temporary MAS_STATE_DIR or an environment-provided API key
+            # never becomes permanent.
+            merged = dict(load_persisted_config())
             merged.update(values)
             save_config(merged)
             return {"config": merged}
