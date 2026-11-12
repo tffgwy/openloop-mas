@@ -85,9 +85,17 @@ else
 fi
 
 step "Installing agent skills"
+# Codex and Claude Code are the hosts MAS documents explicitly, so their
+# skill folders are always created - on a fresh machine the directory simply
+# does not exist yet. The other hosts are opt-in: install into them only when
+# the user already uses them.
+targets="$HOME/.codex/skills $HOME/.claude/skills"
+for opt in "$HOME/.agents/skills" "$HOME/.gemini/skills"; do
+  [ -d "$opt" ] && targets="$targets $opt"
+done
 installed=0
-for target in "$HOME/.codex/skills" "$HOME/.claude/skills" "$HOME/.agents/skills" "$HOME/.gemini/skills"; do
-  [ -d "$target" ] || continue
+for target in $targets; do
+  mkdir -p "$target"
   for skill in "$SRC_ROOT"/skills/*/; do
     [ -d "$skill" ] || continue
     name="$(basename "$skill")"
@@ -96,7 +104,7 @@ for target in "$HOME/.codex/skills" "$HOME/.claude/skills" "$HOME/.agents/skills
     installed=$((installed + 1))
   done
 done
-if [ "$installed" -gt 0 ]; then ok "$installed skill folder(s) installed"; else warn "no skill target directory found"; fi
+if [ "$installed" -gt 0 ]; then ok "$installed skill folder(s) installed"; else warn "no skills found in $SRC_ROOT/skills"; fi
 
 step "Registering the MCP server"
 codex_config="$HOME/.codex/config.toml"
@@ -116,9 +124,26 @@ env = { PYTHONPATH = "$APP_DIR" }
 MCP
     ok "registered in ~/.codex/config.toml (backup kept)"
   fi
+else
+  # A fresh machine has no ~/.codex/config.toml yet. Creating it is what
+  # makes the "one-click" promise real: skipping here would leave the user
+  # with a successful install and no MCP tools at all.
+  mkdir -p "$(dirname "$codex_config")"
+  cat > "$codex_config" <<MCP
+[mcp_servers.mas_loop]
+command = "$PYTHON_BIN"
+args = ["-m", "mas", "serve"]
+startup_timeout_sec = 30.0
+tool_timeout_sec = 300.0
+env = { PYTHONPATH = "$APP_DIR" }
+MCP
+  ok "created ~/.codex/config.toml and registered the MCP server"
 fi
 
 claude_config="$HOME/.claude.json"
+if [ ! -f "$claude_config" ]; then
+  printf '{}\n' > "$claude_config"
+fi
 if [ -f "$claude_config" ] && command -v python3 >/dev/null 2>&1; then
   python3 - "$claude_config" "$PYTHON_BIN" "$APP_DIR" <<'PY'
 import json, sys

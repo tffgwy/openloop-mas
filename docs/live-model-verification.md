@@ -442,3 +442,61 @@ $ mas doctor --no-network
 ```
 
 回归测试新增 1 条（`--no-network` 不发起揢测），全套 127 条通过。
+
+## v0.4.7：「一键安装」不能只是一句口号
+
+### 定位到的缺陷
+
+在本机装 v0.4.6 的过程里使用了一个**隔离的 HOME**（没有 `~/.codex`、没有 `.claude.json`）来模拟全新机器，安装器返回退出码 `0`，但实际结果是：
+
+```
+[!!] ~/.codex/config.toml not found, skipped Codex MCP registration
+[WARN] skill_codex  未安装: ...\.codex\skills\mas-loop\SKILL.md
+[WARN] skill_claude  未安装: ...\.claude\skills\mas-loop\SKILL.md
+```
+
+**退出码是 0，但 MCP 和 skills 全部丢失了。** 这就是「安装成功」最危险的失败形式：用户看不出任何异常。
+
+根因在 `install.sh` 与 `install.ps1` 里是同一个模式：
+
+```bash
+if [ -f "$codex_config" ]; then
+  ... register ...
+fi          # 不存在时静默跳过
+```
+
+### 修法
+
+1. **配置文件不存在时创建它**，并写入 MCP 注册块；
+2. **skills 目录总是为 Codex / Claude Code 创建**（这两个是 MAS 明确支持的宿主），`.agents` / `.gemini` 仍是可选；
+3. `~/.claude.json` 不存在时创建空对象再写入。
+
+### 验证
+
+隔离 HOME 重跑安装器后：
+
+```
+[OK] 6 skill folder(s) installed
+[OK] created ~/.codex/config.toml and registered the MCP server
+[OK] registered in ~/.claude.json (backup: ...)
+[OK  ] skill_codex  ...\.codex\skills\mas-loop\SKILL.md
+[OK  ] skill_claude ...\.claude\skills\mas-loop\SKILL.md
+[OK  ] mcp_codex  已在 ~/.codex/config.toml 注册 mcp_servers.mas_loop
+```
+
+### 为什么还要新增 CI
+
+修好一个脚本不等于它不会再回归。**新增 `install` workflow**：在 ubuntu / windows / macos 三个平台的**干净 HOME**里执行真实安装器，然后跑 `tools/verify_install.py`。该脚本断言三件事：
+
+1. `~/.codex/config.toml` 与 `~/.claude.json` 均存在且包含 `mas_loop`；
+2. 三个 skill（`mas-loop` / `mas-review` / `mas-scaffold`）在 Codex 与 Claude 两边都落盘；
+3. **按注册配置启动的 MCP 服务器真的能回答**（`initialize` + `tools/list` 返回 12 个工具），且安装后的 `mas --version` / `doctor --no-network` / `demo` / `bench` 全部退出码 0。
+
+本机实测（隔离 HOME）：
+
+```
+[OK] install assertions passed
+[OK] MCP server answered with 12 tools: ['mas_run', ..., 'mas_config']
+[OK] mas --version / mas doctor --no-network / mas demo / mas bench --repeats 1
+[OK] fresh-install verification passed
+```

@@ -1,0 +1,57 @@
+name: install
+
+# The "one-click install" promise is the whole reason this project exists.
+# Until the installer is executed by a machine that has nothing installed,
+# the promise is untested - and an installer that silently skips MCP
+# registration on a fresh machine looks exactly like a successful install.
+#
+# This workflow runs the *real* installer in a pristine HOME on every
+# supported platform, then asserts that the MCP server it registered can
+# actually start and answer.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  install:
+    name: install (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install on a pristine machine (Linux / macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOME="${{ runner.temp }}/fresh-home"
+          mkdir -p "$HOME"
+          export MAS_HOME="$HOME/.mas"
+          bash ./install.sh
+
+      - name: Install on a pristine machine (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:USERPROFILE = "${{ runner.temp }}\fresh-home"
+          New-Item -ItemType Directory -Force -Path $env:USERPROFILE | Out-Null
+          $env:MAS_HOME = "$env:USERPROFILE\.mas"
+          powershell -NoProfile -ExecutionPolicy Bypass -File ./install.ps1 `
+            -InstallDir $env:MAS_HOME
+
+      - name: Assert the fresh install is complete and working
+        shell: python
+        run: python tools/verify_install.py "${{ runner.temp }}/fresh-home"

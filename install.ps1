@@ -151,23 +151,29 @@ if (-not $SkipPath) {
 if (-not $SkipSkills) {
     Write-Step "Installing agent skills"
     $skillSource = Join-Path $SourceRoot "skills"
-    $targets = @(
+    # Codex and Claude Code are the hosts MAS documents explicitly, so their
+    # skill folders are always created - on a fresh machine the directory
+    # simply does not exist yet. The other hosts are opt-in: install into
+    # them only when the user already uses them.
+    $always = @(
         (Join-Path $env:USERPROFILE ".codex\skills"),
-        (Join-Path $env:USERPROFILE ".claude\skills"),
+        (Join-Path $env:USERPROFILE ".claude\skills")
+    )
+    $optional = @(
         (Join-Path $env:USERPROFILE ".agents\skills"),
         (Join-Path $env:USERPROFILE ".gemini\skills")
     )
+    $targets = @($always) + @($optional | Where-Object { Test-Path $_ })
     $installed = 0
     foreach ($skillDir in Get-ChildItem -Path $skillSource -Directory -ErrorAction SilentlyContinue) {
         foreach ($targetRoot in $targets) {
-            if (-not (Test-Path $targetRoot)) { continue }
             $dest = Join-Path $targetRoot $skillDir.Name
             New-Item -ItemType Directory -Force -Path $dest | Out-Null
             Copy-Item -Force (Join-Path $skillDir.FullName "*") $dest -Recurse -ErrorAction SilentlyContinue
             $installed++
         }
     }
-    if ($installed -gt 0) { Write-Ok "$installed skill folder(s) installed" } else { Write-Warn "no skill target directory found" }
+    if ($installed -gt 0) { Write-Ok "$installed skill folder(s) installed" } else { Write-Warn "no skills found in $skillSource" }
 }
 
 # ---------------------------------------------------------------- mcp
@@ -194,12 +200,21 @@ env = { PYTHONPATH = "$($AppDir -replace '\\', '/')" }
             Write-Ok "registered in ~/.codex/config.toml (backup: $backup)"
         }
     } else {
-        Write-Warn "~/.codex/config.toml not found, skipped Codex MCP registration"
+        # A fresh machine has no ~/.codex/config.toml yet. Creating it is what
+        # makes the "one-click" promise real: skipping here would leave the
+        # user with a successful install and no MCP tools at all.
+        $codexDir = Split-Path -Parent $codexConfig
+        New-Item -ItemType Directory -Force -Path $codexDir | Out-Null
+        Write-Utf8NoBom $codexConfig ""
+        Add-Content -Path $codexConfig -Value $mcpBlock -Encoding UTF8
+        Write-Ok "created ~/.codex/config.toml and registered the MCP server"
     }
 
     $claudeConfig = Join-Path $env:USERPROFILE ".claude.json"
-    if (Test-Path $claudeConfig) {
-        $claude = Get-Content -Raw -Encoding UTF8 $claudeConfig | ConvertFrom-Json
+    if (-not (Test-Path $claudeConfig)) {
+        Write-Utf8NoBom $claudeConfig "{}"
+    }
+    $claude = Get-Content -Raw -Encoding UTF8 $claudeConfig | ConvertFrom-Json
         if ($null -eq $claude.mcpServers) { $claude | Add-Member -MemberType NoteProperty -Name mcpServers -Value ([PSCustomObject]@{}) }
         if ($claude.mcpServers.PSObject.Properties.Name -contains "mas_loop") {
             Write-Ok "already registered in ~/.claude.json"
@@ -215,7 +230,6 @@ env = { PYTHONPATH = "$($AppDir -replace '\\', '/')" }
             Write-Utf8NoBom $claudeConfig ($claude | ConvertTo-Json -Depth 12)
             Write-Ok "registered in ~/.claude.json (backup: $backup)"
         }
-    }
 }
 
 # ---------------------------------------------------------------- verify
