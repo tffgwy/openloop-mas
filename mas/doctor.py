@@ -13,6 +13,7 @@ import sys
 from typing import Any, Dict, List
 
 from mas.config import config_path, load_config, state_dir, user_config_path
+from mas.probe import probe_from_config
 
 
 def _check(name: str, status: str, detail: str) -> Dict[str, Any]:
@@ -100,23 +101,34 @@ def run_doctor(config: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
         results.append(_check("mcp_codex", "warn", "未找到 ~/.codex/config.toml"))
 
     provider = str(config.get("provider") or "mock")
+    env_name = str(config.get("api_key_env") or "MAS_API_KEY")
+    key = os.environ.get(env_name) or str(config.get("api_key") or "")
+    base_url = str(config.get("base_url") or "")
     if provider == "mock":
         results.append(_check("provider", "ok", "mock（离线模式，无需密钥）"))
+    elif key and base_url:
+        results.append(_check("provider", "ok", f"{provider} / {config.get('model')} @ {base_url}"))
     else:
-        env_name = str(config.get("api_key_env") or "MAS_API_KEY")
-        key = os.environ.get(env_name) or str(config.get("api_key") or "")
-        base_url = str(config.get("base_url") or "")
-        if key and base_url:
-            results.append(_check("provider", "ok", f"{provider} / {config.get('model')} @ {base_url}"))
-        else:
-            missing = []
-            if not key:
-                missing.append(f"密钥(env {env_name})")
-            if not base_url:
-                missing.append("base_url")
-            results.append(
-                _check("provider", "warn", f"{provider} 缺少: {', '.join(missing)}（离线 mock 模式仍可用）")
-            )
+        missing = []
+        if not key:
+            missing.append(f"密钥(env {env_name})")
+        if not base_url:
+            missing.append("base_url")
+        results.append(
+            _check("provider", "warn", f"{provider} 缺少: {', '.join(missing)}（离线 mock 模式仍可用）")
+        )
+
+    # A live handshake tells the user which dialect their gateway speaks
+    # *before* the first deliverable is at stake. It is skipped in mock
+    # mode and when the endpoint is not configured yet.
+    if provider != "mock" and key and base_url:
+        try:
+            live = probe_from_config(config, api_key=key)
+        except Exception as exc:  # pragma: no cover - defensive
+            live = {"status": "warn", "dialect": "unknown", "detail": f"探测异常: {exc}"}
+        results.append(_check("endpoint", live.get("status", "warn"), str(live.get("detail", ""))))
+    elif provider != "mock":
+        results.append(_check("endpoint", "warn", "端点未配置完整，跳过握手探测"))
 
     return results
 

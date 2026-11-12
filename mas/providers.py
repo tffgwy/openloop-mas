@@ -172,6 +172,53 @@ class _HttpProvider(Provider):
             "model": model,
         }
 
+    @staticmethod
+    def _flatten_content(content: Any) -> str:
+        """Normalise the many shapes of ``message.content`` into plain text.
+
+        Gateways answer with a plain string, with a list of content blocks
+        (the multimodal shape some gateways use even for pure text) or with
+        ``None``. Handing the raw list to the caller would break every
+        downstream JSON parse, so the blocks are joined here.
+        """
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: List[str] = []
+            for block in content:
+                if isinstance(block, str):
+                    parts.append(block)
+                elif isinstance(block, dict):
+                    if isinstance(block.get("text"), str):
+                        parts.append(block["text"])
+                    elif block.get("type") == "text" and isinstance(block.get("value"), str):
+                        parts.append(block["value"])
+            return "".join(parts)
+        return str(content)
+    @staticmethod
+    def _normalize_usage(usage: Dict[str, Any]) -> Dict[str, int]:
+        """Normalise usage counters across dialects.
+
+        Chat-completions servers report ``prompt_tokens`` /
+        ``completion_tokens``; Responses-style bridges report ``input_tokens``
+        / ``output_tokens``. Several gateways omit ``total_tokens``
+        entirely, which used to be recorded as ``0`` and made the ledger
+        under-report the real token spend.
+        """
+        prompt = int(usage.get("prompt_tokens", usage.get("input_tokens", 0)) or 0)
+        completion = int(usage.get("completion_tokens", usage.get("output_tokens", 0)) or 0)
+        total = int(usage.get("total_tokens", 0) or 0)
+        if not total:
+            total = prompt + completion
+        return {
+            "prompt_tokens": prompt,
+            "completion_tokens": completion,
+            "total_tokens": total,
+        }
+
+
 
 class OpenAICompatProvider(_HttpProvider):
     """Any OpenAI-compatible chat-completions endpoint."""
@@ -224,20 +271,19 @@ class OpenAICompatProvider(_HttpProvider):
             except ProviderError:
                 raise exc
         try:
-            text = data["choices"][0]["message"]["content"] or ""
+            raw_text = data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
             raise ProviderError(f"unexpected response shape: {str(data)[:200]}") from exc
-        usage = data.get("usage") or {}
+        text = self._flatten_content(raw_text)
+        usage = self._normalize_usage(data.get("usage") or {})
         self.calls += 1
         return {
             "text": text,
-            "usage": {
-                "prompt_tokens": int(usage.get("prompt_tokens", 0)),
-                "completion_tokens": int(usage.get("completion_tokens", 0)),
-                "total_tokens": int(usage.get("total_tokens", 0)),
-            },
+            "usage": usage,
             "raw": data,
         }
+
+
 
 
 class AnthropicProvider(_HttpProvider):
@@ -270,11 +316,7 @@ class AnthropicProvider(_HttpProvider):
         self.calls += 1
         return {
             "text": "".join(chunks),
-            "usage": {
-                "prompt_tokens": int(usage.get("input_tokens", 0)),
-                "completion_tokens": int(usage.get("output_tokens", 0)),
-                "total_tokens": int(usage.get("input_tokens", 0)) + int(usage.get("output_tokens", 0)),
-            },
+            "usage": self._normalize_usage(usage),
             "raw": data,
         }
 

@@ -278,3 +278,106 @@ mas init        -> 写出的配置 state_dir=~/.mas（未被环境变量污染�
 ```
 
 同一干净 venv 里接真实模型端点跑闭环：`status=closed`，迭代 1。
+
+---
+
+## v0.4.3：方言差异从「未覆盖」变成「有保障」
+
+### 为什么要做这件事
+
+上一轮的真实模型实测只覆盖了一个端点（`claude-opus-5-5` @ Codex Responses 桥接）。
+本机没有 Kimi / DeepSeek / Qwen / 原生 OpenAI 端点，因此「换一个厂商会不会炸」
+这个问题在 v0.4.2 之前**没有任何保障** —— 只靠一句「OpenAI 兼容」。
+
+v0.4.3 的做法：不假装能测到不存在的端点，而是把**协议方言本身**变成可执行契约。
+
+### 协议级方言契约测试（`tests/test_provider_dialects.py`，16 条）
+
+用本地 `ThreadingHTTPServer` 起假网关，逐条断言请求负载与响应解析：
+
+| # | 方言 | 断言要点 |
+|---|---|---|
+| a | 标准 OpenAI chat-completions | `messages` 结构、`Authorization` 头、usage 三元组 |
+| b | 只读 `input` 的 Responses 桥接 | `input` 与 `messages` 同时下发，两端都工作 |
+| c | OpenAI SSE 流 | `choices[].delta.content` 折叠、usage 统计 |
+| d | Responses 事件流 | `response.output_text.delta` + `response.completed`、usage 统计 |
+| e | 不支持 `response_format` 的网关 | 首次 400 → 去掉该字段重试一次成功 |
+| f | Anthropic `/v1/messages` | `content[].type=="text"`、`input_tokens`/`output_tokens` |
+
+另外覆盖：`response.failed` 事件必须抛 `ProviderError`；`total_tokens` 缺失时按
+prompt+completion 回填；`message.content` 为内容块列表时必须拼成字符串。
+
+### 契约测试当场抓出的两个真实缺陷（已修复）
+
+**缺陷 9 · `usage.total_tokens` 缺失时被记成 0**
+
+部分网关只返回 `prompt_tokens` / `completion_tokens`。修复前账本会把这次调用的
+token 数记成 0，token 预算形同虚设。
+
+修复：`mas/providers.py` 新增 `_normalize_usage()`，兼容
+`prompt_tokens`/`input_tokens` 两套字段名，并在 `total_tokens` 缺失时回填。
+
+**缺陷 10 · `message.content` 是内容块列表时被当成文本**
+
+多模态形状的网关即使只回纯文本，也可能用内容块数组。修复前 provider 把整个
+list 原样返回，下游 JSON 解析必然失败。
+
+修复：`mas/providers.py` 新增 `_flatten_content()`，把字符串 / 内容块列表 / `None`
+统一成纯文本。
+
+两个 helper 被上移到 `_HttpProvider` 基类，OpenAI 与 Anthropic 两条路径共用同一套
+归一化规则。
+
+### 全链路方言闭环测试（`tests/test_dialect_loop.py`，3 条）
+
+provider 单元测试只证明「一次 HTTP 往返能解析」。全链路测试用假网关跑完整的
+`LoopEngine` 回路 —— 计划、产出、评审、机检、账本记账 —— 断言：
+
+- SSE 方言：闭环 1 次迭代完成，token 统计大于 0
+- Anthropic 方言：闭环 1 次迭代完成，token 统计大于 0
+- 账本里确实记下了 Anthropic 方言归一化后的 token 数（≥ 160）
+
+### 端点握手探测（`mas/probe.py` + `mas doctor`）
+
+新增 `mas probe` 能力：`mas doctor` 在配置了真实端点后会发一次最小请求，
+然后告诉用户**你的网关说的是哪种方言**：
+
+```
+[OK  ] endpoint       端点可用，协议方言 = openai-responses-events
+```
+
+本机 Codex 桥接实测（`http://127.0.0.1:16024/v1`）：
+
+```json
+{"status": "ok", "dialect": "openai-responses-events"}
+```
+
+识别规则：`choices` → openai-chat-completions；`content[]` → anthropic-messages；
+`output` → openai-responses-events；SSE 中出现 `choices` → openai-sse-stream；
+SSE 中出现 `response.*` → openai-responses-events。
+
+探测失败不会让 `mas doctor` 崩：未配置 base_url 是 `warn`，HTTP 4xx/5xx 是 `fail`，
+连接不通是 `fail` 并带原因。
+
+### 回归测试
+
+```
+127 passed
+```
+
+新增覆盖：provider 方言契约 16 条、全链路方言闭环 3 条、端点探测 5 条。
+
+真实端点复测（`claude-opus-5-5` @ `http://127.0.0.1:16024/v1`）：
+
+```
+status=closed  iterations=1  tokens_used=3732
+c1 pass=true source=rule note=regex /(?s)def dedupe.*set/ matched
+```
+
+### 诚实的边界
+
+- 契约测试覆盖的是**协议形状**，不是**真实厂商端点**。Kimi / DeepSeek / Qwen /
+  原生 OpenAI 在本机没有端点，**未做真实调用实测**。
+- 契约测试保证的是「请求和响应能被正确理解和组装」，不保证每个厂商都接受
+  `input` 这个额外字段（严格 OpenAI 会忽略它，但个别厂商可能拒绝未知字段）。
+  若某个厂商因此报 400，可用 `extra_headers` 或改用 `fallbacks` 切换后端。

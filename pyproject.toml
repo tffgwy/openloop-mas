@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openloop-mas"
-version = "0.4.2"
+version = "0.4.3"
 description = "A loop-engineering runtime for multi-agent systems: closure, verification, budgets and an auditable ledger."
 readme = "README.md"
 requires-python = ">=3.10"

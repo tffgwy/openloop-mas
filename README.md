@@ -5,6 +5,13 @@
 
 **v0.2.0 加入了什么**：并行多候选竞争选优、对抗式交叉评审、多后端故障转移、HTTP/SSE 远程接入、闭环复盘报告与回放、交互式初始化向导、离线基准测试、真实闭环自检。
 
+**v0.4.3 修了什么**（协议方言保障 + 端点握手，详见 [真实模型验证报告](docs/live-model-verification.md)）：
+
+- **协议方言变成可执行契约** —— 6 种真实世界的接入形状（标准 OpenAI、只读 `input` 的桥接、SSE 流、Responses 事件流、不支持 `response_format` 的网关、Anthropic Messages）各有契约测试，连带全链路闭环测试；
+- **`usage.total_tokens` 缺失不再记成 0** —— 此前 token 预算对部分网关形同虚设；
+- **`message.content` 是内容块列表时也能正确解析** —— 多模态形状的网关不再让下游 JSON 解析崩掉；
+- **`mas doctor` 会真的握手一次端点**，直接告诉你「你的网关说的是哪种方言」。
+
 **v0.4.2 修了什么**（来自 OpenMausBot 端到端实测，详见 [真实模型验证报告](docs/live-model-verification.md)）：
 
 - `--criteria 'regex:...'` 简写现在真的生成机检规则 —— 此前它被当成普通描述，判定其实来自模型而非规则；
@@ -313,7 +320,18 @@ mas init --provider openai_compat --model gpt-4o-mini --base-url https://api.ope
 
 - 网关不支持 `response_format` 时自动降级重试一次，并从回答正文里抽取 JSON；
 - 网关用 SSE 事件流回答（很多中转站和本地桥接都是这样）时自动折叠成标准 chat 结构；
+- 网关用 Responses 事件流回答（Codex 桥接、OpenMausBot 这类运行时）时同样折叠；
+- 网关只认 `input` 不认 `messages` 时也能工作 —— 请求同时带两份，二选一被读取；
+- 回答是内容块数组而不是字符串时，自动拼成纯文本；
+- usage 字段名在 `prompt_tokens` / `input_tokens` 两套之间自动归一，缺 `total_tokens` 时回填；
 - 模型在正文前吐 `<think>` 思维链时自动剥离，思维链不会进入交付物、判定和账本。
+
+装完之后跑一次握手，看你的端点到底说哪种方言：
+
+```bash
+mas doctor
+# [OK  ] endpoint       端点可用，协议方言 = openai-responses-events
+```
 
 也可以完全用环境变量，不改配置文件：
 
