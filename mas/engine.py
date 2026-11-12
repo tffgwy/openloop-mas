@@ -33,7 +33,6 @@ from typing import Any, Callable, Dict, List, Optional
 from mas.ledger import Ledger
 from mas.orchestration import (
     ParallelFailure,
-    ProviderChain,
     aggregate_reviews,
     angle_instruction,
     persona_instruction,
@@ -41,7 +40,7 @@ from mas.orchestration import (
     pick_personas,
     run_parallel,
 )
-from mas.providers import Provider, ProviderError, build_provider, build_provider_chain
+from mas.providers import Provider, ProviderError, build_provider_chain
 from mas.roles import Roles
 from mas.tickets import TicketStore
 from mas.util import (normalize_verdict, now_iso, parse_json_loose, sha256_text,

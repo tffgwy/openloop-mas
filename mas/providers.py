@@ -25,7 +25,6 @@ import urllib.request
 from typing import Any, Dict, List
 
 from mas.orchestration import ProviderChain
-from mas.util import parse_json_loose
 
 
 class ProviderError(RuntimeError):

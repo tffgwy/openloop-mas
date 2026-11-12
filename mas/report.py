@@ -7,11 +7,10 @@ here invents data - every number comes from the ledger.
 
 from __future__ import annotations
 
-import json
 import pathlib
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-from mas.util import now_iso, short_sha
+from mas.util import now_iso
 
 STATUS_ICON = {
     "closed": "OK",

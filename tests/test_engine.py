@@ -1,7 +1,6 @@
 """Engine level tests: closure, stagnation, budget, deterministic checks."""
 
 import json
-import os
 import tempfile
 import unittest
 

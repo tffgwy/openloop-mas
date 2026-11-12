@@ -12,7 +12,7 @@ import pathlib
 import sys
 from typing import Any, Dict, List
 
-from mas.config import load_config, state_dir, user_config_path
+from mas.config import config_path, load_config, state_dir, user_config_path
 
 
 def _check(name: str, status: str, detail: str) -> Dict[str, Any]:

@@ -146,7 +146,6 @@ class TestStripReasoning(unittest.TestCase):
 
 class TestUtf8OutputSafety(unittest.TestCase):
     def test_force_utf8_output_is_idempotent_and_safe(self):
-        import io
 
         class _Legacy:
             """A stream without ``reconfigure`` must not break the CLI."""

@@ -11,14 +11,12 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 import tempfile
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from mas.config import DEFAULT_CONFIG, load_config, load_persisted_config, save_config
 from mas.engine import LoopEngine
-from mas.providers import ProviderError
 from mas.teams import load_team
 
 BACKENDS: List[Dict[str, str]] = [

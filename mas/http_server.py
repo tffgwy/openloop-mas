@@ -17,7 +17,6 @@ package still installs with zero third-party dependencies.
 from __future__ import annotations
 
 import json
-import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, Optional
@@ -198,7 +197,6 @@ class _QuietThreadingHTTPServer(ThreadingHTTPServer):
 
     def handle_error(self, request: Any, client_address: Any) -> None:
         import sys
-        import traceback
 
         exc = sys.exc_info()[1]
         if isinstance(exc, (ConnectionResetError, BrokenPipeError, ConnectionAbortedError, TimeoutError)):

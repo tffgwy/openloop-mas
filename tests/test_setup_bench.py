@@ -9,7 +9,7 @@ import unittest
 from contextlib import redirect_stdout
 
 from mas.bench import run_bench
-from mas.config import DEFAULT_CONFIG, load_config
+from mas.config import DEFAULT_CONFIG
 from mas.setup import run_verify, run_wizard
 
 
