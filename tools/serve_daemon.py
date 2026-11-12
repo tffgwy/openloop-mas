@@ -106,7 +106,9 @@ def _shell_wrapper(port: int) -> str:
         '  echo "[ERROR] token file is empty: $TOKEN_FILE" >&2\n'
         "  exit 1\n"
         "fi\n"
-        f'exec "{mas_command()}" http --host {DEFAULT_HOST} --port {port}\n'
+        'HOST="${MAS_HTTP_HOST:-' + DEFAULT_HOST + '}"\n'
+        'PORT="${MAS_HTTP_PORT:-' + str(port) + '}"\n'
+        f'exec "{mas_command()}" http --host "$HOST" --port "$PORT"\n'
     )
 
 
@@ -139,6 +141,12 @@ def launcher_body(port: int) -> str:
             "  </array>\n"
             "  <key>RunAtLoad</key><true/>\n"
             "  <key>KeepAlive</key><true/>\n"
+            "  <!-- Binds loopback only; expose it through a TLS proxy. -->\n"
+            "  <key>EnvironmentVariables</key>\n"
+            "  <dict>\n"
+            f"    <key>MAS_HTTP_HOST</key><string>{DEFAULT_HOST}</string>\n"
+            f"    <key>MAS_HTTP_PORT</key><string>{port}</string>\n"
+            "  </dict>\n"
             "</dict>\n</plist>\n"
         )
     return (
@@ -149,7 +157,11 @@ def launcher_body(port: int) -> str:
         "Type=simple\n"
         f"ExecStart=/bin/sh {wrapper_path()}\n"
         "Restart=on-failure\n"
-        "RestartSec=5\n\n"
+        "RestartSec=5\n"
+        "# The service binds loopback only. Expose it through a TLS\n"
+        "# reverse proxy; never move this to a LAN address.\n"
+        f'Environment="MAS_HTTP_HOST={DEFAULT_HOST}"\n'
+        f'Environment="MAS_HTTP_PORT={port}"\n\n'
         "[Install]\n"
         "WantedBy=default.target\n"
     )

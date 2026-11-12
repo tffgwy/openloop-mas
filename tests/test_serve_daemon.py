@@ -109,9 +109,44 @@ class ServeDaemonTest(unittest.TestCase):
         self.assertNotIn(token, wrapper)
 
     def test_launcher_binds_loopback_only(self):
+        # The launcher is a launcher *and* a declaration: whatever it hands
+        # to the service manager must say loopback, never a LAN address.
         body = self.module.launcher_body(8768)
         self.assertIn("127.0.0.1", body)
         self.assertNotIn("0.0.0.0", body)
+
+    def test_every_launcher_surface_declares_loopback(self):
+        # Windows, launchd and systemd each express the bind address
+        # differently, but all of them must name loopback explicitly and
+        # none of them may name a wildcard address.
+        body = self.module.launcher_body(8768)
+        wrapper = self.module._shell_wrapper(8768)
+        for text in (body, wrapper):
+            self.assertIn("127.0.0.1", text)
+            self.assertNotIn("0.0.0.0", text)
+            self.assertNotIn("::", text)
+
+    def test_posix_launcher_passes_host_and_port_to_the_service(self):
+        if os.name == "nt":
+            self.skipTest("POSIX launcher body only")
+        body = self.module.launcher_body(8768)
+        self.assertIn("MAS_HTTP_HOST", body)
+        self.assertIn("127.0.0.1", body)
+        self.assertIn("8768", body)
+
+    def test_wrapper_honours_the_host_and_port_it_is_given(self):
+        wrapper = self.module._shell_wrapper(8768)
+        self.assertIn("MAS_HTTP_HOST", wrapper)
+        self.assertIn("MAS_HTTP_PORT", wrapper)
+        self.assertIn("127.0.0.1", wrapper)
+
+    def test_posix_paths_use_forward_slashes(self):
+        if os.name == "nt":
+            self.skipTest("POSIX paths only")
+        body = self.module.launcher_body(8768)
+        wrapper = self.module._shell_wrapper(8768)
+        for text in (body, wrapper):
+            self.assertNotIn("\\", text)
 
     def test_install_writes_launcher_and_token(self):
         original = self.module.launcher_path
