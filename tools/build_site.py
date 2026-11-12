@@ -22,6 +22,7 @@ PAGES: List[Tuple[str, str, str]] = [
     ("architecture.html", "架构 Architecture", "docs/architecture.md"),
     ("loop-engineering.html", "方法论 Loop Engineering", "docs/loop-engineering.md"),
     ("mcp.html", "MCP 接入", "docs/mcp.md"),
+    ("openmausbot.html", "OpenMausBot 集成", "docs/openmausbot-integration.md"),
     ("acceptance.html", "验收报告 Acceptance", "docs/acceptance-report.md"),
     ("readme-en.html", "README (English)", "README.en.md"),
 ]
