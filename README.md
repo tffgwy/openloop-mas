@@ -320,6 +320,21 @@ tool_timeout_sec = 300.0
 
 协议实现是纯标准库的 JSON-RPC 2.0 over stdio —— **不需要 `pip install mcp`**。
 
+### 接进 OpenMausBot（开源 Grok Bot 平替）
+
+[OpenMausBot](https://github.com/milind-soni/OpenMausBot) 是开源的 Grok Bot 平替：聊天界面里
+每个联系人都是一个真的智能体（Claude Code / Codex 在本地跑）。它提供**入口**，本项目提供**判定**。
+
+```sh
+npm install -g openmausbot && openmausbot     # Node 24+
+python tools/install_openmausbot_mcp.py         # 把 MAS 注册成它的 MCP server
+```
+
+注册后 OpenMausBot 会挂载上表的 12 个工具，bot 在聊天里就能直接调用 `mas_run`
+拿回一个 `closed / escalated / budget_exhausted` 的确定结论。
+
+完整说明（含权限模型、开机自启、给 bot 的任务模板）：[docs/openmausbot-integration.md](docs/openmausbot-integration.md)。
+
 ---
 
 ## 随包附带的 Agent Skill
@@ -424,6 +439,10 @@ OpenLoop MAS **不是**「私有化 AI 代理团队」那一类产品的复刻�
 
 两者可以叠加：前者当执行层，后者当闭环层。
 传播口径上可以把本项目讲成「让多智能体**真的会结束**的那一层」，而不是又一个聊天壳。
+
+实测接法（见 [docs/openmausbot-integration.md](docs/openmausbot-integration.md)）：
+把本项目注册成 OpenMausBot 的自定义 MCP server，bot 在聊天里就能调用 `mas_run`，
+拿回 `closed / escalated / budget_exhausted` 的确定结论。
 
 > 视频/介绍里如果需要引用同类项目（如 OpenMausBot 这类主打私有化代理团队、支持 MCP 与大量应用打通的方案），请以其官方仓库的说明为准：能力边界、安全模型、更新频率都应以官方文档为准，不要替别人的项目做安全承诺。
 

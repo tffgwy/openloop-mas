@@ -259,6 +259,50 @@ CLI 新增子命令：`report` `replay` `export` `verify` `bench` `http`；
 
 ---
 
+## 11. OpenMausBot 集成验收（本轮实测证据）
+
+目标：把本项目作为自定义 MCP server 挂进 [OpenMausBot](https://github.com/milind-soni/OpenMausBot)
+（开源的 Grok Bot 平替，聊天界面 + 多智能体团队），让 bot 在聊天里直接调用闭环运行时。
+
+### 11.1 已验证事实
+
+| 项 | 证据 |
+| --- | --- |
+| OpenMausBot 0.1.154 安装 | `npm install -g openmausbot` → `openmausbot --version` 输出 `0.1.154` |
+| Node 版本满足要求 | `node --version` → `v26.13.1`（要求 24+） |
+| setup 向导完成 | 交互式向导走通：选 Claude Code 引擎 → 复用本机既有登录态 → 选 Claude Opus 5.5 → 跳过手机接入 → 落盘 `~/.openmausbot/config.json` |
+| 服务器启动 | `openmausbot serve --port 28799 --no-open --no-pair` → 日志 `openmausbot server on http://127.0.0.1:28799` |
+| doctor 全绿 | `openmausbot doctor` → `ready`；引擎 grok/kimi/cursor/copilot/kiro/claude/codex/chatgpt/opencodeGo/pi 可用；浏览器引擎 `agent-browser 0.36.0-omb.1` 已装 |
+| MCP 握手 | `POST /api/mcp/servers/openloop-mas/test` → `{"ok":true}` + 12 个工具（mas_run / mas_status / mas_ledger / mas_tickets / mas_ticket_resolve / mas_resume / mas_report / mas_replay / mas_export / mas_teams / mas_doctor / mas_config） |
+| 端到端闭环（无 check） | bot 调 `mas_run` → 返回 `status: "escalated"`, `iterations: 5`；bot 准确指出原因是 `unjudged: 该验收标准没有机检规则` —— 与修复后的机检语义一致 |
+| 端到端闭环（有 check） | bot 调 `mas_run`（criteria 带 `check.type=regex`）→ 返回 `status: "closed"`, `closed: true`, `iterations: 1`，c1 判 `pass` |
+| 账本一致性 | 末条账本记录 `decision: "close"`、`closed: true`、`scores[0].source = "rule"`、`note = "regex /[一-龥]{4,}/ matched"` |
+| 本机 MAS 升级到 v0.2.0 | `install.ps1` 实跑 → `mas --version` = `openloop-mas 0.2.0`；`mas doctor` 10 项全 OK；`mas bench` 闭环率 100%；`mas verify` 通过；`~/.mas/config.json` 逐字节未变 |
+| 开机自启（Windows） | `openmausbot service install` 在 Windows 不支持（官方仅 systemd/launchd）；改用 Startup 文件夹，`OpenMausBot-Server.cmd` 实测能独立拉起服务器（doctor ready） |
+| 集成脚本 | `tools/install_openmausbot_mcp.py` 在隔离目录实跑：写入 `mcpServers`、生成 `.bak` 备份、握手测试返回 12 工具 |
+| 回归测试 | `python -m unittest discover -s tests` → `Ran 76 tests ... OK` |
+| release 工作流修复 | `if: ${{ secrets.* }}` 违反上下文规则导致整文件失效（0 jobs 失败 run）；改用 `env:` + `continue-on-error` 后，run `43247470908` 8 步全 success |
+| Pages 实访 | `https://tffgwy.github.io/openloop-mas/` → HTTP 200，`<title>首页 Home · OpenLoop MAS</title>` |
+
+### 11.2 修掉的真实缺陷
+
+1. **release.yml 用 `secrets` 上下文做 `if:` 判定** → GitHub 校验器把整个工作流文件判为无效，任何 push 都生成一个 0-jobs 失败 run，且工作流名退化为文件路径。改用 `env:` 传 token、步骤内自行判空、`continue-on-error` 兜底。
+2. **`--criteria` 的 JSON 字符串被当成纯文本描述** → 机检规则完全不生效，标准永远 `unjudged`，循环无法闭合。修复后实跑从 `escalated` 变 `closed`。
+3. **配置文件写在 `state_dir/config.json`** → 换状态目录后配置「丢失」。固定为 `~/.mas/config.json`，`state_dir` 只管账本；新增 `MAS_CONFIG_PATH` 覆盖。
+4. **向导测试写用户真实配置** → 测试改掉了用户 `~/.mas/config.json`。测试改用 `MAS_CONFIG_PATH` 隔离。
+
+### 11.3 待验证 / 边界
+
+1. **v0.2.0 新链路尚未在真实模型端点跑过** —— 并行候选、故障转移、对抗评审三条链路只有 mock + 注入式测试覆盖。本轮 OpenMausBot 端到端闭环用的是 **mock provider**（`config.json` 里 `provider = "mock"`），交付物正文是占位草稿，属预期行为。
+2. **PyPI 未真实发布** —— `https://pypi.org/pypi/openloop-mas/json` 返回 404。工作流已就绪，需仓库 secret `PYPI_API_TOKEN`。
+3. **`openmausbot service install` 不支持 Windows** —— 官方仅 systemd/launchd；本机用 Startup 回退。任务计划程序注册在本机被拒（Access is denied，与本机历史行为一致）。
+4. **端口 8799 被本机 dsh-tauri 占用** —— 实际使用 28799。`openmausbot doctor` 默认会依次探测 8799 / 18799 / 28799。
+5. **手机接入未配置** —— 本机无 HTTPS 入口（未启用 Tailscale / 隧道 / 反代），setup 选了「Skip for now」。
+6. **CLI 安装的 OpenMausBot 不加密凭据** —— `config.json` 里的 API key 是明文；桌面版用系统钥匙串（Windows 为 DPAPI）加密，但 `config.json` 中的部分 key 仍是明文。
+7. **判定的是结构不是事实**；**GitHub 星数无法预测**，不承诺流量或曝光结果。
+
+---
+
 ## 10. 下一步可选动作
 
 1. `pip install -e .` 后用 `mas` 命令直接跑；或直接用 `~/.mas/bin/mas.cmd`。
