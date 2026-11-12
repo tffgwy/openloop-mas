@@ -53,6 +53,66 @@ mas resume T-20261111-085346-4396 --note "按用户口径重写结论段"
 - `mas_tickets` / `mas_ticket_resolve` / `mas_resume` — 人工介入闭环
 - `mas_teams` / `mas_doctor` / `mas_config`
 
+
+## v0.2 编排与观测（新增）
+
+### 并行候选选优
+
+同一目标可以并发跑多个候选视角，由引擎按「机检通过数 → 长度 → 下标」确定性选优，
+不依赖模型自觉挑最好的：
+
+```bash
+mas run --goal "写一份发布说明" --criteria-file criteria.json \
+  --parallel 3 --perspective thorough
+```
+
+可用视角：`direct`（默认）、`thorough`、`concise`、`structured`、`example_first`、`risk_first`。
+
+### 故障转移（provider 链）
+
+配置里写多个 provider，某个挂掉或超时自动切下一个：
+
+```json
+"fallbacks": [
+  {"provider": "openai_compat", "base_url": "https://primary/v1", "model": "m1"},
+  {"provider": "openai_compat", "base_url": "https://backup/v1", "model": "m2"}
+]
+```
+
+### 对抗评审聚合
+
+多个评审人格（`strict` / `skeptic` / `completeness` / `reader`）投票，
+`review_mode` 可选 `all`（全票通过）、`majority`（过半）、`any`（任一通过）。
+机检结果永远压过模型主观判断。
+
+### 观测与回放
+
+```bash
+mas report              # 最近一次运行的 Markdown 报告
+mas replay <run_id>    # 按账本逐轮回放每一步输入输出
+mas export --format json   # 导出账本
+```
+
+HTTP/SSE 供外部系统接入：
+
+```bash
+mas http --port 8765
+# GET  /health   存活探测
+# GET  /tools    工具清单
+# POST /call     {"tool": "mas_run", "arguments": {...}}
+# GET  /events   SSE 实时账本流
+```
+
+### 初始化、自检与基准
+
+```bash
+mas init --wizard   # 交互式 10 问：provider / 模型 / 团队 / 编排参数 / 回退链
+mas verify          # 真实跑一遍闭环并给结论（provider / closure / ledger / roles 四项）
+mas bench --repeats 2   # 离线基准：闭环率、迭代数、token、延迟、账本一致性
+```
+
+`mas verify` 与 `mas bench` 都不需要密钥，适合放进 CI 当冒烟门禁。
+
 ## 写验收标准的规矩（关键）
 
 1. **能用机检就别用模型判定。** 支持的 `check.type`：

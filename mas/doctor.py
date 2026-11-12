@@ -12,7 +12,7 @@ import pathlib
 import sys
 from typing import Any, Dict, List
 
-from mas.config import config_path, load_config, state_dir
+from mas.config import load_config, state_dir, user_config_path
 
 
 def _check(name: str, status: str, detail: str) -> Dict[str, Any]:
@@ -38,11 +38,29 @@ def run_doctor(config: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
     except Exception as exc:  # pragma: no cover
         results.append(_check("package", "fail", f"无法导入 mas: {exc}"))
 
-    cfg_file = config_path(config)
+    cfg_file = user_config_path()
     if cfg_file.exists():
         results.append(_check("config", "ok", f"{cfg_file}"))
     else:
-        results.append(_check("config", "warn", f"未找到 {cfg_file}，运行 mas init 生成"))
+        legacy = config_path(config)
+        if legacy.exists():
+            results.append(_check("config", "ok", f"{legacy}（v0.1 位置）"))
+        else:
+            results.append(_check("config", "warn", f"未找到 {cfg_file}，运行 mas init 生成"))
+
+    orchestration = config.get("orchestration") or {}
+    results.append(
+        _check(
+            "orchestration",
+            "ok",
+            "并行 {w} 路 / 评审 {r} 路 / {m} / 回退 {f} 个".format(
+                w=orchestration.get("parallel_workers", 1),
+                r=orchestration.get("reviewers", 1),
+                m=orchestration.get("review_mode", "all"),
+                f=len(config.get("fallbacks") or []),
+            ),
+        )
+    )
 
     root = state_dir(config)
     try:

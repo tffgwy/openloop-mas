@@ -4,6 +4,8 @@ import io
 import json
 import sys
 import os
+import pathlib
+import shutil
 import tempfile
 import unittest
 
@@ -175,3 +177,53 @@ class TestUtf8OutputSafety(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConfigLocationTest(unittest.TestCase):
+    """The configuration file must not depend on the run-state directory."""
+
+    def setUp(self):
+        self._home = tempfile.mkdtemp(prefix="mas-home-")
+        self._cfg = os.path.join(self._home, "config.json")
+        old = os.environ.get("MAS_CONFIG_PATH")
+        os.environ["MAS_CONFIG_PATH"] = self._cfg
+        self.addCleanup(shutil.rmtree, self._home, True)
+        if old is None:
+            self.addCleanup(os.environ.pop, "MAS_CONFIG_PATH", None)
+        else:
+            self.addCleanup(os.environ.__setitem__, "MAS_CONFIG_PATH", old)
+
+    def test_config_path_follows_the_explicit_override(self):
+        from mas.config import user_config_path
+
+        self.assertEqual(user_config_path(), pathlib.Path(self._cfg).resolve())
+
+    def test_a_custom_state_dir_does_not_hide_the_configuration(self):
+        state = tempfile.mkdtemp(prefix="mas-state-")
+        config = json.loads(json.dumps(DEFAULT_CONFIG))
+        config["state_dir"] = state
+        config["model"] = "kept-model"
+        saved = save_config(config)
+        self.assertTrue(saved.exists())
+        loaded = load_config()
+        self.assertEqual(loaded["model"], "kept-model")
+        self.assertTrue(os.path.samefile(loaded["state_dir"], state))
+
+    def test_legacy_state_dir_config_is_still_read(self):
+        state = tempfile.mkdtemp(prefix="mas-legacy-")
+        legacy = pathlib.Path(state) / "config.json"
+        legacy.write_text(json.dumps({"model": "legacy-model"}), encoding="utf-8")
+        old_state = os.environ.get("MAS_STATE_DIR")
+        os.environ["MAS_STATE_DIR"] = state
+        try:
+            # Point the well-known location at a file that does not exist, so
+            # the v0.1 location is used instead.
+            os.environ["MAS_CONFIG_PATH"] = os.path.join(self._home, "missing.json")
+            loaded = load_config()
+            self.assertEqual(loaded["model"], "legacy-model")
+        finally:
+            os.environ["MAS_CONFIG_PATH"] = self._cfg
+            if old_state is None:
+                os.environ.pop("MAS_STATE_DIR", None)
+            else:
+                os.environ["MAS_STATE_DIR"] = old_state

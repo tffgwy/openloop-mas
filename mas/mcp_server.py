@@ -17,6 +17,7 @@ from mas import __version__
 from mas.config import load_config, save_config
 from mas.doctor import run_doctor, summarize
 from mas.engine import LoopEngine
+from mas.report import build_report, ledger_markdown, replay_trace, render_markdown
 from mas.teams import list_teams, load_team
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -53,6 +54,22 @@ TOOLS: List[Dict[str, Any]] = [
                 },
                 "title": {"type": "string"},
                 "team": {"type": "string"},
+                "parallel": {
+                    "type": "integer",
+                    "description": "并行候选的 worker 数量（>1 时并发产出多个视角）",
+                },
+                "perspective": {
+                    "type": "string",
+                    "description": "候选视角：direct/thorough/concise/structured/example_first/risk_first",
+                },
+                "reviewers": {
+                    "type": "integer",
+                    "description": "独立评审者数量（>1 时启用对抗评审聚合）",
+                },
+                "review_mode": {
+                    "type": "string",
+                    "description": "多评审聚合规则：all / majority / any",
+                },
             },
             "required": ["goal"],
         },
@@ -107,6 +124,33 @@ TOOLS: List[Dict[str, Any]] = [
         },
     ),
     _tool(
+        "mas_report",
+        "Render a Markdown closure report from the run ledger.",
+        {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "as_markdown": {"type": "boolean", "default": True},
+            },
+        },
+    ),
+    _tool(
+        "mas_replay",
+        "Replay a run from the ledger as an ordered trace.",
+        {
+            "type": "object",
+            "properties": {"run_id": {"type": "string"}},
+        },
+    ),
+    _tool(
+        "mas_export",
+        "Export the raw ledger as a Markdown table.",
+        {
+            "type": "object",
+            "properties": {"run_id": {"type": "string"}},
+        },
+    ),
+    _tool(
         "mas_teams",
         "List the bundled team templates.",
         _EMPTY_OBJECT,
@@ -141,10 +185,16 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
 
     if name == "mas_run":
         engine = _engine(config, arguments.get("team"))
+        parallel = arguments.get("parallel")
+        reviewers = arguments.get("reviewers")
         result = engine.run(
             goal=str(arguments.get("goal", "")),
             criteria=arguments.get("criteria") or [],
             title=str(arguments.get("title", "")),
+            parallel=int(parallel) if parallel else None,
+            reviewers=int(reviewers) if reviewers else None,
+            review_mode=str(arguments.get("review_mode")) if arguments.get("review_mode") else None,
+            perspective=str(arguments.get("perspective") or ""),
         )
         return result.to_dict()
 
@@ -188,6 +238,33 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         engine = _engine(config)
         result = engine.resume(str(arguments.get("ticket_id")), str(arguments.get("note", "")))
         return result.to_dict()
+
+    if name == "mas_report":
+        engine = _engine(config)
+        rows = engine.ledger.entries()
+        run_id = arguments.get("run_id")
+        if run_id:
+            rows = [row for row in rows if row.get("run_id") == run_id]
+        report = build_report(rows)
+        if arguments.get("as_markdown", True):
+            return {"markdown": render_markdown(report), "totals": report["totals"]}
+        return report
+
+    if name == "mas_replay":
+        engine = _engine(config)
+        rows = engine.ledger.entries()
+        run_id = arguments.get("run_id")
+        if run_id:
+            rows = [row for row in rows if row.get("run_id") == run_id]
+        return replay_trace(rows)
+
+    if name == "mas_export":
+        engine = _engine(config)
+        rows = engine.ledger.entries()
+        run_id = arguments.get("run_id")
+        if run_id:
+            rows = [row for row in rows if row.get("run_id") == run_id]
+        return {"markdown": ledger_markdown(rows), "entries": len(rows)}
 
     if name == "mas_teams":
         return {"teams": list_teams()}

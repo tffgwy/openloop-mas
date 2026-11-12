@@ -14,7 +14,11 @@ from mas import __version__
 from mas.config import load_config, save_config
 from mas.demo import run_scenarios
 from mas.doctor import run_doctor, summarize
+from mas.bench import format_bench, run_bench
 from mas.engine import LoopEngine
+from mas.report import build_report, ledger_markdown, replay_trace, render_markdown
+from mas.orchestration import CANDIDATE_ANGLES
+from mas.setup import format_verify, run_verify, run_wizard
 from mas.teams import list_teams, load_team
 
 
@@ -39,8 +43,26 @@ def _load_criteria(args: argparse.Namespace) -> List[Any]:
             raise ValueError("criteria 文件必须是 JSON 数组或含 criteria 数组的对象")
         criteria.extend(data)
     for text in getattr(args, "criteria", None) or []:
-        criteria.append(text)
+        criteria.append(_parse_criterion(text))
     return criteria
+
+
+def _parse_criterion(text: Any) -> Any:
+    """Accept either a JSON criterion object or a plain-text criterion.
+
+    ``--criteria '{"id":"c1","check":{...}}'`` is the documented form and
+    must not degrade into a raw description string, otherwise the machine
+    check silently never runs.
+    """
+    if not isinstance(text, str):
+        return text
+    stripped = text.strip()
+    if stripped.startswith("{"):
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"--criteria 不是合法 JSON: {exc}") from exc
+    return text
 
 
 def _engine(config: Dict[str, Any], team: str | None = None) -> LoopEngine:
@@ -48,6 +70,9 @@ def _engine(config: Dict[str, Any], team: str | None = None) -> LoopEngine:
 
 
 def cmd_init(args: argparse.Namespace) -> int:
+    if getattr(args, "wizard", False):
+        run_wizard()
+        return 0
     config = load_config()
     if args.provider:
         config["provider"] = args.provider
@@ -76,6 +101,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         goal=args.goal,
         criteria=criteria,
         title=getattr(args, "title", "") or "",
+        parallel=getattr(args, "parallel", None),
+        reviewers=getattr(args, "reviewers", None),
+        review_mode=getattr(args, "review_mode", None),
+        perspective=getattr(args, "perspective", "") or "",
     )
     if args.json:
         _print(result.to_dict(), True)
@@ -180,6 +209,91 @@ def cmd_resume(args: argparse.Namespace) -> int:
     return 0 if result.closed else 2
 
 
+def cmd_report(args: argparse.Namespace) -> int:
+    """Render a Markdown closure report from the ledger."""
+    config = load_config()
+    engine = _engine(config)
+    rows = engine.ledger.entries()
+    if args.run_id:
+        rows = [row for row in rows if row.get("run_id") == args.run_id]
+    report = build_report(rows)
+    markdown = render_markdown(report)
+    if args.out:
+        path = pathlib.Path(args.out).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(markdown, encoding="utf-8")
+        print(f"报告已写入：{path}")
+        return 0
+    if args.json:
+        _print(report, True)
+        return 0
+    print(markdown)
+    return 0
+
+
+def cmd_replay(args: argparse.Namespace) -> int:
+    """Replay a run from the ledger as an ordered trace."""
+    config = load_config()
+    engine = _engine(config)
+    rows = engine.ledger.entries()
+    if args.run_id:
+        rows = [row for row in rows if row.get("run_id") == args.run_id]
+    if not rows:
+        print("账本为空，没有可回放的运行。", file=sys.stderr)
+        return 1
+    trace = replay_trace(rows)
+    if args.json:
+        _print(trace, True)
+        return 0
+    print(f"回放 {trace['steps_count']} 条账本记录")
+    for step in trace["steps"]:
+        mark = "*" if step.get("closed") else "-"
+        print(
+            f"{mark} #{step.get('seq')} iter={step.get('iteration')} "
+            f"{step.get('role')} {step.get('decision') or ''} {step.get('detail') or ''}".rstrip()
+        )
+    return 0
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    """Export the raw ledger as a Markdown table."""
+    config = load_config()
+    engine = _engine(config)
+    rows = engine.ledger.entries()
+    if args.run_id:
+        rows = [row for row in rows if row.get("run_id") == args.run_id]
+    markdown = ledger_markdown(rows)
+    if args.out:
+        path = pathlib.Path(args.out).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(markdown, encoding="utf-8")
+        print(f"账本已导出：{path}")
+        return 0
+    print(markdown)
+    return 0
+
+
+def cmd_verify(args: argparse.Namespace) -> int:
+    """Run a real closed loop and report whether it closes."""
+    config = load_config()
+    result = run_verify(config)
+    if args.json:
+        _print(result, True)
+    else:
+        print(format_verify(result))
+    return 0 if result["ok"] else 2
+
+
+def cmd_bench(args: argparse.Namespace) -> int:
+    """Benchmark the loop runtime against the offline mock backend."""
+    result = run_bench(repeats=args.repeats, scenarios=args.scenario or None)
+    if args.json:
+        _print(result, True)
+    else:
+        print(format_bench(result))
+    return 0 if result["summary"]["expectation_rate"] >= 1.0 else 1
+
+
 def cmd_teams(args: argparse.Namespace) -> int:
     teams = list_teams()
     if args.json:
@@ -208,6 +322,13 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return serve()
 
 
+def cmd_http(args: argparse.Namespace) -> int:
+    """Serve the MCP tool surface over HTTP + SSE."""
+    from mas.http_server import serve_http
+
+    return serve_http(args.host, args.port, args.verbose)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mas",
@@ -220,6 +341,7 @@ def build_parser() -> argparse.ArgumentParser:
         target.add_argument("--json", action="store_true", help="以 JSON 输出")
 
     init = sub.add_parser("init", help="生成/更新本地配置")
+    init.add_argument("--wizard", action="store_true", help="交互式向导，一步步生成配置")
     init.add_argument("--provider", choices=["mock", "openai_compat", "anthropic"])
     init.add_argument("--model")
     init.add_argument("--base-url")
@@ -236,6 +358,26 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--criteria", action="append", help="验收标准（可重复）")
     run.add_argument("--criteria-file", help="JSON 形式的验收标准文件")
     run.add_argument("--team")
+    run.add_argument(
+        "--parallel",
+        type=int,
+        help="并行候选的 worker 数量（>1 时并发产出多个视角，引擎按机检通过数选优）",
+    )
+    run.add_argument(
+        "--perspective",
+        choices=list(CANDIDATE_ANGLES),
+        help="候选视角锚点（direct/thorough/concise/structured/example_first/risk_first）",
+    )
+    run.add_argument(
+        "--reviewers",
+        type=int,
+        help="独立评审者数量（>1 时启用对抗评审聚合）",
+    )
+    run.add_argument(
+        "--review-mode",
+        choices=["all", "majority", "any"],
+        help="多评审聚合规则：all 全票通过 / majority 过半 / any 任一",
+    )
     add_json(run)
     run.set_defaults(func=cmd_run)
 
@@ -267,6 +409,33 @@ def build_parser() -> argparse.ArgumentParser:
     add_json(resume)
     resume.set_defaults(func=cmd_resume)
 
+    report = sub.add_parser("report", help="生成闭环复盘报告（Markdown）")
+    report.add_argument("--run-id", help="只报告某一次运行")
+    report.add_argument("--out", help="写入指定文件")
+    add_json(report)
+    report.set_defaults(func=cmd_report)
+
+    replay = sub.add_parser("replay", help="回放账本中的运行轨迹")
+    replay.add_argument("--run-id", help="只回放某一次运行")
+    add_json(replay)
+    replay.set_defaults(func=cmd_replay)
+
+    export = sub.add_parser("export", help="把账本导出为 Markdown 表格")
+    export.add_argument("--run-id", help="只导出某一次运行")
+    export.add_argument("--out", help="写入指定文件")
+    add_json(export)
+    export.set_defaults(func=cmd_export)
+
+    verify = sub.add_parser("verify", help="跑一次真实闭环自检")
+    add_json(verify)
+    verify.set_defaults(func=cmd_verify)
+
+    bench = sub.add_parser("bench", help="离线基准测试")
+    bench.add_argument("--repeats", type=int, default=3)
+    bench.add_argument("--scenario", action="append", help="只跑指定场景（可重复）")
+    add_json(bench)
+    bench.set_defaults(func=cmd_bench)
+
     teams = sub.add_parser("teams", help="列出团队模板")
     add_json(teams)
     teams.set_defaults(func=cmd_teams)
@@ -277,6 +446,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     serve = sub.add_parser("serve", help="以 MCP stdio 服务运行")
     serve.set_defaults(func=cmd_serve)
+
+    http = sub.add_parser("http", help="以 HTTP + SSE 运行（远程接入）")
+    http.add_argument("--host", default="127.0.0.1")
+    http.add_argument("--port", type=int, default=8765)
+    http.add_argument("--verbose", action="store_true")
+    http.set_defaults(func=cmd_http)
 
     return parser
 

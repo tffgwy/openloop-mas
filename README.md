@@ -3,6 +3,8 @@
 > 一个 **零依赖、纯标准库** 的多智能体闭环运行时：把「规划 → 执行 → 验证 → 复盘」写成**有验收标准、有退出条件、有过程账本**的工程循环。
 > 一条命令安装，初学者也能跑起来。
 
+**v0.2.0 加入了什么**：并行多候选竞争选优、对抗式交叉评审、多后端故障转移、HTTP/SSE 远程接入、闭环复盘报告与回放、交互式初始化向导、离线基准测试、真实闭环自检。
+
 [![ci](https://github.com/tffgwy/openloop-mas/actions/workflows/ci.yml/badge.svg)](https://github.com/tffgwy/openloop-mas/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
@@ -50,6 +52,10 @@ bash install.sh
 mas demo
 ```
 
+> 配置文件固定在 `~/.mas/config.json`（Windows：`%USERPROFILE%\.mas\config.json`）。
+> 运行账本另存在 `state_dir` 下，两者分开——换状态目录不会把配置弄丢。
+> CI 里想隔离，用环境变量 `MAS_CONFIG_PATH` 指定配置文件、`MAS_STATE_DIR` 指定状态目录。
+
 `mas demo` 会离线跑三个场景，并把真实结果打出来：
 
 ```
@@ -95,6 +101,130 @@ mas run --goal "写一份 v0.1.0 的发布说明" \
 
 没有机检规则的标准会交给模型验证者判定；但**如果模型没给出判定，默认判不通过**（`unjudged`），不会因为一句「看起来可以」就放行。
 `"required": false` 的标准只记录、不阻塞闭合。
+
+---
+
+## 并行多智能体：让候选互相竞争
+
+一个 worker 只会产出**一种**解法。v0.2 让多个 worker 带着**不同视角**并行产出候选，由引擎按机检结果选优：
+
+```bash
+# 单次任务临时加力，不改配置
+mas run --goal "..." --criteria-file criteria.json \
+  --parallel 3 --perspective thorough \
+  --reviewers 3 --review-mode majority
+
+mas init --wizard    # 交互式配置，第 7 题设并行数、第 8 题设评审数、第 11 题设回退链
+```
+
+| 旗标 | 作用 |
+| --- | --- |
+| `--parallel N` | 并行候选数（N>1 时并发产出多个视角，引擎按机检通过数选优） |
+| `--perspective` | 候选视角锚点：`direct` / `thorough` / `concise` / `structured` / `example_first` / `risk_first` |
+| `--reviewers N` | 独立评审者数量（N>1 时启用对抗评审聚合） |
+| `--review-mode` | 多评审聚合规则：`all`（全票通过）/ `majority`（过半）/ `any`（任一） |
+
+或者直接改配置：
+
+```json
+{
+  "orchestration": {
+    "parallel_workers": 3,
+    "reviewers": 3,
+    "review_mode": "all"
+  }
+}
+```
+
+| 配置 | 行为 |
+| --- | --- |
+| `parallel_workers` | 并行产出的候选数。视角依次为 direct / thorough / concise / structured / example_first / risk_first，**不是同一段提示词的 N 次采样**。 |
+| `reviewers` | 独立验证者数量。视角依次为 strict / skeptic / completeness / reader。 |
+| `review_mode` | `all` 一票否决（全通过才算通过）/ `majority` 多数通过 / `any` 任一通过。 |
+
+**选优规则是确定性的**：先看机检通过项数，再看产物体积，最后按下标定序。同一份配置跑两次，选中的一定是同一个候选 —— 这让回放可信。
+
+**机检永远压过模型判断**：有 `check` 的标准由规则决定，只有没有机检的标准才交给评审共识。评审说「通过」不能覆盖规则说「不通过」。
+
+**默认就是 v0.1 的行为**：`parallel_workers: 1`、`reviewers: 1` 时，路径与 v0.1 完全一致。
+
+---
+
+## 多后端故障转移
+
+一个端点返回 502 就让整条循环死掉，那不叫闭环，叫宕机。配置多个后备端点，主端点失败自动切换：
+
+```json
+{
+  "provider": "openai_compat",
+  "model": "gpt-4o-mini",
+  "base_url": "https://api.openai.com/v1",
+  "fallbacks": [
+    { "provider": "anthropic", "model": "claude-sonnet-4-5", "base_url": "https://api.anthropic.com" },
+    { "provider": "openai_compat", "model": "kimi-k2", "base_url": "https://api.moonshot.cn/v1" }
+  ]
+}
+```
+
+每个后备端点都会记录自己实际接了哪一次调用（`provider_used` / `model_used`）。全部失败才会报错。
+
+---
+
+## 观测：复盘报告与回放
+
+```bash
+mas report                 # 生成 Markdown 复盘报告（逐条判定、规划、候选、评审）
+mas report --out r.md      # 写入文件
+mas replay                 # 回放账本里的运行轨迹
+mas export                 # 把原始账本导出成 Markdown 表格
+```
+
+`mas report` 的输出长这样：
+
+```
+# OpenLoop MAS 闭环复盘报告
+
+运行总数：12　已闭环：10　未闭环：2　闭环率：83%
+
+## 运行 `R-912928b0af`
+
+- 规划：拆解目标：输出一份结论
+- 并行候选（3 个）：
+  - ★ `thorough` - 机检通过 3 项
+  -   `concise` - 机检通过 1 项
+- 对抗评审：模式 all，可用评审 3，跳过 0
+- 验收判定：
+  - [PASS] `c1` all required strings present
+```
+
+报告里的每个数字都来自账本，**没有任何一处是编出来的**。
+
+---
+
+## 远程接入：HTTP + SSE
+
+stdio 传输给本地 Agent 用；HTTP/SSE 传输让运行时能被远程客户端、浏览器面板或 CI 任务访问：
+
+```bash
+mas http --host 127.0.0.1 --port 8765
+```
+
+| 路由 | 方法 | 用途 |
+| --- | --- | --- |
+| `/health` | GET | 存活检查 + 版本 |
+| `/tools` | GET | 工具清单 |
+| `/call` | POST | 调用任一工具，JSON 进 JSON 出 |
+| `/events` | GET | SSE 事件流，实时推送账本增长 |
+
+```bash
+curl http://127.0.0.1:8765/health
+curl -X POST http://127.0.0.1:8765/call \
+  -H 'Content-Type: application/json' \
+  -d '{"tool":"mas_run","arguments":{"goal":"写一份发布说明","criteria":[]}}'
+curl -N http://127.0.0.1:8765/events
+```
+
+默认只监听 `127.0.0.1`。**对外暴露前请自行加反向代理与鉴权** —— 本项目不内置认证。
 
 ---
 
@@ -181,6 +311,9 @@ tool_timeout_sec = 300.0
 | `mas_status` | 当前配置、账本规模、未处理工单 |
 | `mas_ledger` | 读闭环账本（可按 `run_id` 过滤） |
 | `mas_tickets` / `mas_ticket_resolve` / `mas_resume` | 人工介入闭环 |
+| `mas_report` | 生成闭环复盘报告 |
+| `mas_replay` | 回放运行轨迹 |
+| `mas_export` | 导出账本为 Markdown |
 | `mas_teams` | 列出团队模板 |
 | `mas_doctor` | 安装自检 |
 | `mas_config` | 读取 / 更新配置 |
@@ -207,16 +340,21 @@ tool_timeout_sec = 300.0
 openloop-mas/
 ├─ mas/                 运行时（纯标准库）
 │  ├─ engine.py         闭环引擎：预算、停滞判定、闭合/升级
+│  ├─ orchestration.py  并行候选、对抗评审聚合、后端故障转移
 │  ├─ providers.py      mock / OpenAI 兼容 / Anthropic 适配
 │  ├─ ledger.py         append-only 账本
 │  ├─ tickets.py        人工升级工单
 │  ├─ mcp_server.py     MCP stdio 服务
+│  ├─ http_server.py    MCP over HTTP + SSE（远程接入）
+│  ├─ report.py         复盘报告、回放轨迹、账本导出
+│  ├─ setup.py          交互式向导 + 真实闭环自检
+│  ├─ bench.py          离线基准测试
 │  ├─ cli.py            命令行
 │  ├─ doctor.py         安装自检
 │  ├─ demo.py           三个离线场景
 │  └─ teams/            团队模板（default / review / content）
 ├─ skills/              Agent Skill 包
-├─ tests/               31 个离线测试
+├─ tests/               76 个离线测试
 ├─ install.ps1          Windows 一键安装
 ├─ install.sh           macOS / Linux 一键安装
 └─ docs/                架构、方法论、MCP、定位说明
@@ -227,16 +365,23 @@ openloop-mas/
 ## 命令速查
 
 ```bash
-mas init        # 生成/更新配置
-mas run         # 跑一个闭环任务
-mas demo        # 离线演示三个闭环场景
-mas status      # 本机状态
-mas ledger      # 闭环账本
-mas tickets     # 人工工单
-mas resume ID   # 带人工意见继续
-mas teams       # 团队模板
-mas doctor      # 安装自检
-mas serve       # 以 MCP stdio 服务运行
+mas init          # 生成/更新配置
+mas init --wizard # 交互式向导，一步步配好
+mas run           # 跑一个闭环任务
+mas demo          # 离线演示三个闭环场景
+mas verify        # 跑一次真实闭环自检
+mas bench         # 离线基准测试
+mas status        # 本机状态
+mas ledger        # 闭环账本
+mas report        # 闭环复盘报告（Markdown）
+mas replay        # 回放运行轨迹
+mas export        # 导出账本为 Markdown 表格
+mas tickets       # 人工工单
+mas resume ID     # 带人工意见继续
+mas teams         # 团队模板
+mas doctor        # 安装自检
+mas serve         # 以 MCP stdio 服务运行
+mas http          # 以 HTTP + SSE 运行（远程接入）
 ```
 
 `mas run` 退出码：`0` = 闭合，`2` = 未闭合（升级或预算耗尽）。CI 里可以直接当门禁用。
@@ -246,11 +391,13 @@ mas serve       # 以 MCP stdio 服务运行
 ## 开发与测试
 
 ```bash
-python -m unittest discover -s tests -v   # 31 个离线测试，不需要网络
+python -m unittest discover -s tests -v   # 76 个离线测试，不需要网络
 python -m mas demo                        # 三个闭环场景
+python -m mas bench                       # 离线基准测试
+python -m mas verify                      # 真实闭环自检
 ```
 
-测试覆盖：机检规则、闭合/停滞/预算三条终止路径、规则判定压过模型判定、未判定标准不得通过、MCP 握手与工具调用、配置合并与环境变量覆盖、SSE 流折叠、思维链清洗、遗留代码页下的 UTF-8 输出安全。
+测试覆盖：机检规则、闭合/停滞/预算三条终止路径、规则判定压过模型判定、未判定标准不得通过、MCP 握手与工具调用、配置合并与环境变量覆盖、SSE 流折叠、思维链清洗、遗留代码页下的 UTF-8 输出安全、并行候选选优、对抗评审聚合（all/majority/any）、后端故障转移、HTTP/SSE 真实请求、复盘报告与回放、向导与自检。
 
 ---
 
@@ -264,6 +411,7 @@ python -m mas demo                        # 三个闭环场景
 | [docs/mcp.md](docs/mcp.md) | MCP 接入、握手、9 个工具、协议细节与排障 |
 | [docs/positioning.md](docs/positioning.md) | 定位说明：与「私有化代理团队」类项目的关系与传播口径 |
 | [docs/acceptance-report.md](docs/acceptance-report.md) | 安装与验收报告：本机实测证据、CI 结果、已知限制 |
+| [README.en.md](README.en.md) | English version of this README |
 
 ---
 

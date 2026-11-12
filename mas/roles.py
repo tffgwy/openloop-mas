@@ -64,10 +64,21 @@ class Roles:
             base += "\n请用中文输出（JSON 字段的键名保持英文）。"
         return base
 
-    def prompt(self, role: str, state: Dict[str, Any]) -> str:
+    def prompt(self, role: str, state: Dict[str, Any], extra: str = "") -> str:
+        """Build the prompt for a role.
+
+        ``extra`` is an optional additional instruction appended before the
+        task state. It is how the orchestration layer diversifies parallel
+        workers ("take the concise angle") and how adversarial reviewers get
+        their persona ("attack the artifact as a skeptic").
+        """
         blocks = [ROLE_INSTRUCTIONS.get(role, "Answer in the requested format.")]
         if self.language == "zh":
             blocks.append("按下面 JSON 状态里的信息完成任务。")
+        if extra:
+            blocks.append("")
+            blocks.append("## EXTRA INSTRUCTION")
+            blocks.append(str(extra))
         blocks.append("")
         blocks.append("## TASK STATE")
         blocks.append("<<MAS_STATE>>")

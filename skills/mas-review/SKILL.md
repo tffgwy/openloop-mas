@@ -32,6 +32,22 @@ mas tickets
 mas resume <ticket_id> --note "只看 P0 问题，其余先放着"
 ```
 
+
+## v0.2 增强
+
+- **并行候选**：被审对象可以并发产出多版（`--parallel 3 --perspective thorough`），
+  引擎按机检通过数确定性选优，避免"审到哪版算哪版"。
+- **多评审人格投票**：`strict` / `skeptic` / `completeness` / `reader`，
+  `--review-mode majority` 可降低单一评审的误判。
+- **证据留痕**：审查结论写进账本，可用 `mas report` / `mas replay <run_id>` 回看每一步，
+  交接与复盘不靠口头复述。
+
+```bash
+mas run --team review --goal "审查这份设计方案" --criteria-file criteria.json \
+  --parallel 2 --reviewers 3 --review-mode majority
+mas replay <run_id>
+```
+
 ## 退出码
 
 `mas run` 的退出码：`0` = 闭合（全部标准通过），`2` = 未闭合（升级或预算耗尽）。

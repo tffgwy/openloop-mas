@@ -31,6 +31,17 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "max_tokens": 200000,
     },
     "stagnation_limit": 3,
+    # v0.2 orchestration: how many workers race in parallel, how many
+    # independent reviewers verify the artifact and how their verdicts are
+    # aggregated. The defaults reproduce v0.1 behaviour exactly.
+    "orchestration": {
+        "parallel_workers": 1,
+        "reviewers": 1,
+        "review_mode": "all",
+    },
+    # v0.2 failover: additional provider backends tried in order when the
+    # primary one fails. Each entry is a full provider spec.
+    "fallbacks": [],
 }
 
 
@@ -53,6 +64,26 @@ def config_path(config: Dict[str, Any] | None = None) -> pathlib.Path:
     return state_dir(config) / CONFIG_FILENAME
 
 
+def user_config_path() -> pathlib.Path:
+    """Where the *user's* configuration lives.
+
+    The configuration file is intentionally NOT stored next to the run
+    ledger. The ledger follows ``state_dir`` (which the user may point at a
+    dedicated drive or a per-project directory), while the configuration
+    describes how the tool itself behaves and must always be found at the
+    same well-known place. Storing it inside ``state_dir`` meant that
+    picking a custom state directory silently made every later run fall
+    back to the defaults.
+
+    ``MAS_CONFIG_PATH`` overrides the location explicitly (used by CI and
+    by the test suite to stay isolated).
+    """
+    explicit = os.environ.get("MAS_CONFIG_PATH")
+    if explicit:
+        return pathlib.Path(os.path.expanduser(os.path.expandvars(explicit))).resolve()
+    return pathlib.Path(os.path.expanduser(DEFAULT_STATE_DIR)).resolve() / CONFIG_FILENAME
+
+
 def load_config(path: str | os.PathLike | None = None) -> Dict[str, Any]:
     """Load configuration merged on top of the defaults.
     Environment variables override file values so CI and one-off runs never
@@ -64,7 +95,15 @@ def load_config(path: str | os.PathLike | None = None) -> Dict[str, Any]:
     env_state = os.environ.get("MAS_STATE_DIR")
     if env_state:
         config["state_dir"] = env_state
-    target = pathlib.Path(path) if path else config_path(config)
+    target = pathlib.Path(path) if path else user_config_path()
+    if not target.exists():
+        # v0.1 kept the configuration next to the state directory. The
+        # installers still do that when they are pointed at a custom
+        # directory, so keep reading that location when the well-known one
+        # does not exist.
+        legacy = config_path(config)
+        if legacy.exists() and legacy != target:
+            target = legacy
     if target.exists():
         try:
             loaded = json.loads(target.read_text(encoding="utf-8"))
@@ -89,7 +128,7 @@ def load_config(path: str | os.PathLike | None = None) -> Dict[str, Any]:
 
 
 def save_config(config: Dict[str, Any], path: str | os.PathLike | None = None) -> pathlib.Path:
-    target = pathlib.Path(path) if path else config_path(config)
+    target = pathlib.Path(path) if path else user_config_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(config, ensure_ascii=False, indent=2, sort_keys=True)
     target.write_text(payload + "\n", encoding="utf-8")

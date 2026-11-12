@@ -109,6 +109,8 @@ if (-not (Test-Path $configPath)) {
         language       = "zh"
         budget         = @{ max_iterations = 8; deadline_sec = 900; max_tokens = 200000 }
         stagnation_limit = 3
+        orchestration  = @{ parallel_workers = 1; reviewers = 1; review_mode = "all" }
+        fallbacks      = @()
     } | ConvertTo-Json -Depth 5
     Write-Utf8NoBom $configPath $config
     Write-Ok "config created (offline mock provider)"
@@ -227,22 +229,35 @@ if (-not $SkipDemo) {
     Write-Step "Running the offline demo (no API key needed)"
     & $pythonExe -m mas demo
     $demoExit = $LASTEXITCODE
+
+    Write-Step "Running the offline benchmark"
+    & $pythonExe -m mas bench --repeats 1
+    $benchExit = $LASTEXITCODE
+
+    Write-Step "Running the closure self-check"
+    & $pythonExe -m mas verify
+    $verifyExit = $LASTEXITCODE
 } else {
     $demoExit = 0
+    $benchExit = 0
+    $verifyExit = 0
 }
 
 Write-Host ""
-if ($doctorExit -eq 0 -and $demoExit -eq 0) {
+if ($doctorExit -eq 0 -and $demoExit -eq 0 -and $benchExit -eq 0 -and $verifyExit -eq 0) {
     Write-Host "Installation finished." -ForegroundColor Green
 } else {
-    Write-Host "Installation finished with warnings (doctor=$doctorExit demo=$demoExit)." -ForegroundColor Yellow
+    Write-Host "Installation finished with warnings (doctor=$doctorExit demo=$demoExit bench=$benchExit verify=$verifyExit)." -ForegroundColor Yellow
 }
 Write-Host ""
 Write-Host "Next steps:"
 Write-Host "  1) open a new terminal, then run:  mas demo"
-Write-Host "  2) point it at a real model:"
+Write-Host "  2) configure interactively:  mas init --wizard"
+Write-Host "  3) point it at a real model:"
 Write-Host "       mas init --provider openai_compat --model <model> --base-url <endpoint>"
 Write-Host "       set MAS_API_KEY=<your key>"
-Write-Host "  3) run a task:  mas run --goal ""..."" --criteria ""..."""
+Write-Host "  4) run a task:  mas run --goal ""..."" --criteria ""..."""
+Write-Host "  5) review the result:  mas report    (or: mas replay)"
+Write-Host "  6) serve it remotely:  mas http --port 8765"
 Write-Host ""
 exit 0

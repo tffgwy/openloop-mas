@@ -9,6 +9,7 @@ venv/
 .mas/
 work/
 outputs/
+site/
 *.bak
 *.bak-*
 .DS_Store

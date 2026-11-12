@@ -32,6 +32,38 @@ JSON
 mas run --goal "产出首稿" --criteria-file criteria.json || exit 1
 ```
 
+
+## v0.2 接入增强
+
+### 并行与回退配置
+
+在 `~/.mas/config.json`（或项目 `mas/config.json`）里：
+
+```json
+"orchestration": {"parallel_workers": 3, "reviewers": 3, "review_mode": "majority"},
+"fallbacks": [
+  {"provider": "openai_compat", "base_url": "https://primary/v1", "model": "m1"},
+  {"provider": "openai_compat", "base_url": "https://backup/v1", "model": "m2"}
+]
+```
+
+`fallbacks` 顺序即优先级，主 provider 失败或超时自动切换，不必在业务层写重试。
+
+### CI 门禁三件套
+
+```yaml
+- run: python -m mas verify          # 真跑一遍闭环，结果即门禁
+- run: python -m mas bench --repeats 1  # 离线基准，看闭环率与 token
+- run: python -m mas run --goal "..." --criteria-file criteria.json
+```
+
+三者都不需要密钥即可在 PR 上跑。退出码 `0` = 通过，`2` = 未闭合。
+
+### 远程接入
+
+需要给外部系统一个 HTTP 入口时：`mas http --port 8765`，
+提供 `/health`、`/tools`、`/call`、`/events`（SSE 账本流），可挂在反向代理后面。
+
 ## 接入 MCP（给 IDE / 编码助手用）
 
 在 `~/.codex/config.toml` 或 `~/.claude.json` 里注册：

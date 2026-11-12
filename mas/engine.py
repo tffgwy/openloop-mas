@@ -31,7 +31,17 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from mas.ledger import Ledger
-from mas.providers import Provider, ProviderError, build_provider
+from mas.orchestration import (
+    ParallelFailure,
+    ProviderChain,
+    aggregate_reviews,
+    angle_instruction,
+    persona_instruction,
+    pick_angles,
+    pick_personas,
+    run_parallel,
+)
+from mas.providers import Provider, ProviderError, build_provider, build_provider_chain
 from mas.roles import Roles
 from mas.tickets import TicketStore
 from mas.util import now_iso, parse_json_loose, sha256_text, short_sha, strip_reasoning
@@ -187,12 +197,25 @@ class LoopEngine:
         clock: Optional[Callable[[], float]] = None,
     ) -> None:
         self.config = config
-        self.provider = provider or build_provider(config)
+        # A single provider stays a plain provider; a configured fallback
+        # list turns it into a chain that survives one backend failing.
+        self.provider = provider or build_provider_chain(config)
         self.team = team or {}
         self.roles = Roles(self.team)
         self.ledger = ledger or Ledger(self.ledger_path(config))
         self.tickets = tickets or TicketStore(self.tickets_dir(config))
         self.clock = clock or time.time
+
+        orchestration = dict(self.config.get("orchestration") or {})
+        # How many workers produce candidates in parallel. 1 keeps the
+        # v0.1 single-worker behaviour exactly.
+        self.parallel_workers = max(1, int(orchestration.get("parallel_workers", 1)))
+        # How many independent verifiers review the artifact. 1 keeps v0.1.
+        self.reviewers = max(1, int(orchestration.get("reviewers", 1)))
+        # all | majority | any
+        self.review_mode = str(orchestration.get("review_mode", "all"))
+        # Optional anchor for the candidate-angle rotation.
+        self.perspective = str(orchestration.get("perspective", "") or "")
 
     # ------------------------------------------------------------------ paths
     @staticmethod
@@ -217,7 +240,20 @@ class LoopEngine:
         title: str = "",
         run_id: Optional[str] = None,
         human_note: str = "",
+        parallel: Optional[int] = None,
+        reviewers: Optional[int] = None,
+        review_mode: Optional[str] = None,
+        perspective: str = "",
     ) -> RunResult:
+        # Per-run overrides win over the configured defaults, so the CLI can
+        # ask for a heavier setup for one task without touching the config.
+        if parallel is not None:
+            self.parallel_workers = max(1, int(parallel))
+        if reviewers is not None:
+            self.reviewers = max(1, int(reviewers))
+        if review_mode:
+            self.review_mode = str(review_mode)
+        self.perspective = str(perspective or "")
         run_id = run_id or "R-" + uuid.uuid4().hex[:10]
         task_id = f"{run_id}-1"
         crits = [Criterion.from_raw(raw, index) for index, raw in enumerate(criteria or [])]
@@ -274,17 +310,20 @@ class LoopEngine:
                     plan_payload = self._call_json("planner", state)
                     self._log(run_id, task_id, attempt, "planner", {"plan": plan_payload})
 
-                work = self._call_text("worker", state)
-                artifact = strip_reasoning(work["text"])
-                tokens += int(work["usage"].get("total_tokens", 0))
+                candidates = self._produce_candidates(state)
+                artifact = candidates["artifact"]
+                tokens += candidates["tokens"]
 
                 checks = [evaluate_check(c, artifact) for c in crits]
                 verify_state = dict(state)
                 verify_state["candidate_artifact"] = artifact
                 verify_state["checks"] = checks
-                verdict = self._call_json("verifier", verify_state)
-                scores = self._merge_scores(crits, checks, verdict)
-                tokens += int(verdict.get("_usage", {}).get("total_tokens", 0))
+                verdict = self._review(verify_state)
+                tokens += verdict.get("_usage", {}).get("total_tokens", 0)
+                if self.reviewers > 1:
+                    scores = self._merge_review_scores(crits, checks, verdict)
+                else:
+                    scores = self._merge_scores(crits, checks, verdict)
                 passed = bool(scores) and all(bool(s["pass"]) for s in scores)
 
                 reflection: Dict[str, Any] = {}
@@ -294,6 +333,10 @@ class LoopEngine:
                     reflect_state = dict(state)
                     reflect_state["issues"] = issues
                     reflection = self._call_json("reflector", reflect_state)
+                else:
+                    # The previous iteration's issues are resolved. Keeping
+                    # them would make a closed run look like it still failed.
+                    issues = []
 
                 art_sha = sha256_text(artifact)
                 stagnant = stagnant + 1 if art_sha == last_sha else 0
@@ -376,6 +419,197 @@ class LoopEngine:
             error=error,
         )
 
+    # ------------------------------------------------- parallel candidates
+    def _produce_candidates(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """Produce the artifact for this iteration.
+
+        With ``parallel_workers == 1`` this is exactly the v0.1 path.
+        With more workers, several candidates are produced in parallel with
+        different angles, each is machine-checked, and the best one wins:
+
+        1. a candidate that passes every machine check wins outright;
+        2. otherwise the candidate that passes the most checks wins;
+        3. ties are broken by the longest artifact, then by the lowest index.
+
+        The winner is deterministic, so a replay of the same run picks the
+        same artifact.
+        """
+        count = self.parallel_workers
+        if count <= 1:
+            work = self._call_text("worker", state)
+            artifact = strip_reasoning(work["text"])
+            return {
+                "artifact": artifact,
+                "tokens": int(work["usage"].get("total_tokens", 0)),
+                "candidates": [{"angle": "direct", "selected": True, "passed": None}],
+                "errors": [],
+            }
+
+        angles = pick_angles(count, self.perspective)
+        results = run_parallel(
+            [self._make_candidate_task(state, angle) for angle in angles]
+        )
+        crits = [Criterion.from_raw(raw, i) for i, raw in enumerate(state.get("criteria") or [])]
+        best_index = -1
+        best_rank = (-1, -1, -1)
+        errors: List[str] = []
+        tokens = 0
+        summary: List[Dict[str, Any]] = []
+        for index, item in enumerate(results):
+            if isinstance(item, ParallelFailure):
+                errors.append(f"{angles[index]}: {item.message}")
+                summary.append({"angle": angles[index], "selected": False, "error": item.message})
+                continue
+            artifact = item["text"]
+            tokens += int(item["usage"].get("total_tokens", 0))
+            passed_count = 0
+            for crit in crits:
+                outcome = evaluate_check(crit, artifact)
+                if outcome.get("pass"):
+                    passed_count += 1
+            summary.append(
+                {
+                    "angle": angles[index],
+                    "selected": False,
+                    "passed": passed_count,
+                    "chars": len(artifact),
+                    "sha": short_sha(artifact),
+                }
+            )
+            rank = (passed_count, len(artifact), -index)
+            if rank > best_rank:
+                best_rank = rank
+                best_index = index
+
+        if best_index < 0:
+            # Every candidate failed - keep the first error so the caller
+            # reports a provider problem rather than an empty artifact.
+            raise ProviderError(
+                "all parallel candidates failed: " + ("; ".join(errors) or "no candidates produced")
+            )
+
+        summary[best_index]["selected"] = True
+        self._log(
+            state["run_id"], state["task_id"], state["attempt"], "candidates",
+            {"count": count, "selected_angle": angles[best_index], "candidates": summary},
+        )
+        return {
+            "artifact": results[best_index]["text"],
+            "tokens": tokens,
+            "candidates": summary,
+            "errors": errors,
+        }
+
+    def _make_candidate_task(self, state: Dict[str, Any], angle: str) -> Any:
+        def task(index: int) -> Dict[str, Any]:
+            worker_state = dict(state)
+            worker_state["angle"] = angle
+            worker_state["angle_instruction"] = angle_instruction(angle)
+            return self._call_text("worker", worker_state, extra=angle_instruction(angle))
+
+        return task
+
+    # ------------------------------------------------------ adversarial review
+    def _review(self, verify_state: Dict[str, Any]) -> Dict[str, Any]:
+        """Run the verifier (or several verifiers) over the candidate."""
+        if self.reviewers <= 1:
+            return self._call_json("verifier", verify_state)
+
+        personas = pick_personas(self.reviewers)
+        results = run_parallel(
+            [self._make_reviewer_task(verify_state, persona) for persona in personas]
+        )
+        reviews: List[Dict[str, Any]] = []
+        errors: List[str] = []
+        tokens = 0
+        for index, item in enumerate(results):
+            if isinstance(item, ParallelFailure):
+                errors.append(f"{personas[index]}: {item.message}")
+                continue
+            reviews.append(item["verdict"])
+            tokens += int(item["verdict"].get("_usage", {}).get("total_tokens", 0))
+        aggregate = aggregate_reviews(reviews, mode=self.review_mode)
+        aggregate["_usage"] = {"total_tokens": tokens}
+        aggregate["errors"] = errors
+        aggregate["personas"] = personas
+        self._log(
+            verify_state["run_id"], verify_state["task_id"], verify_state["attempt"],
+            "review",
+            {
+                "mode": self.review_mode,
+                "personas": personas,
+                "usable": aggregate.get("usable"),
+                "skipped": aggregate.get("skipped"),
+                "errors": errors,
+                "scores": aggregate.get("scores"),
+            },
+        )
+        return aggregate
+
+    def _make_reviewer_task(self, verify_state: Dict[str, Any], persona: str) -> Any:
+        def task(index: int) -> Dict[str, Any]:
+            state = dict(verify_state)
+            state["persona"] = persona
+            state["persona_instruction"] = persona_instruction(persona)
+            verdict = self._call_json("verifier", state, extra=persona_instruction(persona))
+            return {"verdict": verdict}
+
+        return task
+
+    @staticmethod
+    def _merge_review_scores(
+        crits: List[Criterion],
+        checks: List[Dict[str, Any]],
+        verdict: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Merge machine checks with the aggregated adversarial review.
+
+        Machine checks still win: a criterion with a rule is decided by the
+        rule. Only criteria without a machine check are decided by the
+        reviewer consensus.
+        """
+        review_scores = {
+            str(item["id"]): item for item in (verdict.get("scores") or []) if item.get("id")
+        }
+        merged: List[Dict[str, Any]] = []
+        for criterion, check in zip(crits, checks):
+            if not criterion.required:
+                merged.append(
+                    {"id": criterion.id, "pass": True, "note": "optional criterion", "source": "skipped"}
+                )
+                continue
+            if check.get("pass") is not None:
+                merged.append(
+                    {
+                        "id": criterion.id,
+                        "pass": bool(check["pass"]),
+                        "note": str(check.get("note", "")),
+                        "source": "rule",
+                    }
+                )
+                continue
+            review = review_scores.get(criterion.id)
+            if review is None:
+                merged.append(
+                    {
+                        "id": criterion.id,
+                        "pass": False,
+                        "note": "unjudged: 评审没有给出该标准的判定",
+                        "source": "model-missing",
+                    }
+                )
+            else:
+                merged.append(
+                    {
+                        "id": criterion.id,
+                        "pass": bool(review.get("pass")),
+                        "note": str(review.get("note", "")),
+                        "source": review.get("source", "model"),
+                        "votes": review.get("votes", ""),
+                    }
+                )
+        return merged
+
     # --------------------------------------------------------------- helpers
     def _log(self, run_id: str, task_id: str, iteration: int, role: str,
              payload: Dict[str, Any]) -> None:
@@ -386,23 +620,24 @@ class LoopEngine:
             "role": role,
             "provider": self.provider.name,
             "model": self.provider.model,
+            "provider_chain": getattr(self.provider, "describe", lambda: {})().get("chain", []),
             "ts": now_iso(),
         }
         entry.update(payload)
         self.ledger.append(entry)
 
-    def _call_text(self, role: str, state: Dict[str, Any]) -> Dict[str, Any]:
+    def _call_text(self, role: str, state: Dict[str, Any], extra: str = "") -> Dict[str, Any]:
         return self.provider.complete(
             system=self.roles.system(role),
-            prompt=self.roles.prompt(role, state),
+            prompt=self.roles.prompt(role, state, extra=extra),
             role=role,
             expect_json=False,
         )
 
-    def _call_json(self, role: str, state: Dict[str, Any]) -> Dict[str, Any]:
+    def _call_json(self, role: str, state: Dict[str, Any], extra: str = "") -> Dict[str, Any]:
         response = self.provider.complete(
             system=self.roles.system(role),
-            prompt=self.roles.prompt(role, state),
+            prompt=self.roles.prompt(role, state, extra=extra),
             role=role,
             expect_json=True,
         )

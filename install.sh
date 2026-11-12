@@ -51,7 +51,9 @@ if [ ! -f "$INSTALL_DIR/config.json" ]; then
   "team": "default",
   "language": "zh",
   "budget": { "max_iterations": 8, "deadline_sec": 900, "max_tokens": 200000 },
-  "stagnation_limit": 3
+  "stagnation_limit": 3,
+"orchestration": {"parallel_workers": 1, "reviewers": 1, "review_mode": "all"},
+"fallbacks": []
 }
 JSON
   ok "config created (offline mock provider)"
@@ -146,9 +148,18 @@ export PYTHONPATH="$APP_DIR"
 step "Running the offline demo (no API key needed)"
 "$PYTHON_BIN" -m mas demo || warn "demo reported issues"
 
+step "Running the offline benchmark"
+"$PYTHON_BIN" -m mas bench --repeats 1 || warn "bench reported issues"
+
+step "Running the closure self-check"
+"$PYTHON_BIN" -m mas verify || warn "verify reported issues"
+
 printf '\nInstallation finished.\n\nNext steps:\n'
 printf '  1) open a new terminal, then run:  mas demo\n'
-printf '  2) point it at a real model:\n'
+printf '  2) configure interactively:  mas init --wizard\n'
+printf '  3) point it at a real model:\n'
 printf '       mas init --provider openai_compat --model <model> --base-url <endpoint>\n'
 printf '       export MAS_API_KEY=<your key>\n'
-printf '  3) run a task:  mas run --goal "..." --criteria "..."\n\n'
+printf '  4) run a task:  mas run --goal "..." --criteria "..."\n'
+printf '  5) review the result:  mas report    (or: mas replay)\n'
+printf '  6) serve it remotely:  mas http --port 8765\n\n'

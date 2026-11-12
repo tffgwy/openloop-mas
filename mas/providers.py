@@ -24,6 +24,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict, List
 
+from mas.orchestration import ProviderChain
 from mas.util import parse_json_loose
 
 
@@ -374,6 +375,27 @@ class MockProvider(Provider):
     @staticmethod
     def _draft(goal: str, criteria: List[Dict[str, Any]], attempt: int,
                issues: List[Any]) -> str:
+        # A criterion that demands a JSON document cannot be satisfied by a
+        # Markdown draft, so the simulator emits JSON for that case. Without
+        # this the loop would spin forever against a rule the artifact shape
+        # can never meet.
+        json_keys: List[str] = []
+        for criterion in criteria:
+            check = criterion.get("check") or {}
+            if str(check.get("type") or "").lower() == "json_keys":
+                arg = check.get("arg")
+                keys = arg if isinstance(arg, list) else [arg]
+                for key in keys:
+                    if key is not None and str(key) not in json_keys:
+                        json_keys.append(str(key))
+        if json_keys:
+            payload: Dict[str, Any] = {}
+            for key in json_keys:
+                payload[key] = f"{goal} 的 {key}"
+            if "verdict" in payload and not isinstance(payload.get("verdict"), bool):
+                payload["verdict"] = "pass"
+            return json.dumps(payload, ensure_ascii=False, indent=2)
+
         lines: List[str] = [f"# 交付物：{goal}", ""]
         for criterion in criteria:
             check = criterion.get("check") or {}
@@ -410,6 +432,52 @@ class MockProvider(Provider):
             for issue in issues:
                 lines.append(f"- 已处理：{issue}")
         return "\n".join(lines)
+
+
+def build_provider_chain(config: Dict[str, Any]) -> ProviderChain:
+    """Build the primary provider plus its failover backends.
+
+    The configuration may declare ``fallbacks``: a list of provider specs
+    shaped exactly like the top level provider config::
+
+        {
+          "provider": "openai_compat",
+          "model": "gpt-4o-mini",
+          "base_url": "https://api.openai.com/v1",
+          "fallbacks": [
+            {"provider": "anthropic", "model": "claude-sonnet-4-5",
+             "base_url": "https://api.anthropic.com"},
+            {"provider": "openai_compat", "model": "kimi-k2",
+             "base_url": "https://api.moonshot.cn/v1"}
+          ]
+        }
+
+    The primary provider stays first, so a single-provider setup behaves
+    exactly like v0.1. When the primary fails - 502, timeout, rate limit -
+    the next backend is tried. A loop that dies because one endpoint
+    returned an error is not a closed loop, it is an outage.
+    """
+    providers: List[Provider] = []
+    primary = build_provider(config)
+    providers.append(primary)
+
+    for spec in config.get("fallbacks") or []:
+        if not isinstance(spec, dict):
+            continue
+        merged = dict(config)
+        # A fallback inherits the shared connection settings but not the
+        # primary model or endpoint.
+        for key in ("provider", "model", "base_url", "api_key", "api_key_env"):
+            if key in spec:
+                merged[key] = spec[key]
+        merged.pop("fallbacks", None)
+        try:
+            providers.append(build_provider(merged))
+        except ProviderError:
+            # A malformed fallback must not break the primary setup.
+            continue
+
+    return ProviderChain(providers)
 
 
 def build_provider(config: Dict[str, Any]) -> Provider:
