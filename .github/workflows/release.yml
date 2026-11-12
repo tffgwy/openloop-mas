@@ -28,14 +28,27 @@ jobs:
         run: |
           python -m pip install twine
           python -m twine check dist/*
-      - name: Publish to PyPI
-        env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
-        run: python -m twine upload dist/*
       - name: Create the GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           generate_release_notes: true
           files: dist/*
+      - name: Publish to PyPI
+        # Only run when the repository secret exists. Without a token the
+        # upload fails with 403, and a failing publish step would also
+        # hide the GitHub release that was just created.
+        if: ${{ secrets.PYPI_API_TOKEN != '' }}
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: python -m twine upload dist/*
+      - name: Report the PyPI publish status
+        if: always()
+        run: |
+          if [ -z "${{ secrets.PYPI_API_TOKEN }}" ]; then
+            echo "::warning::PYPI_API_TOKEN is not configured - the GitHub release was created, but PyPI was not published."
+            echo "::warning::Add the repository secret PYPI_API_TOKEN and re-run this workflow to publish."
+          else
+            echo "Published to PyPI."
+          fi
