@@ -245,6 +245,33 @@ control plane. With authentication on, CORS is pinned to
 `http://127.0.0.1` instead of `*`, so no arbitrary web page can call it
 cross-site.
 
+
+### Keeping it running (service + TLS reverse proxy)
+
+For long-term access from a phone or another device, run the service bound to loopback and expose only a TLS entry point:
+
+```bash
+# 1. keep the token in a file, not in version control or the start script
+python -c "import secrets,pathlib;pathlib.Path.home().joinpath('.mas/http_token.txt').write_text(secrets.token_urlsafe(32))"
+
+# 2. run the service persistently (systemd / Windows Startup folder / launchd)
+export MAS_HTTP_TOKEN=$(cat ~/.mas/http_token.txt)
+mas http --host 127.0.0.1 --port 8768
+
+# 3. publish only the TLS entry point (tailnet-only by default)
+tailscale serve --bg --https=8768 http://127.0.0.1:8768
+```
+
+Then hit `https://<your-host>:<port>/tools` with an `Authorization: Bearer <token>` header.
+
+Why this shape:
+
+- Binding `127.0.0.1` and terminating TLS at the proxy keeps the service off the LAN, unlike `--host 0.0.0.0`.
+- The token lives **outside** the start script; if the token file is missing the script exits instead of degrading to unauthenticated.
+- `tailscale serve` is **tailnet-only** by default; `funnel` publishes to the public internet, which widens exposure and deserves a separate review.
+- To stop: `tailscale serve --https=8768 off`.
+
+
 ---
 
 ## Four stop-loss mechanisms

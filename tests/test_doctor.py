@@ -6,6 +6,19 @@ configuration file was *absent*, because the legacy-fallback branch is the
 only place that calls the helper -- which is exactly the situation of a
 clean first-time install. These tests pin that branch down.
 """
+# The session-wide test isolation must be active before this module is
+# imported: importing a test module is what pulls in the code under test.
+# ``unittest discover -s tests`` loads modules as top-level ``test_x`` and
+# therefore never executes ``tests/__init__.py``, so the isolation cannot
+# rely on the package hook alone - every test module imports it directly.
+try:  # pragma: no cover - the two import styles cover two runners
+    from ._isolation import ISOLATION_ACTIVE  # noqa: F401
+except ImportError:  # loaded as a top-level module (unittest -s tests)
+    import os
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from _isolation import ISOLATION_ACTIVE  # noqa: F401
+
 
 import os
 import pathlib

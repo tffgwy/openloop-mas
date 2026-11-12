@@ -1,4 +1,17 @@
 """Config and provider tests."""
+# The session-wide test isolation must be active before this module is
+# imported: importing a test module is what pulls in the code under test.
+# ``unittest discover -s tests`` loads modules as top-level ``test_x`` and
+# therefore never executes ``tests/__init__.py``, so the isolation cannot
+# rely on the package hook alone - every test module imports it directly.
+try:  # pragma: no cover - the two import styles cover two runners
+    from ._isolation import ISOLATION_ACTIVE  # noqa: F401
+except ImportError:  # loaded as a top-level module (unittest -s tests)
+    import os
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from _isolation import ISOLATION_ACTIVE  # noqa: F401
+
 
 import io
 import json
@@ -37,6 +50,10 @@ class TestConfig(unittest.TestCase):
             self.assertEqual(loaded["budget"]["max_iterations"], DEFAULT_CONFIG["budget"]["max_iterations"])
 
     def test_env_overrides(self):
+        saved = {
+            name: os.environ.get(name)
+            for name in ("MAS_PROVIDER", "MAS_MODEL")
+        }
         os.environ["MAS_PROVIDER"] = "openai_compat"
         os.environ["MAS_MODEL"] = "kimi-k2"
         try:
@@ -44,17 +61,28 @@ class TestConfig(unittest.TestCase):
             self.assertEqual(loaded["provider"], "openai_compat")
             self.assertEqual(loaded["model"], "kimi-k2")
         finally:
-            os.environ.pop("MAS_PROVIDER")
-            os.environ.pop("MAS_MODEL")
+            # Restore, never pop: popping would silently remove the
+            # session-wide isolation that the rest of the suite relies on.
+            for name, value in saved.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
 
     def test_partial_file_keeps_defaults(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "config.json")
             with open(path, "w", encoding="utf-8") as handle:
                 json.dump({"provider": "anthropic"}, handle)
-            loaded = load_config(path)
-            self.assertEqual(loaded["provider"], "anthropic")
-            self.assertEqual(loaded["budget"]["max_iterations"], DEFAULT_CONFIG["budget"]["max_iterations"])
+            # The persisted view is what the file actually says: a partial
+            # file must not lose the defaults it does not mention.
+            persisted = load_persisted_config(path)
+            self.assertEqual(persisted["provider"], "anthropic")
+            self.assertEqual(persisted["budget"]["max_iterations"], DEFAULT_CONFIG["budget"]["max_iterations"])
+            # The effective view additionally applies the environment, which
+            # by documented design wins over the file.
+            effective = load_config(path)
+            self.assertEqual(effective["provider"], os.environ.get("MAS_PROVIDER") or "anthropic")
 
 
 class TestProviders(unittest.TestCase):
@@ -322,6 +350,10 @@ class ConfigPersistenceHygieneTest(unittest.TestCase):
         isolated = os.path.join(self._home, "isolated.json")
         with open(isolated, "w", encoding="utf-8") as handle:
             json.dump({"provider": "mock", "model": "file-model"}, handle)
+        saved = {
+            name: os.environ.get(name)
+            for name in ("MAS_PROVIDER", "MAS_MODEL")
+        }
         os.environ["MAS_PROVIDER"] = "openai_compat"
         os.environ["MAS_MODEL"] = "some-model"
         try:
@@ -332,8 +364,11 @@ class ConfigPersistenceHygieneTest(unittest.TestCase):
             self.assertEqual(effective["provider"], "openai_compat")
             self.assertEqual(effective["model"], "some-model")
         finally:
-            os.environ.pop("MAS_PROVIDER", None)
-            os.environ.pop("MAS_MODEL", None)
+            for name, value in saved.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
 
     def test_persistable_config_keeps_the_env_variable_name(self):
         config = json.loads(json.dumps(DEFAULT_CONFIG))

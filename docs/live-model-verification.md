@@ -714,3 +714,93 @@ Release 产物：`openloop_mas-0.4.8-py3-none-any.whl`（80,422 B）+ `openloop_
 - **status**：`closed`，**iterations**：1
 - **artifact_sha**：`d0f3091cb554`，`tokens_used` 4009
 - MCP 握手：`handshake: ok, 12 tools`（`mas_run`, `mas_status`, `mas_ledger`, `mas_tickets`, `mas_ticket_resolve`, `mas_resume`, `mas_report`, `mas_replay`, `mas_export`, `mas_teams`, `mas_doctor`, `mas_config`）
+
+### 常驻配置：手机接入（tailnet 内 HTTPS）
+
+v0.4.8 收口后，把「手机接入」从一次性探针升级为**可长期使用的常驻配置**：
+
+| 组件 | 落地方式 | 状态 |
+| --- | --- | --- |
+| 鉴权令牌 | 生成 43 位 `secrets.token_urlsafe(32)`，写入 `%USERPROFILE%\.mas\http_token.txt`（**不写进仓库、不写进 Startup 脚本**） | 已生成 |
+| 常驻服务 | Startup 文件夹 `OpenLoop-MAS-Http.cmd` -> `mas http --host 127.0.0.1 --port 8768`，脚本启动时从令牌文件读 `MAS_HTTP_TOKEN` | 已落盘并运行中 |
+| HTTPS 入口 | `tailscale serve --bg --https=8768 http://127.0.0.1:8768` -> `https://win-io6eufe3grh.tail4c219e.ts.net:8768` | 已生效 |
+| 暴露范围 | **tailnet only**（不是 Funnel 公网）。本机 8443 的 Funnel 是 dsh-tauri 占用，未改动 | tailnet 内 |
+
+设计要点：
+
+- 服务只绑 **127.0.0.1**，外部访问必须经过 Tailscale 的 TLS 反代，避免直接暴露在局域网。
+- 令牌与脚本分离：脚本里**不含明文令牌**，令牌文件缺失时脚本直接报错退出，不会退化成无鉴权启动。
+- Startup 脚本等价于开机自启；如需停止，删掉该 `.cmd` 或结束对应进程。
+
+真实 HTTPS 路径复测（走 Tailscale TLS + 反代，非本机直连）：
+
+```
+health              -> 200  {"ok": true, "name": "openloop-mas", "version": "0.4.8"}
+tools  (no token)   -> 401  {"error": "unauthorized: missing or invalid bearer token"}
+tools  (bad token)  -> 401  {"error": "unauthorized: missing or invalid bearer token"}
+tools  (good token) -> 200  {"tools": [{"name": "mas_run", ...}]}
+tools  (X-MAS-Token)-> 200  {"tools": [...]}
+call   (no token)   -> 401  {"error": "unauthorized: missing or invalid bearer token"}
+call   (good token) -> 200  {"tool": "mas_status", "result": {"config": {"provider": "openai_compat", "model": "claude-opus-5..."}}}
+```
+
+两种令牌头（`Authorization: Bearer` 与 `X-MAS-Token`）都验证过；`/health` 仍开放且只含版本号。
+
+**手机上的用法**：浏览器打开 `https://win-io6eufe3grh.tail4c219e.ts.net:8768/tools`，带 `Authorization: Bearer <令牌>` 头即可。令牌通过密码管理器同步，不在聊天里明文传递。
+
+**边界**：该入口是 **tailnet 内**可达（需设备加入同一 tailnet 并已授权），**不是公网 Funnel**。如需公网暴露，需显式改 `tailscale serve --https=8768 funnel` 并另做速率限制与令牌轮换，那属于扩大暴露范围，需另行确认。
+
+---
+
+## v0.4.9：测试隔离失效的根因与修复
+
+v0.4.9 修复的不是一个 flake，而是一个**会随开发者本地配置漂移的严重缺陷**：整个测试套件在 `unittest discover -s tests` 下从未真正隔离，读的是开发者真实的 `~/.mas/config.json`，因此会打到真实端点。实测 6 次跑有 3 次因 40 秒超时失败——这掩盖了它更大的危害：**CI 绿灯并不代表套件跑在沙箱里**。
+
+### 根因（三层，逐层叠加）
+
+| 层 | 位置 | 现象 |
+| --- | --- | --- |
+| L1 | `tests/__init__.py` 的 `from . import _isolation` | `unittest discover -s tests` 把模块加载成顶层 `test_x`，**包 `__init__.py` 根本不执行**，隔离模块从未被加载 |
+| L2 | `tests/test_config_providers.py::TestConfig::test_env_overrides` 的 `finally` | 无条件 `os.environ.pop("MAS_PROVIDER")`，**摧毁隔离** |
+| L3 | `tests/test_mcp.py::TestMcpServer::tearDown` | 同样无条件 `os.environ.pop("MAS_PROVIDER", None)`，**再次摧毁隔离** |
+
+L1 是根本原因：隔离只挂在一个不会执行的钩子上。L2/L3 是放大器——即使 L1 修好，任何一个测试的 `pop` 都会让隔离在后续测试中静默消失。
+
+探针证实：两种 discover 方式下，测试内看到的 `MAS_PROVIDER` 都是 `None`（而非隔离后的 `mock`）。
+
+### 修法
+
+1. **`tests/_isolation.py`**：加 `ISOLATION_ACTIVE` 标志；加 `MAS_TEST_ISOLATION=1` 环境哨兵 + `_ALREADY_INSTALLED` 守卫，防止 `tests._isolation` 与顶层 `_isolation` 被当成两个模块各加载一次、彼此清空。
+2. **全部 12 个 `tests/test_*.py`**：模块顶部直接导入隔离（不再依赖包钩子）。双形态兼容：
+
+   ```python
+   try:  # pragma: no cover - the two import styles cover two runners
+       from ._isolation import ISOLATION_ACTIVE  # noqa: F401
+   except ImportError:  # loaded as a top-level module (unittest -s tests)
+       import os
+       import sys
+       sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+       from _isolation import ISOLATION_ACTIVE  # noqa: F401
+   ```
+
+   banner 插在 `from __future__ import annotations` **之后**（`test_dialect_loop.py` / `test_probe.py` / `test_provider_dialects.py` 三个文件），否则 Python 3.14 会报 "from __future__ imports must occur at the beginning of the file"。
+3. **恢复而非销毁**：`test_env_overrides`、`test_persisted_view_ignores_the_environment`、`TestMcpServer` 的 `setUp`/`tearDown` 全部改为**保存-恢复**，不再 `pop`。
+4. **语义修正**：`test_partial_file_keeps_defaults` 原先期望「文件值胜过环境」，这与 `load_config` 的文档语义（**环境变量覆盖文件**）直接冲突，它在隔离从未生效时才碰巧通过。改为用 `load_persisted_config()` 断言「部分文件保留默认值」，并另行断言有效视图中环境确实胜出——两条语义各归其位。
+5. **新增 `tests/test_isolation.py`**（6 条）锁定隔离不变量，防止未来重构再次静默关掉隔离。
+
+### 验证证据（本轮实测）
+
+| 项 | 修复前 | 修复后 |
+| --- | --- | --- |
+| `unittest discover -s tests` 用例数 | 151 | **157**（+6 条防回归） |
+| 单次耗时 | 40 秒超时（命中真实端点） | **~16.5 秒**（全程 mock） |
+| 连跑 5 次 | 6 跑 3 败 | **5 跑 5 全绿**，耗时稳定 16.3–16.7 秒 |
+| `pytest tests -q` | 未验证 | **155 passed, 2 skipped, 8 subtests passed**，17.04 秒 |
+| `ruff check mas tests tools` | — | **All checks passed** |
+
+隔离生效的直接证据：套件耗时从 40 秒（真实端点超时）降到 16.5 秒且完全稳定——不再有「取决于端点有多慢」的随机性。
+
+### 边界
+
+- 修复的是**测试套件自身**的隔离，不改变 `mas` 在生产中的任何行为。
+- `pytest` 与 `unittest` 两条路径都验证过；CI 用的仍是 `unittest discover -s tests`。

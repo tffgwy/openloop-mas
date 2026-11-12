@@ -1,4 +1,17 @@
 """MCP server tests: handshake, tool listing and tool calls."""
+# The session-wide test isolation must be active before this module is
+# imported: importing a test module is what pulls in the code under test.
+# ``unittest discover -s tests`` loads modules as top-level ``test_x`` and
+# therefore never executes ``tests/__init__.py``, so the isolation cannot
+# rely on the package hook alone - every test module imports it directly.
+try:  # pragma: no cover - the two import styles cover two runners
+    from ._isolation import ISOLATION_ACTIVE  # noqa: F401
+except ImportError:  # loaded as a top-level module (unittest -s tests)
+    import os
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from _isolation import ISOLATION_ACTIVE  # noqa: F401
+
 
 import json
 import os
@@ -11,12 +24,23 @@ from mas import mcp_server
 class TestMcpServer(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        # Save, do not pop: the session-wide isolation installs
+        # ``MAS_PROVIDER=mock`` and a blind ``pop`` in tearDown would
+        # remove it for every test that runs afterwards.
+        self._old_state = os.environ.get("MAS_STATE_DIR")
+        self._old_provider = os.environ.get("MAS_PROVIDER")
         os.environ["MAS_STATE_DIR"] = self.tmp.name
         os.environ["MAS_PROVIDER"] = "mock"
 
     def tearDown(self):
-        os.environ.pop("MAS_STATE_DIR", None)
-        os.environ.pop("MAS_PROVIDER", None)
+        if self._old_state is None:
+            os.environ.pop("MAS_STATE_DIR", None)
+        else:
+            os.environ["MAS_STATE_DIR"] = self._old_state
+        if self._old_provider is None:
+            os.environ.pop("MAS_PROVIDER", None)
+        else:
+            os.environ["MAS_PROVIDER"] = self._old_provider
         self.tmp.cleanup()
 
     def test_initialize_handshake(self):

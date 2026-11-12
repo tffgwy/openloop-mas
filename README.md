@@ -317,6 +317,33 @@ curl -X POST http://127.0.0.1:8765/call \
 
 **fail-closed**：绑定到非本机地址（`0.0.0.0` / 局域网 IP）却**没有**令牌时，服务器**拒绝启动**（退出码 `2`）—— 环境变量写错不应该变成公网裸奔。开启鉴权后 CORS 也不再回 `*`，而是钉到 `http://127.0.0.1`，避免任意网页跨站调用。
 
+
+### 常驻部署实战（服务 + TLS 反代）
+
+真正要长期给手机 / 其它设备用，推荐这个组合 —— **服务只绑本机，对外只暴露 TLS 入口**：
+
+```bash
+# 1. 令牌落在文件里，不进版本库、不进启动脚本
+python -c "import secrets,pathlib;pathlib.Path.home().joinpath('.mas/http_token.txt').write_text(secrets.token_urlsafe(32))"
+
+# 2. 服务常驻（示例：Linux systemd / Windows 启动文件夹 / macOS launchd 均可）
+export MAS_HTTP_TOKEN=$(cat ~/.mas/http_token.txt)
+mas http --host 127.0.0.1 --port 8768
+
+# 3. 只把 TLS 入口反代出去（tailnet 内；--https 需要 tailscale serve 权限）
+tailscale serve --bg --https=8768 http://127.0.0.1:8768
+```
+
+手机 / 其它设备访问 `https://<your-host>:<port>/tools`，带上 `Authorization: Bearer <令牌>`。
+
+要点：
+
+- 服务绑 `127.0.0.1` + TLS 反代，比直接 `--host 0.0.0.0` 安全得多（不暴露在局域网，也由反代统一处理 TLS）。
+- 令牌与启动脚本**分离**：脚本里不写明文，令牌文件缺失就报错退出，绝不退化成无鉴权启动。
+- `tailscale serve` 默认是 **tailnet only**；`funnel` 会暴露到公网，属于扩大暴露范围，请自行评估后再开。
+- 停用：`tailscale serve --https=8768 off`。
+
+
 ---
 
 ## 四道止损机制
