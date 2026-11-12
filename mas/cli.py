@@ -318,7 +318,7 @@ def cmd_teams(args: argparse.Namespace) -> int:
 
 def cmd_doctor(args: argparse.Namespace) -> int:
     config = load_config()
-    results = run_doctor(config)
+    results = run_doctor(config, allow_network=not getattr(args, "no_network", False))
     if args.json:
         _print(summarize(results), True)
     else:
@@ -454,6 +454,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor = sub.add_parser("doctor", help="安装自检")
     add_json(doctor)
+    doctor.add_argument(
+        "--no-network",
+        action="store_true",
+        help="跳过端点握手探测（离线环境使用）",
+    )
     doctor.set_defaults(func=cmd_doctor)
 
     serve = sub.add_parser("serve", help="以 MCP stdio 服务运行")

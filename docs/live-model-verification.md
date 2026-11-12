@@ -425,3 +425,20 @@ v0.4.3 的 Release 产物本身是好的（构建、twine 检查、GitHub Releas
 ```
 
 **回归测试**：`tests/test_probe.py` 新增 3 条（免密钥揢测、无端点误报、无密钥本地端点接受），全套 126 条通过（unittest 与 pytest 两套 runner 同源全绿）。
+
+## v0.4.6：离线环境不能因为网络而报错
+
+`mas doctor` 的端点握手探测是有意为之的，但它也意味着**无网环境下不可用**。
+
+**修法**：`mas doctor --no-network`，跳过握手探测并明确报出「已按 --no-network 跳过握手探测」。适用于内网隔离、审核环境、或任何不允许出站请求的场景。
+
+**验证**：
+
+```
+$ mas doctor              # 带网络
+[OK  ] endpoint  端点可用，协议方言 = openai-responses-events
+$ mas doctor --no-network
+[WARN] endpoint  已按 --no-network 跳过握手探测
+```
+
+回归测试新增 1 条（`--no-network` 不发起揢测），全套 127 条通过。

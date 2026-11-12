@@ -20,7 +20,7 @@ def _check(name: str, status: str, detail: str) -> Dict[str, Any]:
     return {"check": name, "status": status, "detail": detail}
 
 
-def run_doctor(config: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
+def run_doctor(config: Dict[str, Any] | None = None, allow_network: bool = True) -> List[Dict[str, Any]]:
     config = config or load_config()
     results: List[Dict[str, Any]] = []
 
@@ -131,7 +131,7 @@ def run_doctor(config: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
     # A live handshake tells the user which dialect their gateway speaks
     # *before* the first deliverable is at stake. It is skipped in mock
     # mode and when the endpoint is not configured yet.
-    if provider != "mock" and base_url:
+    if provider != "mock" and base_url and allow_network:
         # Probe whenever an endpoint is configured. A missing API key is
         # *not* a reason to skip: local gateways (the Codex Responses
         # bridge, Ollama-free local proxies) are often keyless, and the
@@ -141,6 +141,8 @@ def run_doctor(config: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
         except Exception as exc:  # pragma: no cover - defensive
             live = {"status": "warn", "dialect": "unknown", "detail": f"探测异常: {exc}"}
         results.append(_check("endpoint", live.get("status", "warn"), str(live.get("detail", ""))))
+    elif provider != "mock" and not allow_network:
+        results.append(_check("endpoint", "warn", "已按 --no-network 跳过握手探测"))
     elif provider != "mock":
         results.append(_check("endpoint", "warn", "端点未配置，跳过握手探测"))
 

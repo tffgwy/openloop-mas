@@ -132,10 +132,13 @@ class DoctorEndpointCheckTest(unittest.TestCase):
     """``mas doctor`` must not misreport keyless endpoints as unconfigured."""
 
     @staticmethod
-    def _checks(config: dict) -> dict:
+    def _checks(config: dict, allow_network: bool = True) -> dict:
         from mas.doctor import run_doctor
 
-        return {row["check"]: row for row in run_doctor(config)}
+        return {
+            row["check"]: row
+            for row in run_doctor(config, allow_network=allow_network)
+        }
 
     def test_keyless_endpoint_is_not_reported_as_missing(self):
         rows = self._checks(
@@ -143,6 +146,22 @@ class DoctorEndpointCheckTest(unittest.TestCase):
         )
         self.assertEqual(rows["provider"]["status"], "warn")
         self.assertIn("base_url", rows["provider"]["detail"])
+
+    def test_no_network_skips_the_handshake(self):
+        # Offline machines must be able to run the self-check without
+        # touching the network.
+        rows = self._checks(
+            {
+                "provider": "openai_compat",
+                "model": "m",
+                "base_url": "http://127.0.0.1:9/v1",
+                "api_key": "",
+                "state_dir": tempfile.mkdtemp(),
+            },
+            allow_network=False,
+        )
+        self.assertEqual(rows["endpoint"]["status"], "warn", rows["endpoint"])
+        self.assertIn("--no-network", rows["endpoint"]["detail"])
 
     def test_keyless_local_endpoint_is_accepted_and_probed(self):
         with _Server(_openai_chat) as server:
