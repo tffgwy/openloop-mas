@@ -7,7 +7,7 @@ import json
 import pathlib
 import sys
 
-from mas.util import force_utf8_output
+from mas.util import force_utf8_output, parse_criterion_shorthand
 from typing import Any, Dict, List
 
 from mas import __version__
@@ -48,11 +48,15 @@ def _load_criteria(args: argparse.Namespace) -> List[Any]:
 
 
 def _parse_criterion(text: Any) -> Any:
-    """Accept either a JSON criterion object or a plain-text criterion.
+    """Accept a JSON criterion object, a ``<type>:<arg>`` shorthand, or a
+    plain-text criterion.
 
     ``--criteria '{"id":"c1","check":{...}}'`` is the documented form and
     must not degrade into a raw description string, otherwise the machine
-    check silently never runs.
+    check silently never runs. The shorthand ``--criteria 'regex:def'`` is
+    the convenient form and must not degrade either. The shorthand parser
+    itself lives in :mod:`mas.util` so that the engine applies the same
+    rules to criteria arriving through the MCP or HTTP server.
     """
     if not isinstance(text, str):
         return text
@@ -62,7 +66,12 @@ def _parse_criterion(text: Any) -> Any:
             return json.loads(stripped)
         except json.JSONDecodeError as exc:
             raise ValueError(f"--criteria 不是合法 JSON: {exc}") from exc
-    return text
+    parsed = parse_criterion_shorthand(stripped)
+    # Only a real shorthand becomes a structured criterion. A plain
+    # description stays a string, so the CLI contract does not change.
+    if not parsed.get("check"):
+        return stripped
+    return parsed
 
 
 def _engine(config: Dict[str, Any], team: str | None = None) -> LoopEngine:

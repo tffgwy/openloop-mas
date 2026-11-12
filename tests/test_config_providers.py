@@ -463,3 +463,143 @@ class ProviderPayloadTest(unittest.TestCase):
         self.assertEqual(backup.options["timeout_sec"], 90)
         self.assertEqual(backup.options["max_retries"], 4)
         self.assertEqual(backup.options["base_url"], "http://backup.invalid/v1")
+
+
+class CriterionShorthandTest(unittest.TestCase):
+    """The ``<type>:<arg>`` shorthand must produce a real machine check.
+
+    Before v0.4.2 the shorthand was passed through as a plain description,
+    so the machine check silently never ran and the criterion was decided by
+    the model instead of the rule. That made a "regex criterion" look like
+    it passed while actually being a model judgement.
+    """
+
+    def test_regex_shorthand_becomes_a_machine_check(self):
+        from mas.cli import _parse_criterion
+        from mas.engine import Criterion, evaluate_check
+
+        parsed = _parse_criterion("regex:def dedupe")
+        criterion = Criterion.from_raw(parsed, 0)
+        self.assertIsNotNone(criterion.check)
+        self.assertEqual(criterion.check["type"], "regex")
+        self.assertEqual(criterion.check["arg"], "def dedupe")
+
+        outcome = evaluate_check(criterion, "def dedupe(items):\n    return items")
+        self.assertTrue(outcome["pass"])
+        self.assertEqual(outcome["source"], "rule")
+
+    def test_the_shorthand_works_on_the_engine_path_too(self):
+        """The MCP and HTTP servers pass criteria straight to the engine."""
+        from mas.engine import Criterion
+
+        criterion = Criterion.from_raw("regex:hello", 0)
+        self.assertEqual(criterion.check, {"type": "regex", "arg": "hello"})
+
+    def test_numeric_shorthands_are_converted_to_integers(self):
+        from mas.cli import _parse_criterion
+
+        parsed = _parse_criterion("min_chars:200")
+        self.assertEqual(parsed["check"]["arg"], 200)
+
+    def test_a_regex_may_contain_colons(self):
+        from mas.cli import _parse_criterion
+
+        parsed = _parse_criterion("regex:https?://example")
+        self.assertEqual(parsed["check"]["arg"], "https?://example")
+
+    def test_unknown_types_stay_plain_descriptions(self):
+        from mas.cli import _parse_criterion
+
+        self.assertEqual(_parse_criterion("写清楚就好"), "写清楚就好")
+        self.assertEqual(_parse_criterion("unknown_type:abc"), "unknown_type:abc")
+
+    def test_a_non_numeric_numeric_shorthand_stays_a_description(self):
+        from mas.cli import _parse_criterion
+
+        self.assertEqual(_parse_criterion("min_chars:many"), "min_chars:many")
+
+    def test_an_empty_argument_stays_a_description(self):
+        from mas.cli import _parse_criterion
+
+        self.assertEqual(_parse_criterion("regex:"), "regex:")
+
+
+class MissingVerdictRecoveryTest(unittest.TestCase):
+    """A silent verifier must not burn a whole iteration.
+
+    When the verifier returns no verdict for a criterion, the artifact is
+    not necessarily wrong - the answer is missing. The engine asks the
+    verifier again for the missing ids instead of regenerating the
+    artifact and starting a new attempt.
+    """
+
+    class _SilentThenAnsweringProvider:
+        """Answers the first verifier call without any score entries."""
+
+        name = "silent-then-answering"
+        model = "stub-1"
+
+        def __init__(self):
+            self.calls = 0
+            self.verifier_calls = 0
+
+        def complete(self, *, system, prompt, role="worker", expect_json=False, max_tokens=4000):
+            self.calls += 1
+            if role == "planner":
+                text = '{"summary": "s", "plan": ["p"], "risks": []}'
+            elif role == "reflector":
+                text = '{"summary": "r", "issues": [], "next_action": "revise"}'
+            elif role == "verifier":
+                self.verifier_calls += 1
+                if self.verifier_calls == 1:
+                    # Silent: a verdict without any scores.
+                    text = '{"verdict": "pass", "scores": [], "issues": []}'
+                else:
+                    text = json.dumps(
+                        {
+                            "verdict": "pass",
+                            "scores": [
+                                {"id": "c1", "pass": True, "note": "解释清楚了"}
+                            ],
+                            "issues": [],
+                        },
+                        ensure_ascii=False,
+                    )
+            else:
+                text = "解释幂等性：同一个操作执行一次和多次，结果相同。"
+            return {"text": text, "usage": {"total_tokens": 10}, "raw": {}}
+
+        def describe(self):
+            return {"chain": []}
+
+    def _engine(self):
+        from mas.engine import LoopEngine
+
+        provider = self._SilentThenAnsweringProvider()
+        config = {
+            "state_dir": tempfile.mkdtemp(prefix="mas-missing-verdict-"),
+            "budget": {"max_iterations": 8, "deadline_sec": 60, "max_tokens": 100000},
+            "stagnation_limit": 3,
+            "orchestration": {"parallel_workers": 1, "reviewers": 1, "review_mode": "all"},
+        }
+        return LoopEngine(config, provider=provider), provider
+
+    def test_the_loop_closes_in_one_iteration(self):
+        engine, provider = self._engine()
+        result = engine.run(
+            goal="解释幂等性",
+            criteria=["说明中解释清楚幂等性"],
+        )
+        self.assertEqual(result.status, "closed")
+        self.assertEqual(result.iterations, 1)
+        self.assertEqual(provider.verifier_calls, 2)
+
+    def test_the_recovered_verdict_is_recorded(self):
+        engine, _provider = self._engine()
+        result = engine.run(
+            goal="解释幂等性",
+            criteria=["说明中解释清楚幂等性"],
+        )
+        score = [s for s in result.scores if s["id"] == "c1"][0]
+        self.assertTrue(score["pass"])
+        self.assertEqual(score["source"], "model")

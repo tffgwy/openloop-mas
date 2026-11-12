@@ -14,6 +14,52 @@ _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 _THINK_RE = re.compile(r"<think(?:ing)?>.*?</think(?:ing)?>", re.DOTALL | re.IGNORECASE)
 
 
+# --------------------------------------------------------------------------
+# Criterion shorthand
+#
+# ``regex:foo`` on the command line is a *machine check*, not a description.
+# Treating it as a description silently disables the check - which is the
+# exact failure the JSON criterion form was introduced to fix. The parser
+# lives here so the CLI, the MCP server and the HTTP server all agree.
+CHECK_SHORTHANDS = {
+    "contains",
+    "not_contains",
+    "min_chars",
+    "max_chars",
+    "regex",
+    "lines_min",
+    "section",
+    "json_keys",
+}
+
+_INT_CHECKS = {"min_chars", "max_chars", "lines_min"}
+
+
+def parse_criterion_shorthand(text: str) -> Dict[str, Any]:
+    """Parse ``<type>:<arg>`` into a criterion carrying a machine check.
+
+    The argument keeps everything after the first colon, so a regular
+    expression may contain colons (``regex:https?://``). Unknown types and
+    unparsable arguments stay plain descriptions - a criterion must never
+    claim a check it cannot perform.
+    """
+    head, sep, tail = str(text).partition(":")
+    if not sep:
+        return {"desc": str(text)}
+    kind = head.strip().lower()
+    if kind not in CHECK_SHORTHANDS:
+        return {"desc": str(text)}
+    arg = tail.strip()
+    if not arg:
+        return {"desc": str(text)}
+    if kind in _INT_CHECKS:
+        try:
+            arg = int(arg)
+        except ValueError:
+            return {"desc": str(text)}
+    return {"desc": str(text), "check": {"type": kind, "arg": arg}}
+
+
 def now_iso() -> str:
     return _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
 

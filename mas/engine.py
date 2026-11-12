@@ -43,7 +43,7 @@ from mas.orchestration import (
 from mas.providers import Provider, ProviderError, build_provider_chain
 from mas.roles import Roles
 from mas.tickets import TicketStore
-from mas.util import (normalize_verdict, now_iso, parse_json_loose, sha256_text,
+from mas.util import (normalize_verdict, now_iso, parse_criterion_shorthand, parse_json_loose, sha256_text,
                       short_sha, strip_reasoning)
 
 STATUS_CLOSED = "closed"
@@ -62,7 +62,16 @@ class Criterion:
     @classmethod
     def from_raw(cls, raw: Any, index: int) -> "Criterion":
         if isinstance(raw, str):
-            return cls(id=f"c{index + 1}", desc=raw, check=None, required=True)
+            # A shorthand such as "regex:foo" carries a machine check. The
+            # parser runs here - not only in the CLI - so every entry point
+            # (CLI, MCP, HTTP, ledger replay) treats it the same way.
+            parsed = parse_criterion_shorthand(raw)
+            return cls(
+                id=str(parsed.get("id") or f"c{index + 1}"),
+                desc=str(parsed.get("desc") or raw),
+                check=parsed.get("check"),
+                required=bool(parsed.get("required", True)),
+            )
         if not isinstance(raw, dict):
             return cls(id=f"c{index + 1}", desc=str(raw), check=None, required=True)
         desc = str(raw.get("desc") or raw.get("description") or raw.get("text") or "")
@@ -324,6 +333,23 @@ class LoopEngine:
                     scores = self._merge_review_scores(crits, checks, verdict)
                 else:
                     scores = self._merge_scores(crits, checks, verdict)
+
+                # A verifier that stayed silent about a criterion is not a
+                # failure of the artifact - it is a missing answer. Asking
+                # the verifier again for the missing ids costs one cheap
+                # call; regenerating the whole artifact costs a whole
+                # iteration and usually changes nothing.
+                if not self._all_judged(scores):
+                    extra = self._ask_missing_verdicts(
+                        verify_state, crits, checks, verdict, scores
+                    )
+                    if extra:
+                        tokens += extra.get("_usage", {}).get("total_tokens", 0)
+                        if self.reviewers > 1:
+                            scores = self._merge_review_scores(crits, checks, extra)
+                        else:
+                            scores = self._merge_scores(crits, checks, extra)
+
                 passed = bool(scores) and all(bool(s["pass"]) for s in scores)
 
                 reflection: Dict[str, Any] = {}
@@ -546,6 +572,66 @@ class LoopEngine:
         )
         return aggregate
 
+    @staticmethod
+    def _all_judged(scores: List[Dict[str, Any]]) -> bool:
+        """True when no criterion is left without a verdict."""
+        return all(s.get("source") != "model-missing" for s in scores)
+
+    def _ask_missing_verdicts(
+        self,
+        verify_state: Dict[str, Any],
+        crits: List[Criterion],
+        checks: List[Dict[str, Any]],
+        verdict: Dict[str, Any],
+        scores: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Re-ask the verifier for the criteria it did not judge.
+
+        The artifact is unchanged, so this is a cheap targeted question
+        rather than a new attempt. The returned verdict keeps the answers
+        the verifier already gave and only adds the missing ones.
+        """
+        missing = [
+            score["id"] for score in scores
+            if score.get("source") == "model-missing" and score.get("id")
+        ]
+        if not missing:
+            return {}
+
+        by_id = {str(c.id): c for c in crits}
+        follow_state = dict(verify_state)
+        follow_state["missing_criteria"] = [
+            {
+                "id": cid,
+                "desc": getattr(by_id.get(cid), "desc", ""),
+            }
+            for cid in missing
+        ]
+        extra = self._call_json(
+            "verifier", follow_state, extra=self._missing_criteria_instruction(missing)
+        )
+        # Keep the verdicts that already arrived; only the new ones count.
+        merged_scores = list(verdict.get("scores") or [])
+        known = {str(item.get("id")) for item in merged_scores if isinstance(item, dict)}
+        for item in extra.get("scores") or []:
+            if isinstance(item, dict) and item.get("id") and str(item["id"]) not in known:
+                merged_scores.append(item)
+        merged = dict(verdict)
+        merged["scores"] = merged_scores
+        merged["_usage"] = extra.get("_usage", {})
+        return merged
+
+    @staticmethod
+    def _missing_criteria_instruction(missing: List[str]) -> str:
+        ids = ", ".join(missing)
+        return (
+            "You did not return a verdict for these acceptance criteria: "
+            f"{ids}. Judge the artifact under review against each of them and "
+            "answer with the same JSON shape. Include one score entry per "
+            "missing id - do not omit any of them and do not restate the "
+            "criteria you already judged."
+        )
+
     def _make_reviewer_task(self, verify_state: Dict[str, Any], persona: str) -> Any:
         def task(index: int) -> Dict[str, Any]:
             state = dict(verify_state)
@@ -568,47 +654,8 @@ class LoopEngine:
         rule. Only criteria without a machine check are decided by the
         reviewer consensus.
         """
-        review_scores = {
-            str(item["id"]): item for item in (verdict.get("scores") or []) if item.get("id")
-        }
-        merged: List[Dict[str, Any]] = []
-        for criterion, check in zip(crits, checks):
-            if not criterion.required:
-                merged.append(
-                    {"id": criterion.id, "pass": True, "note": "optional criterion", "source": "skipped"}
-                )
-                continue
-            if check.get("pass") is not None:
-                merged.append(
-                    {
-                        "id": criterion.id,
-                        "pass": bool(check["pass"]),
-                        "note": str(check.get("note", "")),
-                        "source": "rule",
-                    }
-                )
-                continue
-            review = review_scores.get(criterion.id)
-            if review is None:
-                merged.append(
-                    {
-                        "id": criterion.id,
-                        "pass": False,
-                        "note": "unjudged: 评审没有给出该标准的判定",
-                        "source": "model-missing",
-                    }
-                )
-            else:
-                merged.append(
-                    {
-                        "id": criterion.id,
-                        "pass": bool(review.get("pass")),
-                        "note": str(review.get("note", "")),
-                        "source": review.get("source", "model"),
-                        "votes": review.get("votes", ""),
-                    }
-                )
-        return merged
+        return LoopEngine._merge_verdict_scores(crits, checks, [verdict], with_votes=True)
+
 
     # --------------------------------------------------------------- helpers
     def _log(self, run_id: str, task_id: str, iteration: int, role: str,
@@ -651,15 +698,26 @@ class LoopEngine:
         return data
 
     @staticmethod
-    def _merge_scores(
+    def _merge_verdict_scores(
         crits: List[Criterion],
         checks: List[Dict[str, Any]],
-        verdict: Dict[str, Any],
+        verdicts: List[Dict[str, Any]],
+        *,
+        with_votes: bool = False,
     ) -> List[Dict[str, Any]]:
-        model_scores = {}
-        for item in verdict.get("scores") or []:
-            if isinstance(item, dict) and item.get("id"):
-                model_scores[str(item["id"])] = item
+        """Combine machine checks with the verdicts of one or more verifiers.
+
+        A criterion that carries a machine check is decided by that check -
+        the model never gets to override it. A criterion without a machine
+        check is decided by the verifier. If no verifier judged it, the
+        criterion stays unjudged and is reported as such; it is never
+        silently passed.
+        """
+        model_scores: Dict[str, Dict[str, Any]] = {}
+        for verdict in verdicts:
+            for item in verdict.get("scores") or []:
+                if isinstance(item, dict) and item.get("id"):
+                    model_scores.setdefault(str(item["id"]), item)
         merged: List[Dict[str, Any]] = []
         for criterion, check in zip(crits, checks):
             if not criterion.required:
@@ -677,26 +735,36 @@ class LoopEngine:
                     }
                 )
                 continue
-            model = model_scores.get(criterion.id)
-            if model is None:
+            review = model_scores.get(criterion.id)
+            if review is None:
                 merged.append(
                     {
                         "id": criterion.id,
                         "pass": False,
-                        "note": "unjudged: verifier 未给出该标准的判定",
+                        "note": "unjudged: 评审没有给出该标准的判定",
                         "source": "model-missing",
                     }
                 )
             else:
-                merged.append(
-                    {
-                        "id": criterion.id,
-                        "pass": bool(model.get("pass")),
-                        "note": str(model.get("note", "")),
-                        "source": "model",
-                    }
-                )
+                entry = {
+                    "id": criterion.id,
+                    "pass": bool(review.get("pass")),
+                    "note": str(review.get("note", "")),
+                    "source": review.get("source", "model"),
+                }
+                if with_votes:
+                    entry["votes"] = review.get("votes", "")
+                merged.append(entry)
         return merged
+
+    @staticmethod
+    def _merge_scores(
+        crits: List[Criterion],
+        checks: List[Dict[str, Any]],
+        verdict: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        return LoopEngine._merge_verdict_scores(crits, checks, [verdict])
+
 
     # --------------------------------------------------------------- resume
     def resume(self, ticket_id: str, note: str = "") -> RunResult:

@@ -167,3 +167,114 @@ mock 模式无回归：`mas demo` 3/3 通过，`mas bench` 9/9 通过，闭环�
 2. **判定的是结构，不是事实。** 机检规则能确认交付物包含某个正则，不能确认逻辑正确。对抗评审能发现机检漏掉的语义问题（本次确实发现了 `return list(seen)` 的真 bug），但它仍是模型判断。
 3. **账本一致性 100% 是 mock 场景下的结论。** 真实端点下未做多轮崩溃恢复的账本重放校验。
 4. **不承诺流量、签约、平台批准。** 判定的是结构与机检结果，不是市场结果。
+
+
+---
+
+## 6. v0.4.1 / v0.4.2：来自 OpenMausBot 端到端的实测
+
+前面的验证都从命令行直接跑 `mas run`。这一轮改从 OpenMausBot 里让 bot 通过 MCP 工具
+`mas_run` 发任务，结果暴露了两个命令行视角看不到的缺陷。
+
+### 缺陷 6 · v0.4.0 发布包的 `mas doctor` 在干净安装时崩溃
+
+三个平台的 CI 都复现了同一个错误：
+
+```
+错误：name 'config_path' is not defined
+```
+
+根因：`mas/doctor.py` 在「配置文件不存在」的回退分支里调用 `config_path()`，
+但模块级 import 漏掉了它。本地开发树因为 `~/.mas/config.json` 总是存在，
+永远走不到那个分支 —— 只有全新安装才会触发。
+
+修复：`mas/doctor.py` 补上 `config_path` 导入；新增 `tests/test_doctor.py`（3 条），
+并把该文件临时改回缺陷版本验证测试确实会失败（复现出同样的 `NameError`）。
+
+### 缺陷 7 · `--criteria 'regex:...'` 简写从未生成机检规则
+
+这是端到端跑出来的账本暴露的：前三轮的 `source` 是 `model-missing`，
+而不是 `rule`。
+
+根因：`mas/cli.py::_parse_criterion` 只认 JSON 形式，其它一律当纯文本描述。
+`regex:(?s)def dedupe.*set` 于是变成一句描述，`check=None`，机检规则完全没生效。
+**此前文档里「regex 机检通过」的说法其实经不起推敲 —— 那些 pass 是模型评审给的，
+不是规则判的。**
+
+修复：
+
+- `mas/util.py` 新增 `parse_criterion_shorthand()`，解析 `<类型>:<参数>`，
+  参数保留首个冒号之后的所有内容（正则里可以有冒号）；未知类型与非法参数保持为普通描述。
+- 解析下沉到 `mas/engine.py::Criterion.from_raw`，因此 CLI、MCP、HTTP、账本重放
+  走同一条路径。
+- `mas/cli.py` 复用同一个解析器。
+
+修复后的实测（同一任务、同一验收标准）：
+
+```
+c1 pass=true  note=regex /(?s)def dedupe.*set/ matched   source=rule
+c2 pass=true  note=regex /[一-龥]{4,}/ matched            source=rule
+status=closed  iterations=1  tokens=4617
+```
+
+`source` 从 `model` 变成 `rule`，说明判定确实来自确定性检查器。
+
+### 缺陷 8 · 验证者漏判会白烧一整轮迭代
+
+修复前的端到端账本（`run_id=R-f241456619`）：
+
+```
+iter=1 verdict=fail decision=revise  c1 pass=False source=model-missing
+iter=2 verdict=fail decision=revise  c1 pass=False source=model-missing
+iter=3 verdict=fail decision=revise  c1 pass=False source=model-missing
+iter=4 verdict=pass decision=close   c1 pass=True  source=model
+```
+
+验证者连续三轮没给出判定，引擎却把它当成「交付物不合格」，
+于是重新生成交付物、重新评审 —— 前三轮的工作全部作废。
+
+修复：`mas/engine.py` 新增 `_ask_missing_verdicts()`。当合并后的判定里存在
+`source == "model-missing"` 时，引擎在**同一轮内**用一份定向指令就缺失的标准
+追问验证者（`extra` 指令 + `missing_criteria` 状态），把新答案并回原有判定。
+追问后仍无答案才按 `unjudged` 记为不通过。
+
+修复后的实测（无任何机检规则的标准，验证者第一次沉默）：
+
+```
+status=closed  iterations=1  tokens=3571
+verifier 调用次数=2（第一次沉默，第二次补齐）
+```
+
+一轮闭合。
+
+### 回归测试
+
+```
+103 passed
+```
+
+新增覆盖：
+
+- `CriterionShorthandTest`（7 条）：正则简写生成机检、引擎路径同样生效、
+  数字简写转整数、正则含冒号、未知类型保持描述、非法数字参数保持描述、空参数保持描述
+- `MissingVerdictRecoveryTest`（2 条）：漏判时一轮闭合、追问得到的判定被正确记账
+- `tests/test_doctor.py`（3 条）：缺失配置时不抛异常、配置存在时报 ok、所有检查都有状态
+
+两条新测试都做过「故意改坏 → 测试失败 → 恢复」的验证，确认它们真的能抓住回归。
+
+mock 模式无回归：`mas demo` 3/3 通过，`mas bench` 9/9 通过，闭环率 100%，账本一致性 100%。
+
+### v0.4.1 / v0.4.2 的干净安装验证
+
+从 Release 产物安装到全新 venv：
+
+```
+pip install openloop_mas-0.4.1-py3-none-any.whl
+mas --version   -> openloop-mas 0.4.1
+mas doctor      -> 全部通过，退出码 0
+mas demo        -> 3/3
+mas bench       -> 9/9，闭环率 100%
+mas init        -> 写出的配置 state_dir=~/.mas（未被环境变量污染）
+```
+
+同一干净 venv 里接真实模型端点跑闭环：`status=closed`，迭代 1。
