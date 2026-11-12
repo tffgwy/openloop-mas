@@ -12,6 +12,7 @@ import shutil
 import sys
 import urllib.error
 import urllib.request
+from typing import List
 
 SERVER_NAME = "openloop-mas"
 
@@ -21,17 +22,34 @@ def _expand(path: str) -> pathlib.Path:
 
 
 def _find_mas_app() -> pathlib.Path:
+    """Locate the directory that has to be on ``PYTHONPATH``.
+
+    The installer puts the package into ``<install dir>/app/mas``, so the
+    importable directory is ``<install dir>/app`` - not ``<install dir>``.
+    The previous candidates pointed at the *package* directory, which made
+    ``-m mas`` fail inside OpenMausBot.
+    """
     candidates = [
         pathlib.Path.home() / ".mas" / "app",
-        pathlib.Path(__file__).resolve().parent.parent / "mas",
+        pathlib.Path(__file__).resolve().parent.parent,
     ]
     for candidate in candidates:
-        if (candidate / "mcp_server.py").exists():
+        if (candidate / "mas" / "mcp_server.py").exists():
             return candidate
     raise SystemExit(
         "Cannot find the OpenLoop MAS package. Run install.ps1 / install.sh first, "
         "or point MAS_APP_DIR at it."
     )
+
+
+def _state_dir(app_dir: pathlib.Path) -> pathlib.Path:
+    """The directory that holds the configuration and the ledger.
+
+    ``app`` is the *code* directory; the state lives one level up, next to
+    it. Pointing ``MAS_STATE_DIR`` at the code directory would silently
+    create a second, empty configuration and a second ledger.
+    """
+    return app_dir.parent
 
 
 def _find_python() -> str:
@@ -48,12 +66,34 @@ def _config_path() -> pathlib.Path:
     return pathlib.Path.home() / ".openmausbot" / "config.json"
 
 
-def _omb_port() -> int:
+def _candidate_ports() -> List[int]:
+    """Ports an OpenMausBot server may be listening on.
+
+    8799 is the default; the Windows launcher in this project uses 28799
+    because 8799/18799 are usually taken by other local services.
+    """
+    ports: List[int] = []
     for env_name in ("OPENMAUSBOT_PORT", "OMB_PORT"):
         value = os.environ.get(env_name)
         if value and value.isdigit():
-            return int(value)
-    return 8799
+            ports.append(int(value))
+    for extra in (28799, 8799, 18799):
+        if extra not in ports:
+            ports.append(extra)
+    return ports
+
+
+def _omb_port() -> int:
+    """The first candidate port that actually answers."""
+    for port in _candidate_ports():
+        try:
+            with urllib.request.urlopen(
+                "http://127.0.0.1:%d/api/health" % port, timeout=3
+            ):
+                return port
+        except (urllib.error.URLError, OSError, ValueError):
+            continue
+    return _candidate_ports()[0]
 
 
 def _register(config_path: pathlib.Path, app_dir: pathlib.Path) -> dict:
@@ -69,8 +109,8 @@ def _register(config_path: pathlib.Path, app_dir: pathlib.Path) -> dict:
         "env": {
             "PYTHONPATH": str(app_dir),
             "PYTHONUTF8": "1",
-            "MAS_STATE_DIR": str(app_dir.parent),
-            "MAS_CONFIG_PATH": str(app_dir.parent / "config.json"),
+            "MAS_STATE_DIR": str(_state_dir(app_dir)),
+            "MAS_CONFIG_PATH": str(_state_dir(app_dir) / "config.json"),
         },
         "enabled": True,
     }

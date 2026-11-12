@@ -16,16 +16,19 @@ No public endpoint is reachable from the test-suite (see ``conftest.py``),
 so every dialect is emulated by a local HTTP server. These tests assert the
 *wire contract* - which payload keys are sent, which response shapes are
 understood, how usage is normalised - not model quality.
+
+The suite runs under plain ``unittest`` - the project ships without a
+third-party dependency and the CI matrix runs ``python -m unittest
+discover``.
 """
 
 from __future__ import annotations
 
 import json
 import threading
+import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List
-
-import pytest
 
 from mas.providers import (
     AnthropicProvider,
@@ -138,158 +141,164 @@ class _FakeDialectServer:
         return json.dumps(obj), status, "application/json"
 
 
-# ----------------------------------------------------------------------
-# a) strict OpenAI chat-completions
-# ----------------------------------------------------------------------
-def test_openai_chat_dialect_roundtrip():
-    with _FakeDialectServer("openai_chat") as server:
-        provider = OpenAICompatProvider(model="gpt-test", base_url=server.base_url, api_key="k")
-        result = provider.complete(system="sys", prompt="hello", role="worker")
-        assert result["text"] == "DIALECT-OK"
-        assert result["usage"] == {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}
-        payload = server.requests[0]
-        assert payload["model"] == "gpt-test"
-        assert payload["messages"][0] == {"role": "system", "content": "sys"}
-        assert payload["messages"][1] == {"role": "user", "content": "hello"}
-        assert payload["max_tokens"] > 0
-        assert "response_format" not in payload
+class OpenAIChatDialectTest(unittest.TestCase):
+    """a) strict OpenAI chat-completions"""
 
+    def test_roundtrip(self):
+        with _FakeDialectServer("openai_chat") as server:
+            provider = OpenAICompatProvider(model="gpt-test", base_url=server.base_url, api_key="k")
+            result = provider.complete(system="sys", prompt="hello", role="worker")
+            self.assertEqual(result["text"], "DIALECT-OK")
+            self.assertEqual(result["usage"],
+                             {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18})
+            payload = server.requests[0]
+            self.assertEqual(payload["model"], "gpt-test")
+            self.assertEqual(payload["messages"][0], {"role": "system", "content": "sys"})
+            self.assertEqual(payload["messages"][1], {"role": "user", "content": "hello"})
+            self.assertGreater(payload["max_tokens"], 0)
+            self.assertNotIn("response_format", payload)
 
-def test_openai_chat_dialect_sends_authorization_header():
-    with _FakeDialectServer("openai_chat") as server:
-        provider = OpenAICompatProvider(model="m", base_url=server.base_url, api_key="secret-token")
-        provider.complete(system="s", prompt="p")
-        assert server.headers_seen[0].get("authorization") == "Bearer secret-token"
-
-
-# ----------------------------------------------------------------------
-# b) input-only Responses bridge
-# ----------------------------------------------------------------------
-def test_input_only_bridge_dialect():
-    with _FakeDialectServer("input_only") as server:
-        provider = OpenAICompatProvider(model="bridge-model", base_url=server.base_url)
-        result = provider.complete(system="sys", prompt="bridge-prompt")
-        assert result["text"].startswith("INPUT-ECHO:")
-        payload = server.requests[0]
-        # both keys are sent so strict gateways and bridges both work
-        assert payload["input"] == "bridge-prompt"
-        assert payload["messages"][-1]["content"] == "bridge-prompt"
-
-
-# ----------------------------------------------------------------------
-# c) SSE streaming, OpenAI chat chunks
-# ----------------------------------------------------------------------
-def test_sse_chat_stream_dialect():
-    with _FakeDialectServer("sse_chat") as server:
-        provider = OpenAICompatProvider(model="m", base_url=server.base_url)
-        result = provider.complete(system="s", prompt="p")
-        assert result["text"] == "SSE-CHAT"
-        assert result["usage"]["total_tokens"] == 13
-
-
-# ----------------------------------------------------------------------
-# d) Responses event stream
-# ----------------------------------------------------------------------
-def test_sse_responses_events_dialect():
-    with _FakeDialectServer("sse_responses") as server:
-        provider = OpenAICompatProvider(model="m", base_url=server.base_url)
-        result = provider.complete(system="s", prompt="p")
-        assert result["text"] == "RES-EVENTS"
-        assert result["usage"] == {"prompt_tokens": 21, "completion_tokens": 9, "total_tokens": 30}
-
-
-def test_sse_responses_failed_event_raises():
-    class Failing(_FakeDialectServer):
-        def dispatch(self, path: str, payload: Dict[str, Any]):
-            events = [
-                {"type": "response.output_text.delta", "delta": "partial"},
-                {"type": "response.failed", "response": {"error": {"message": "upstream exploded"}}},
-            ]
-            body = "".join("data: " + json.dumps(e) + "\n\n" for e in events)
-            return body, 200, "text/event-stream"
-
-    with Failing("sse_responses") as server:
-        provider = OpenAICompatProvider(model="m", base_url=server.base_url)
-        with pytest.raises(ProviderError) as exc:
+    def test_authorization_header(self):
+        with _FakeDialectServer("openai_chat") as server:
+            provider = OpenAICompatProvider(model="m", base_url=server.base_url, api_key="secret-token")
             provider.complete(system="s", prompt="p")
-        assert "upstream exploded" in str(exc.value)
+            self.assertEqual(server.headers_seen[0].get("authorization"), "Bearer secret-token")
 
 
-# ----------------------------------------------------------------------
-# e) gateway without response_format support
-# ----------------------------------------------------------------------
-def test_gateway_without_response_format_degrades_once():
-    with _FakeDialectServer("no_response_format") as server:
-        provider = OpenAICompatProvider(model="m", base_url=server.base_url)
-        result = provider.complete(system="s", prompt="p", expect_json=True)
-        assert result["text"] == "DIALECT-OK"
-        # first request carried response_format, the retry did not
-        assert "response_format" in server.requests[0]
-        assert "response_format" not in server.requests[1]
+class InputOnlyBridgeDialectTest(unittest.TestCase):
+    """b) input-only Responses bridge"""
+
+    def test_the_bridge_reads_input(self):
+        with _FakeDialectServer("input_only") as server:
+            provider = OpenAICompatProvider(model="bridge-model", base_url=server.base_url)
+            result = provider.complete(system="sys", prompt="bridge-prompt")
+            self.assertTrue(result["text"].startswith("INPUT-ECHO:"))
+            payload = server.requests[0]
+            # both keys are sent so strict gateways and bridges both work
+            self.assertEqual(payload["input"], "bridge-prompt")
+            self.assertEqual(payload["messages"][-1]["content"], "bridge-prompt")
 
 
-def test_gateway_without_response_format_raises_when_retry_also_fails():
-    class Always400(_FakeDialectServer):
-        def dispatch(self, path: str, payload: Dict[str, Any]):
-            return self._json({"error": {"message": "nope"}}, status=400)
+class SseChatDialectTest(unittest.TestCase):
+    """c) SSE streaming, OpenAI chat chunks"""
 
-    with Always400("no_response_format") as server:
-        provider = OpenAICompatProvider(model="m", base_url=server.base_url)
-        with pytest.raises(ProviderError):
-            provider.complete(system="s", prompt="p", expect_json=True)
-
-
-# ----------------------------------------------------------------------
-# f) Anthropic Messages API
-# ----------------------------------------------------------------------
-def test_anthropic_messages_dialect():
-    with _FakeDialectServer("anthropic") as server:
-        provider = AnthropicProvider(model="claude-test", base_url=f"http://127.0.0.1:{server.port}",
-                                      api_key="ck")
-        result = provider.complete(system="sys", prompt="hello")
-        assert result["text"] == "CLAUDE-TEXT"
-        assert result["usage"] == {"prompt_tokens": 13, "completion_tokens": 6, "total_tokens": 19}
-        payload = server.requests[0]
-        assert payload["system"] == "sys"
-        assert payload["messages"][0] == {"role": "user", "content": "hello"}
-        assert server.headers_seen[0].get("x-api-key") == "ck"
-        assert server.headers_seen[0].get("anthropic-version") == "2023-06-01"
+    def test_the_stream_is_folded(self):
+        with _FakeDialectServer("sse_chat") as server:
+            provider = OpenAICompatProvider(model="m", base_url=server.base_url)
+            result = provider.complete(system="s", prompt="p")
+            self.assertEqual(result["text"], "SSE-CHAT")
+            self.assertEqual(result["usage"]["total_tokens"], 13)
 
 
-# ----------------------------------------------------------------------
-# cross-dialect behaviour
-# ----------------------------------------------------------------------
-@pytest.mark.parametrize("dialect", ["openai_chat", "input_only", "sse_chat", "sse_responses", "no_response_format"])
-def test_every_chat_dialect_produces_text_and_usage(dialect: str):
-    with _FakeDialectServer(dialect) as server:
-        provider = OpenAICompatProvider(model="m", base_url=server.base_url)
-        result = provider.complete(system="s", prompt="p")
-        assert isinstance(result["text"], str) and result["text"]
-        assert set(result["usage"]) == {"prompt_tokens", "completion_tokens", "total_tokens"}
-        assert result["usage"]["total_tokens"] >= 0
+class SseResponsesDialectTest(unittest.TestCase):
+    """d) Responses event stream"""
+
+    def test_the_event_stream_is_folded(self):
+        with _FakeDialectServer("sse_responses") as server:
+            provider = OpenAICompatProvider(model="m", base_url=server.base_url)
+            result = provider.complete(system="s", prompt="p")
+            self.assertEqual(result["text"], "RES-EVENTS")
+            self.assertEqual(result["usage"],
+                             {"prompt_tokens": 21, "completion_tokens": 9, "total_tokens": 30})
+
+    def test_a_failed_event_raises(self):
+        class Failing(_FakeDialectServer):
+            def dispatch(self, path: str, payload: Dict[str, Any]):
+                events = [
+                    {"type": "response.output_text.delta", "delta": "partial"},
+                    {"type": "response.failed", "response": {"error": {"message": "upstream exploded"}}},
+                ]
+                body = "".join("data: " + json.dumps(e) + "\n\n" for e in events)
+                return body, 200, "text/event-stream"
+
+        with Failing("sse_responses") as server:
+            provider = OpenAICompatProvider(model="m", base_url=server.base_url)
+            with self.assertRaises(ProviderError) as ctx:
+                provider.complete(system="s", prompt="p")
+            self.assertIn("upstream exploded", str(ctx.exception))
 
 
-def test_usage_total_tokens_is_backfilled_when_missing():
-    class NoTotal(_FakeDialectServer):
-        def dispatch(self, path: str, payload: Dict[str, Any]):
-            return self._json({"choices": [{"message": {"content": "x"}}],
-                                "usage": {"prompt_tokens": 10, "completion_tokens": 5}})
+class NoResponseFormatDialectTest(unittest.TestCase):
+    """e) gateway without response_format support"""
 
-    with NoTotal("openai_chat") as server:
-        provider = OpenAICompatProvider(model="m", base_url=server.base_url)
-        result = provider.complete(system="s", prompt="p")
-        assert result["usage"]["total_tokens"] == 15
+    def test_the_call_degrades_once(self):
+        with _FakeDialectServer("no_response_format") as server:
+            provider = OpenAICompatProvider(model="m", base_url=server.base_url)
+            result = provider.complete(system="s", prompt="p", expect_json=True)
+            self.assertEqual(result["text"], "DIALECT-OK")
+            # first request carried response_format, the retry did not
+            self.assertIn("response_format", server.requests[0])
+            self.assertNotIn("response_format", server.requests[1])
+
+    def test_a_retry_that_also_fails_raises(self):
+        class Always400(_FakeDialectServer):
+            def dispatch(self, path: str, payload: Dict[str, Any]):
+                return self._json({"error": {"message": "nope"}}, status=400)
+
+        with Always400("no_response_format") as server:
+            provider = OpenAICompatProvider(model="m", base_url=server.base_url)
+            with self.assertRaises(ProviderError):
+                provider.complete(system="s", prompt="p", expect_json=True)
 
 
-def test_message_content_as_block_list_is_understood():
-    class BlockContent(_FakeDialectServer):
-        def dispatch(self, path: str, payload: Dict[str, Any]):
-            return self._json({"choices": [{"message": {"content": [
-                {"type": "text", "text": "BLOCK-A"},
-                {"type": "text", "text": "-BLOCK-B"},
-            ]}}], "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})
+class AnthropicDialectTest(unittest.TestCase):
+    """f) Anthropic Messages API"""
 
-    with BlockContent("openai_chat") as server:
-        provider = OpenAICompatProvider(model="m", base_url=server.base_url)
-        result = provider.complete(system="s", prompt="p")
-        assert "BLOCK-A" in result["text"] and "BLOCK-B" in result["text"]
+    def test_the_messages_api(self):
+        with _FakeDialectServer("anthropic") as server:
+            provider = AnthropicProvider(model="claude-test",
+                                         base_url=f"http://127.0.0.1:{server.port}",
+                                         api_key="ck")
+            result = provider.complete(system="sys", prompt="hello")
+            self.assertEqual(result["text"], "CLAUDE-TEXT")
+            self.assertEqual(result["usage"],
+                             {"prompt_tokens": 13, "completion_tokens": 6, "total_tokens": 19})
+            payload = server.requests[0]
+            self.assertEqual(payload["system"], "sys")
+            self.assertEqual(payload["messages"][0], {"role": "user", "content": "hello"})
+            self.assertEqual(server.headers_seen[0].get("x-api-key"), "ck")
+            self.assertEqual(server.headers_seen[0].get("anthropic-version"), "2023-06-01")
+
+
+class CrossDialectTest(unittest.TestCase):
+    def test_every_chat_dialect_produces_text_and_usage(self):
+        for dialect in ("openai_chat", "input_only", "sse_chat", "sse_responses",
+                        "no_response_format"):
+            with self.subTest(dialect=dialect):
+                with _FakeDialectServer(dialect) as server:
+                    provider = OpenAICompatProvider(model="m", base_url=server.base_url)
+                    result = provider.complete(system="s", prompt="p")
+                    self.assertIsInstance(result["text"], str)
+                    self.assertTrue(result["text"])
+                    self.assertEqual(set(result["usage"]),
+                                     {"prompt_tokens", "completion_tokens", "total_tokens"})
+                    self.assertGreaterEqual(result["usage"]["total_tokens"], 0)
+
+    def test_total_tokens_is_backfilled_when_missing(self):
+        class NoTotal(_FakeDialectServer):
+            def dispatch(self, path: str, payload: Dict[str, Any]):
+                return self._json({"choices": [{"message": {"content": "x"}}],
+                                    "usage": {"prompt_tokens": 10, "completion_tokens": 5}})
+
+        with NoTotal("openai_chat") as server:
+            provider = OpenAICompatProvider(model="m", base_url=server.base_url)
+            result = provider.complete(system="s", prompt="p")
+            self.assertEqual(result["usage"]["total_tokens"], 15)
+
+    def test_message_content_as_block_list_is_understood(self):
+        class BlockContent(_FakeDialectServer):
+            def dispatch(self, path: str, payload: Dict[str, Any]):
+                return self._json({"choices": [{"message": {"content": [
+                    {"type": "text", "text": "BLOCK-A"},
+                    {"type": "text", "text": "-BLOCK-B"},
+                ]}}], "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})
+
+        with BlockContent("openai_chat") as server:
+            provider = OpenAICompatProvider(model="m", base_url=server.base_url)
+            result = provider.complete(system="s", prompt="p")
+            self.assertIn("BLOCK-A", result["text"])
+            self.assertIn("BLOCK-B", result["text"])
+
+
+if __name__ == "__main__":
+    unittest.main()
