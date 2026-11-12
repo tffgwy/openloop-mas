@@ -500,3 +500,52 @@ fi          # 不存在时静默跳过
 [OK] mas --version / mas doctor --no-network / mas demo / mas bench --repeats 1
 [OK] fresh-install verification passed
 ```
+[OK] fresh-install verification passed
+```
+
+### CI 三平台实跑（run 43299517751，head `ed5b179`）
+
+`install` workflow 在 ubuntu / windows / macos 三平台全部 `success`，日志里的关键行：
+
+| 平台 | 安装器输出 | 断言 |
+| --- | --- | --- |
+| ubuntu-latest | `[OK] 6 skill folder(s) installed`、`[OK] created ~/.codex/config.toml and registered the MCP server`、`[OK] registered in ~/.claude.json` | pass |
+| windows-latest | 同上（`created ~/.codex/config.toml and registered the MCP server`） | pass |
+| macos-latest | 同上 | pass |
+
+这是 `install.sh` 在**原生 Linux / macOS** 上的第一次真机执行 —— 此前只在 Windows 与 Git Bash 下验证过。
+
+第一次推送时该 workflow 是红的，但**红的不是安装器**：断言步骤写成 `shell: python`，GitHub 会把 `run:` 里的命令行当成 Python **源码**交给解释器，于是报 `SyntaxError: invalid syntax`。改成 `shell: bash` 后三平台全绿。
+
+### 从 GitHub Release 下载 wheel 的用户路径（v0.4.7）
+
+Release 产物：`openloop_mas-0.4.7-py3-none-any.whl`（77,723 B）+ `openloop_mas-0.4.7.tar.gz`（99,179 B）。全新 venv 安装后：
+
+```
+$ mas --version
+openloop-mas 0.4.7
+$ mas doctor
+[OK  ] provider       openai_compat / claude-opus-5-5 @ http://127.0.0.1:16024/v1（免鉴权端点，由握手探测确认）
+[OK  ] endpoint       端点可用，协议方言 = openai-responses-events
+$ mas demo
+[OK ] closure     期望=closed             实际=closed             迭代=2 票=-
+[OK ] stagnation  期望=escalated          实际=escalated          迭代=4 票=T-...
+[OK ] budget      期望=budget_exhausted   实际=budget_exhausted   迭代=1 票=-
+$ mas bench --repeats 1
+符合预期 : 3/3      闭环率 : 100%      账本一致性 : 100%
+```
+
+真实端点闭环（`mas run`）：`task_id R-8853f87812-1`，`status closed`，`iterations 1`，`tokens_used 3987`，两条机检标准全部 `pass`。
+
+### OpenMausBot 端到端（重启后重跑）
+
+本机安装同步到 0.4.7 并重启 OpenMausBot（端口 28799）后重跑同一任务：
+
+```json
+{"event":"job","state":"completed","reason":"MausBot finished"}
+```
+
+- **run_id**：`R-d09530e7a2`（task_id `R-d09530e7a2-1`）
+- **status**：`closed`，**iterations**：1
+- 两条验收标准 c1 / c2 均 `pass`，`issues` 为空
+- `artifact_sha`：`d0f3091cb554`，`tokens_used` 3940
