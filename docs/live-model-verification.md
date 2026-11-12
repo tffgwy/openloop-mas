@@ -398,3 +398,30 @@ v0.4.3 的 Release 产物本身是好的（构建、twine 检查、GitHub Releas
 - GitHub Actions 15 任务矩阵（build / site / 3 OS × 5 Python 版本）全部 `success`
 
 **意义**：这不只是「让 CI 变绿」。它把「零依赖」这条产品承诺真正落到了测试层 —— 任何人 clone 下来 `pip install -e .` 就能跑全套测试，不需要先猜该装 pytest 还是 unittest。
+
+## v0.4.5：不要把「免鉴权端点」当成「配置不完整」
+
+实际在本机装 v0.4.4 时发现的一个诊断误报。
+
+**现象**：本机 Codex Responses 桥接在 `http://127.0.0.1:16024/v1`，不需要 API key（`api_key` 为空）。`mas doctor` 却报出：
+
+```
+[WARN] provider  openai_compat 缺少: 密钥(env MAS_API_KEY)（离线 mock 模式仍可用）
+[WARN] endpoint  端点未配置完整，跳过握手探测
+```
+
+**根因**：`run_doctor` 把「有 API key」当作揢测的前提（`if provider != "mock" and key and base_url`）。对任何免鉴权端点，握手探测都被跳过——而保护结果依然是真实的，只是无法提前告诉用户他的网关说的是哪种方言。
+
+**修法**：
+
+1. 揢测条件改为 `if provider != "mock" and base_url` —— 只要配了端点就发请求，让服务端的回答（200 / 401 / 400）本身弱我们。
+2. `provider` 检查项新增一个分支：无密钥但有 `base_url` → 判为 `ok`，描述为「免鉴权端点，由握手探测确认」；两者都缺才是 `warn`。
+
+**修后实测**：
+
+```
+[OK  ] provider  openai_compat / claude-opus-5-5 @ http://127.0.0.1:16024/v1（免鉴权端点，由握手探测确认）
+[OK  ] endpoint  端点可用，协议方言 = openai-responses-events
+```
+
+**回归测试**：`tests/test_probe.py` 新增 3 条（免密钥揢测、无端点误报、无密钥本地端点接受），全套 126 条通过（unittest 与 pytest 两套 runner 同源全绿）。

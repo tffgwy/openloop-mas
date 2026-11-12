@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -117,6 +118,46 @@ class ProbeTest(unittest.TestCase):
         result = probe("openai_compat", "", "m")
         self.assertEqual(result["status"], "warn")
         self.assertEqual(result["dialect"], DIALECT_UNKNOWN)
+
+    def test_probe_works_without_an_api_key(self):
+        # Keyless local gateways are a legitimate setup; a missing key must
+        # not stop the handshake.
+        with _Server(_openai_chat) as server:
+            result = probe("openai_compat", server.base_url, "m")
+        self.assertEqual(result["status"], "ok", result)
+        self.assertEqual(result["dialect"], DIALECT_OPENAI_CHAT)
+
+
+class DoctorEndpointCheckTest(unittest.TestCase):
+    """``mas doctor`` must not misreport keyless endpoints as unconfigured."""
+
+    @staticmethod
+    def _checks(config: dict) -> dict:
+        from mas.doctor import run_doctor
+
+        return {row["check"]: row for row in run_doctor(config)}
+
+    def test_keyless_endpoint_is_not_reported_as_missing(self):
+        rows = self._checks(
+            {"provider": "openai_compat", "model": "m", "base_url": "", "api_key": ""}
+        )
+        self.assertEqual(rows["provider"]["status"], "warn")
+        self.assertIn("base_url", rows["provider"]["detail"])
+
+    def test_keyless_local_endpoint_is_accepted_and_probed(self):
+        with _Server(_openai_chat) as server:
+            rows = self._checks(
+                {
+                    "provider": "openai_compat",
+                    "model": "m",
+                    "base_url": server.base_url,
+                    "api_key": "",
+                    "state_dir": tempfile.mkdtemp(),
+                }
+            )
+        self.assertEqual(rows["provider"]["status"], "ok", rows["provider"])
+        self.assertEqual(rows["endpoint"]["status"], "ok", rows["endpoint"])
+        self.assertIn(DIALECT_OPENAI_CHAT, rows["endpoint"]["detail"])
 
 
 if __name__ == "__main__":

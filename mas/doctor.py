@@ -108,12 +108,22 @@ def run_doctor(config: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
         results.append(_check("provider", "ok", "mock（离线模式，无需密钥）"))
     elif key and base_url:
         results.append(_check("provider", "ok", f"{provider} / {config.get('model')} @ {base_url}"))
+    elif base_url:
+        # No key, but an endpoint is configured. Keyless local gateways are
+        # a legitimate setup, so this is not a missing piece - the endpoint
+        # handshake below reports whether the server actually accepts us.
+        results.append(
+            _check(
+                "provider",
+                "ok",
+                f"{provider} / {config.get('model')} @ {base_url}（免鉴权端点，由握手探测确认）",
+            )
+        )
     else:
         missing = []
         if not key:
             missing.append(f"密钥(env {env_name})")
-        if not base_url:
-            missing.append("base_url")
+        missing.append("base_url")
         results.append(
             _check("provider", "warn", f"{provider} 缺少: {', '.join(missing)}（离线 mock 模式仍可用）")
         )
@@ -121,14 +131,18 @@ def run_doctor(config: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
     # A live handshake tells the user which dialect their gateway speaks
     # *before* the first deliverable is at stake. It is skipped in mock
     # mode and when the endpoint is not configured yet.
-    if provider != "mock" and key and base_url:
+    if provider != "mock" and base_url:
+        # Probe whenever an endpoint is configured. A missing API key is
+        # *not* a reason to skip: local gateways (the Codex Responses
+        # bridge, Ollama-free local proxies) are often keyless, and the
+        # server's own answer - 200, 401 or 400 - is the useful signal.
         try:
             live = probe_from_config(config, api_key=key)
         except Exception as exc:  # pragma: no cover - defensive
             live = {"status": "warn", "dialect": "unknown", "detail": f"探测异常: {exc}"}
         results.append(_check("endpoint", live.get("status", "warn"), str(live.get("detail", ""))))
     elif provider != "mock":
-        results.append(_check("endpoint", "warn", "端点未配置完整，跳过握手探测"))
+        results.append(_check("endpoint", "warn", "端点未配置，跳过握手探测"))
 
     return results
 
