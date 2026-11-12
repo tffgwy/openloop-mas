@@ -35,20 +35,31 @@ jobs:
           generate_release_notes: true
           files: dist/*
       - name: Publish to PyPI
-        # Only run when the repository secret exists. Without a token the
-        # upload fails with 403, and a failing publish step would also
-        # hide the GitHub release that was just created.
-        if: ${{ secrets.PYPI_API_TOKEN != '' }}
+        # NOTE: the `secrets` context is not available inside `if:` expressions.
+        # Using it there invalidates the whole workflow file, which GitHub
+        # reports as a zero-job failed run. The token is therefore passed via
+        # `env:` and the step decides what to do with an empty value itself.
+        id: publish
+        continue-on-error: true
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
-        run: python -m twine upload dist/*
+        run: |
+          if [ -z "${TWINE_PASSWORD}" ]; then
+            echo "::warning::PYPI_API_TOKEN is not configured - skipping the PyPI upload."
+            exit 0
+          fi
+          python -m twine upload dist/*
       - name: Report the PyPI publish status
         if: always()
+        env:
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
         run: |
-          if [ -z "${{ secrets.PYPI_API_TOKEN }}" ]; then
+          if [ -z "${TWINE_PASSWORD}" ]; then
             echo "::warning::PYPI_API_TOKEN is not configured - the GitHub release was created, but PyPI was not published."
             echo "::warning::Add the repository secret PYPI_API_TOKEN and re-run this workflow to publish."
-          else
+          elif [ "${{ steps.publish.outcome }}" = "success" ]; then
             echo "Published to PyPI."
+          else
+            echo "::warning::The PyPI upload failed. The GitHub release was still created."
           fi
