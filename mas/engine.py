@@ -43,8 +43,15 @@ from mas.orchestration import (
 from mas.providers import Provider, ProviderError, build_provider_chain
 from mas.roles import Roles
 from mas.tickets import TicketStore
-from mas.util import (normalize_verdict, now_iso, parse_criterion_shorthand, parse_json_loose, sha256_text,
-                      short_sha, strip_reasoning)
+from mas.util import (
+    normalize_verdict,
+    now_iso,
+    parse_criterion_shorthand,
+    parse_json_loose,
+    sha256_text,
+    short_sha,
+    strip_reasoning,
+)
 
 STATUS_CLOSED = "closed"
 STATUS_ESCALATED = "escalated"
@@ -667,7 +674,9 @@ class LoopEngine:
             "role": role,
             "provider": self.provider.name,
             "model": self.provider.model,
-            "provider_chain": getattr(self.provider, "describe", lambda: {})().get("chain", []),
+            "provider_chain": (self.provider.describe() or {}).get("chain", [])
+            if hasattr(self.provider, "describe")
+            else [],
             "ts": now_iso(),
         }
         entry.update(payload)
@@ -719,7 +728,10 @@ class LoopEngine:
                 if isinstance(item, dict) and item.get("id"):
                     model_scores.setdefault(str(item["id"]), item)
         merged: List[Dict[str, Any]] = []
-        for criterion, check in zip(crits, checks):
+        # ``checks`` is built one-per-criterion, so the two lists are the
+        # same length. ``strict=True`` makes a mismatch loud instead of
+        # silently dropping the trailing criteria.
+        for criterion, check in zip(crits, checks, strict=True):
             if not criterion.required:
                 merged.append(
                     {"id": criterion.id, "pass": True, "note": "optional criterion", "source": "skipped"}

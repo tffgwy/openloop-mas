@@ -268,8 +268,8 @@ class OpenAICompatProvider(_HttpProvider):
             payload.pop("response_format")
             try:
                 data = self._post_json(url, payload, headers)
-            except ProviderError:
-                raise exc
+            except ProviderError as retry_exc:
+                raise exc from retry_exc
         try:
             raw_text = data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:

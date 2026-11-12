@@ -29,7 +29,7 @@ DIALECT_UNKNOWN = "unknown"
 def _detect_dialect(raw: str) -> str:
     """Classify a raw response body into a dialect identifier."""
     stripped = raw.strip()
-    if stripped.startswith("{") or stripped.startswith("["):
+    if stripped.startswith(("{", "[")):
         try:
             data = json.loads(stripped)
         except ValueError:

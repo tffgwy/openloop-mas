@@ -81,10 +81,7 @@ def pick_angles(count: int, first: str = "") -> List[str]:
     around it instead of always starting at ``direct``.
     """
     count = max(1, int(count))
-    if first and first in CANDIDATE_ANGLES:
-        start = CANDIDATE_ANGLES.index(first)
-    else:
-        start = 0
+    start = CANDIDATE_ANGLES.index(first) if first and first in CANDIDATE_ANGLES else 0
     return [CANDIDATE_ANGLES[(start + i) % len(CANDIDATE_ANGLES)] for i in range(count)]
 
 

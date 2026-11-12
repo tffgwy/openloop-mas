@@ -5,8 +5,8 @@ import tempfile
 import unittest
 
 from mas.config import DEFAULT_CONFIG
-from mas.engine import Criterion, LoopEngine, evaluate_check
 from mas.demo import StaticProvider
+from mas.engine import Criterion, LoopEngine, evaluate_check
 from mas.teams import load_team
 
 

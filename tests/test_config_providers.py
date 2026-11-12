@@ -2,15 +2,22 @@
 
 import io
 import json
-import sys
 import os
 import pathlib
 import shutil
+import sys
 import tempfile
 import unittest
 
-from mas.config import (DEFAULT_CONFIG, DEFAULT_STATE_DIR, load_config, load_persisted_config,
-                       persistable_config, resolve_api_key, save_config)
+from mas.config import (
+    DEFAULT_CONFIG,
+    DEFAULT_STATE_DIR,
+    load_config,
+    load_persisted_config,
+    persistable_config,
+    resolve_api_key,
+    save_config,
+)
 from mas.providers import MockProvider, OpenAICompatProvider, build_provider
 from mas.util import force_utf8_output, parse_json_loose, strip_reasoning
 

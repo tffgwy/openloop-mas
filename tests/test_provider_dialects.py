@@ -264,15 +264,14 @@ class CrossDialectTest(unittest.TestCase):
     def test_every_chat_dialect_produces_text_and_usage(self):
         for dialect in ("openai_chat", "input_only", "sse_chat", "sse_responses",
                         "no_response_format"):
-            with self.subTest(dialect=dialect):
-                with _FakeDialectServer(dialect) as server:
-                    provider = OpenAICompatProvider(model="m", base_url=server.base_url)
-                    result = provider.complete(system="s", prompt="p")
-                    self.assertIsInstance(result["text"], str)
-                    self.assertTrue(result["text"])
-                    self.assertEqual(set(result["usage"]),
-                                     {"prompt_tokens", "completion_tokens", "total_tokens"})
-                    self.assertGreaterEqual(result["usage"]["total_tokens"], 0)
+            with self.subTest(dialect=dialect), _FakeDialectServer(dialect) as server:
+                provider = OpenAICompatProvider(model="m", base_url=server.base_url)
+                result = provider.complete(system="s", prompt="p")
+                self.assertIsInstance(result["text"], str)
+                self.assertTrue(result["text"])
+                self.assertEqual(set(result["usage"]),
+                                 {"prompt_tokens", "completion_tokens", "total_tokens"})
+                self.assertGreaterEqual(result["usage"]["total_tokens"], 0)
 
     def test_total_tokens_is_backfilled_when_missing(self):
         class NoTotal(_FakeDialectServer):

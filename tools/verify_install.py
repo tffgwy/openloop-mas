@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -96,8 +97,32 @@ def check_runtime(home: pathlib.Path) -> None:
     """The installed runtime must work, not just sit on disk."""
     app = home / ".mas" / "app"
     env = dict(os.environ, PYTHONPATH=str(app))
+    # The installed version must match the package version, otherwise a
+    # stale runtime copy in ~/.mas/app could silently shadow the new one.
+    version_result = subprocess.run(
+        [sys.executable, "-X", "utf8", "-m", "mas", "--version"],
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert version_result.returncode == 0, version_result.stderr[-400:]
+    # Read the expected version straight out of the *installed* runtime,
+    # not from this process' import path - the parent interpreter does not
+    # have the freshly installed package on its sys.path.
+    init_file = app / "mas" / "__init__.py"
+    assert init_file.exists(), f"runtime package missing: {init_file}"
+    match = re.search(r'__version__\s*=\s*"([^"]+)"', init_file.read_text(encoding="utf-8"))
+    assert match, f"cannot read __version__ from {init_file}"
+    installed_version = match.group(1)
+
+    expected = f"openloop-mas {installed_version}"
+    assert expected in version_result.stdout, (
+        f"version mismatch: expected {expected!r}, got {version_result.stdout.strip()!r}"
+    )
+    print(f"[OK] mas --version -> {version_result.stdout.strip()}")
+
     for args in (
-        ["--version"],
         ["doctor", "--no-network"],
         ["demo"],
         ["bench", "--repeats", "1"],

@@ -9,16 +9,15 @@ from __future__ import annotations
 
 import json
 import sys
-
-from mas.util import force_utf8_output
 from typing import Any, Dict, List, Optional
 
 from mas import __version__
 from mas.config import load_config, load_persisted_config, save_config
 from mas.doctor import run_doctor, summarize
 from mas.engine import LoopEngine
-from mas.report import build_report, ledger_markdown, replay_trace, render_markdown
+from mas.report import build_report, ledger_markdown, render_markdown, replay_trace
 from mas.teams import list_teams, load_team
+from mas.util import force_utf8_output
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "openloop-mas"

@@ -5,6 +5,14 @@
 
 **v0.2.0 加入了什么**：并行多候选竞争选优、对抗式交叉评审、多后端故障转移、HTTP/SSE 远程接入、闭环复盘报告与回放、交互式初始化向导、离线基准测试、真实闭环自检。
 
+**v0.4.8 修了什么**（远程接入不再是一扇没锁的门）：
+
+- **`mas http` 之前完全没有鉴权** —— `/call` 能执行任务、读账本，`/events` 能持续推送账本内容；只要把 `--host` 改成 `0.0.0.0`，再套一层反代或隧道，它就是一台**任何人都能开任务、读你账本的远程控制台**；
+- 现在设了 `MAS_HTTP_TOKEN`（或 `mas http --token ...`）后，除 `/health` 外的所有路由都需要 `Authorization: Bearer <token>`（或 `X-MAS-Token`），比较用 `hmac.compare_digest` 常量时间；
+- **绑定到非本机地址却没有令牌时，服务器直接拒绝启动**（退出码 2）—— 环境变量打错字不应该变成「公网裸奔」，这是 fail-closed；
+- 开启鉴权后 CORS 不再回 `*`，而是钉到 `http://127.0.0.1`，避免任意网页跨站调用；
+- 顺带修掉一个真实的 keep-alive 缺陷：鉴权拒绝发生在读取请求体之前，残留字节会让同一条连接的下一次请求解析错位、客户端直接卡死；现在请求体先读、后鉴权。
+
 **v0.4.7 修了什么**（「一键安装」现在有 CI 守护）：
 
 - **新机器上安装会静默丢掉 MCP 与 skills** —— 以前只有 `~/.codex/config.toml` **已存在**时才注册 MCP，全新机器上这一步被跳过，用户拿到的是「安装成功」却一个 MCP 工具都没有；
@@ -278,6 +286,7 @@ mas http --host 127.0.0.1 --port 8765
 | `/events` | GET | SSE 事件流，实时推送账本增长 |
 
 ```bash
+# 免鉴权（仅限本机访问）
 curl http://127.0.0.1:8765/health
 curl -X POST http://127.0.0.1:8765/call \
   -H 'Content-Type: application/json' \
@@ -285,7 +294,28 @@ curl -X POST http://127.0.0.1:8765/call \
 curl -N http://127.0.0.1:8765/events
 ```
 
-默认只监听 `127.0.0.1`。**对外暴露前请自行加反向代理与鉴权** —— 本项目不内置认证。
+### 鉴权（对外暴露时必做）
+
+`/call` 能执行任务、读账本，`/events` 能持续推送账本内容 —— 所以从 **v0.4.8** 起，HTTP 传输**内置鉴权**：
+
+```bash
+export MAS_HTTP_TOKEN=$(python -c "import secrets;print(secrets.token_urlsafe(32))")
+mas http --host 0.0.0.0 --port 8765
+```
+
+设了 `MAS_HTTP_TOKEN` 之后，除 `/health` 外的所有路由都需要令牌：
+
+```bash
+curl -H "Authorization: Bearer $MAS_HTTP_TOKEN" http://127.0.0.1:8765/tools
+curl -X POST http://127.0.0.1:8765/call \
+  -H "Authorization: Bearer $MAS_HTTP_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"tool":"mas_status","arguments":{}}'
+```
+
+也可以用 `X-MAS-Token: <token>` 请求头代替 `Authorization`。
+
+**fail-closed**：绑定到非本机地址（`0.0.0.0` / 局域网 IP）却**没有**令牌时，服务器**拒绝启动**（退出码 `2`）—— 环境变量写错不应该变成公网裸奔。开启鉴权后 CORS 也不再回 `*`，而是钉到 `http://127.0.0.1`，避免任意网页跨站调用。
 
 ---
 
@@ -468,7 +498,7 @@ mas resume ID     # 带人工意见继续
 mas teams         # 团队模板
 mas doctor        # 安装自检
 mas serve         # 以 MCP stdio 服务运行
-mas http          # 以 HTTP + SSE 运行（远程接入）
+mas http          # 以 HTTP + SSE 运行（远程接入；对外部署请设 MAS_HTTP_TOKEN）
 ```
 
 `mas run` 退出码：`0` = 闭合，`2` = 未闭合（升级或预算耗尽）。CI 里可以直接当门禁用。

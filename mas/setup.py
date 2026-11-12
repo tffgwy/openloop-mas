@@ -89,7 +89,6 @@ def run_wizard(current: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     print("回答几个问题即可生成配置；随时回车用默认值。")
     print("")
 
-    backend_ids = [item["id"] for item in BACKENDS]
     labels = [(item["id"], item["label"]) for item in BACKENDS]
     provider = _ask_choice("1) 选择模型后端：", labels, 0)
 

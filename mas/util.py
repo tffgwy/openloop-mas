@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import datetime as _dt
 import hashlib
 import json
@@ -131,10 +132,10 @@ def force_utf8_output() -> None:
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is None:
             continue
-        try:
+        # A stream that cannot be reconfigured (a closed pipe, a replaced
+        # stdout) must not take the CLI down.
+        with contextlib.suppress(ValueError, OSError):
             reconfigure(encoding="utf-8", errors="replace")
-        except (ValueError, OSError):  # pragma: no cover - platform dependent
-            pass
 
 
 _TRUE_WORDS = {"pass", "passed", "true", "yes", "ok", "success", "satisfied", "meet", "met", "符合", "通过"}

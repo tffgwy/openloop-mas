@@ -173,9 +173,8 @@ def persistable_config(config: Dict[str, Any]) -> Dict[str, Any]:
     payload = copy.deepcopy(config)
     env_name = str(payload.get("api_key_env") or "MAS_API_KEY")
     env_value = os.environ.get(env_name, "")
-    if payload.get("api_key"):
-        if not env_value or payload["api_key"] == env_value:
-            payload["api_key"] = ""
+    if payload.get("api_key") and (not env_value or payload["api_key"] == env_value):
+        payload["api_key"] = ""
     payload["api_key_env"] = env_name
     state = str(payload.get("state_dir") or "")
     if os.environ.get("MAS_STATE_DIR") and state == os.environ["MAS_STATE_DIR"]:

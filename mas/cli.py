@@ -6,20 +6,19 @@ import argparse
 import json
 import pathlib
 import sys
-
-from mas.util import force_utf8_output, parse_criterion_shorthand
 from typing import Any, Dict, List
 
 from mas import __version__
+from mas.bench import format_bench, run_bench
 from mas.config import load_config, load_persisted_config, save_config
 from mas.demo import run_scenarios
 from mas.doctor import run_doctor, summarize
-from mas.bench import format_bench, run_bench
 from mas.engine import LoopEngine
-from mas.report import build_report, ledger_markdown, replay_trace, render_markdown
 from mas.orchestration import CANDIDATE_ANGLES
+from mas.report import build_report, ledger_markdown, render_markdown, replay_trace
 from mas.setup import format_verify, run_verify, run_wizard
 from mas.teams import list_teams, load_team
+from mas.util import force_utf8_output, parse_criterion_shorthand
 
 
 def _print(payload: Any, as_json: bool = False) -> None:
@@ -338,7 +337,7 @@ def cmd_http(args: argparse.Namespace) -> int:
     """Serve the MCP tool surface over HTTP + SSE."""
     from mas.http_server import serve_http
 
-    return serve_http(args.host, args.port, args.verbose)
+    return serve_http(args.host, args.port, args.verbose, args.token)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -468,6 +467,11 @@ def build_parser() -> argparse.ArgumentParser:
     http.add_argument("--host", default="127.0.0.1")
     http.add_argument("--port", type=int, default=8765)
     http.add_argument("--verbose", action="store_true")
+    http.add_argument(
+        "--token",
+        default=None,
+        help="鉴权令牌（默认读取环境变量 MAS_HTTP_TOKEN）；绑定非本机地址时必填",
+    )
     http.set_defaults(func=cmd_http)
 
     return parser

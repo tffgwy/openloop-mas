@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 
 from mas.http_server import MASRequestHandler, _QuietThreadingHTTPServer
-from mas.report import build_report, ledger_markdown, replay_trace, render_markdown
+from mas.report import build_report, ledger_markdown, render_markdown, replay_trace
 
 
 class TestHTTPTransport(unittest.TestCase):

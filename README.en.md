@@ -224,8 +224,26 @@ mas http --host 127.0.0.1 --port 8765
 | `/call` | POST | call any tool, JSON in / JSON out |
 | `/events` | GET | SSE stream of ledger growth |
 
-It binds `127.0.0.1` by default. **Put a reverse proxy and authentication in
-front of it before exposing it** - this project ships no auth of its own.
+### Authentication (required when exposing it)
+
+`/call` executes tools and reads the ledger; `/events` streams the ledger
+continuously. Since **v0.4.8** the HTTP transport therefore ships with
+built-in authentication:
+
+```bash
+export MAS_HTTP_TOKEN=$(python -c "import secrets;print(secrets.token_urlsafe(32))")
+mas http --host 0.0.0.0 --port 8765
+```
+
+With `MAS_HTTP_TOKEN` set, every route except `/health` requires the token,
+either as `Authorization: Bearer <token>` or as `X-MAS-Token: <token>`.
+
+**Fail-closed**: binding to a non-loopback address (`0.0.0.0`, a LAN IP)
+*without* a token makes the server **refuse to start** (exit code `2`) - a
+typo in an environment variable must never turn into an open, world-reachable
+control plane. With authentication on, CORS is pinned to
+`http://127.0.0.1` instead of `*`, so no arbitrary web page can call it
+cross-site.
 
 ---
 
