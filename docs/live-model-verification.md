@@ -549,3 +549,168 @@ $ mas bench --repeats 1
 - **status**：`closed`，**iterations**：1
 - 两条验收标准 c1 / c2 均 `pass`，`issues` 为空
 - `artifact_sha`：`d0f3091cb554`，`tokens_used` 3940
+
+---
+
+## v0.4.8 收口：HTTP 鉴权缺陷定位与修复 + CI lint 收口
+
+### 发现的真实安全缺陷：`mas http` 此前完全没有鉴权
+
+`mas/http_server.py` 原本对所有路由开放：
+
+| 路由 | 原本行为 | 风险 |
+| --- | --- | --- |
+| `GET /health` | 开放 | 仅返回版本号，无害（保留开放） |
+| `GET /tools` | 开放 | 暴露工具清单 |
+| `POST /call` | 开放 | **可执行任务**（`mas_run`） |
+| `GET /events` | 开放 | **SSE 持续推送账本内容** |
+
+原来的默认启动方式是 `mas http --host 127.0.0.1`，但 `--host` 是自由参数：一旦改成 `0.0.0.0` 并套一层反向代理或隧道，它就变成一台**任何人都能开任务、读你账本的远程控制台**。README 里旧那句「本项目不内置认证」等于把这个坑写进了文档。
+
+### 修法（4 层）
+
+1. **令牌来源**：`MAS_HTTP_TOKEN` 环境变量，或 `mas http --token <tok>` 参数。环境变量优先于命令行。
+2. **鉴权头**：除 `/health` 外，所有路由接受 `Authorization: Bearer <token>` 或 `X-MAS-Token: <token>` 两种形式。
+3. **常量时间比较**：用 `hmac.compare_digest`，避免时序侧信道。
+4. **fail-closed**：绑定到**非 loopback** 地址且没有令牌时，**拒绝启动**并退出码 2 —— 不是「警告后继续」。
+
+附带修掉一个真实的 keep-alive 缺陷：鉴权拒绝原本发生在**读取请求体之前**，残留字节会让同一连接上的下一个请求解析错位，客户端表现为卡死。现在改成**先读请求体、后鉴权**。
+
+同时，开启鉴权后 CORS 从通配 `*` 钉到 `http://127.0.0.1`。
+
+### 新增测试（`tests/test_http_auth.py`，12 条）
+
+覆盖：loopback 判定（`127.0.0.1` / `::1` / `localhost` / `0.0.0.0` / `192.168.x.x`）、带令牌时无凭证 401、错误令牌 401、Bearer 与 `X-MAS-Token` 两种头都放行、CORS 被钉住、`/health` 保持开放、fail-closed 拒绝启动。
+
+### 真实进程探针（非 mock，非单测桩）
+
+用 Python 起真实的 `mas http` 子进程 + `urllib` 打真实 socket：
+
+```
+health              -> 200
+tools  (no token)   -> 401
+tools  (bad token)  -> 401
+tools  (good token) -> 200
+call   (no token)   -> 401
+call   (good token) -> 200
+```
+
+fail-closed 探针：
+
+- `mas http --host 0.0.0.0` 无令牌 → **exit 2** + 中文拒绝提示
+- `mas http`（loopback）无令牌 → `/tools` 200（本地开发不受影响）
+
+### 真实 Tailscale HTTPS 路径
+
+起 `tailscale serve --bg --https=8768 http://127.0.0.1:8768`，从 tailnet 入口 `https://win-io6eufe3grh.tail4c219e.ts.net:8768` 打：
+
+```
+health              -> 200
+tools  (no token)   -> 401
+tools  (bad token)  -> 401
+tools  (good token) -> 200
+call   (no token)   -> 401
+call   (good token) -> 200
+```
+
+即：**走真实 HTTPS + 反代 + 公网可信域名，鉴权依然生效**。验证完已用 `tailscale serve --https=8768 off` 清理，未留常驻配置。
+
+### 顺带修掉的测试隔离漏洞
+
+`tests/conftest.py` **只被 pytest 自动加载**；CI 用的 `python -m unittest discover -s tests` 根本没加载它 → 测试读到了真实用户的 `~/.mas/config.json`（真实端点），表现为间歇性 timeout —— 这正是「CI 偶发红、本地全绿」的根因。
+
+修法：隔离逻辑移到 `tests/_isolation.py`（强制 `MAS_PROVIDER=mock`），新增 `tests/__init__.py` 触发导入，`conftest.py` 仅 re-export pytest hook。结果：unittest 耗时从 60s 降到 ~30s，连续 5 次全绿不再 flake。
+
+### 引入可复现的 lint 配置
+
+此前仓库**没有任何 ruff 配置**，CI 也不跑 lint —— 之前那句「All checks passed」只是本地默认规则的假象（`ruff check .` 实际报 429 errors）。
+
+新增 `[tool.ruff]` / `[tool.ruff.lint]` 到 `pyproject.toml`：`target-version=py310`、`line-length=100`、`select=["E","F","W","I","B","SIM","C4","RET","ARG","PIE","RUF"]`。
+
+ignore 理由：`E501`（中文诊断行超长）、`BLE001`（边界层故意捕获）、`ARG001/ARG002`（CLI 入口参数）、`RUF001/002/003`（中文全角标点被误判为混淆字符）、`RUF100`（代码里存在针对未启用规则的 noqa 标记）。per-file-ignores：`tests/*` = `["ARG","SLF","PLR2004","F841","RUF015"]`，`tools/*` = `["ARG","PLR2004","SIM105"]`。
+
+CI 新增独立 `lint` job（ubuntu + Python 3.12 + `ruff check mas tests tools`）。
+
+### ruff 揪出的真实代码问题（全部已修）
+
+| 文件 | 问题 | 修法 |
+| --- | --- | --- |
+| `mas/providers.py` | B904 `raise exc` 丢失因果链 | `raise exc from retry_exc` |
+| `mas/setup.py` | F841 未使用的 `backend_ids` | 删除 |
+| `mas/util.py` | SIM105 `try/except/pass` | 改用 `contextlib.suppress(ValueError, OSError)` |
+| `mas/probe.py` | PIE810 `startswith(a) or startswith(b)` | `startswith((a, b))` |
+| `mas/engine.py` | PIE807 无用 lambda | 改 `describe()` 条件调用 |
+| `mas/engine.py` | B905 `zip` 无长度校验 | 加 `strict=True`（checks 与 crits 一一对应） |
+| `mas/config.py` | SIM102 嵌套 if | 合并 |
+| `mas/orchestration.py` | SIM108 if/else 三元 | 改三元 |
+
+import 排序由 `ruff check --fix` 自动处理。
+
+### 本轮本地验证
+
+```
+unittest discover -s tests  ->  Ran 139 tests OK   （连跑 5 次全绿）
+pytest tests -q             ->  139 passed, 8 subtests passed
+ruff check mas tests tools  ->  All checks passed!
+```
+
+隔离 HOME 全新安装（`install.ps1 -InstallDir work/_iso048/.mas -SkipDemo`）+ `tools/verify_install.py`：
+
+```
+[OK] install assertions passed
+[OK] MCP server answered with 12 tools
+[OK] mas --version -> openloop-mas 0.4.8
+[OK] mas doctor --no-network
+[OK] mas demo
+[OK] mas bench --repeats 1
+[OK] fresh-install verification passed
+```
+
+`tools/verify_install.py` 同时新增**安装版本断言** —— 从已安装 runtime 的 `mas/__init__.py` 用正则读 `__version__`，而不是走父进程 import path（否则 `ModuleNotFoundError`）。
+
+### v0.4.8 CI 与 Release 证据
+
+提交 `d568804` 触发的四个 workflow **全部 success**：
+
+| workflow | run id | 结论 |
+| --- | --- | --- |
+| `release` | 43307190818 | success |
+| `pages` | 43307161819 | success |
+| `ci` | 43307161987 | success（`lint` + `site` + `build` + 15 个 test 矩阵） |
+| `install` | 43307161900 | success（windows / macos / ubuntu 三平台） |
+
+`ci` 的 job 明细：
+
+```
+lint                             success
+site                             success
+build                            success
+test (ubuntu-latest, 3.10~3.13)  4 x success
+test (windows-latest, 3.10~3.13) 4 x success
+test (macos-latest, 3.10~3.13)  4 x success
+```
+
+Release 产物：`openloop_mas-0.4.8-py3-none-any.whl`（80,422 B）+ `openloop_mas-0.4.8.tar.gz`（104,481 B）。从 `gh release download v0.4.8` 下载 wheel → 全新 venv 安装 → `mas --version` = `openloop-mas 0.4.8`；`mas doctor` 的 provider / endpoint 全 OK，方言 = `openai-responses-events`。
+
+### v0.4.8 真实端点闭环
+
+`mas run`（v0.4.8 独立 venv，真实端点）：
+
+```json
+{"run_id": "R-aea1a8ba15", "task_id": "R-aea1a8ba15-1", "status": "closed",
+ "closed": true, "iterations": 1, "tokens_used": 3934,
+ "artifact_sha": "d0f3091cb554"}
+```
+
+两条机检标准 c1 / c2 均 `pass`，`issues` 为空。
+
+本机安装同步到 0.4.8 后，OpenMausBot 端到端（端口 28799）：
+
+```json
+{"event":"job","state":"completed","reason":"MausBot finished"}
+```
+
+- **run_id**：`R-1ee0025b0f`（task_id `R-1ee0025b0f-1`）
+- **status**：`closed`，**iterations**：1
+- **artifact_sha**：`d0f3091cb554`，`tokens_used` 4009
+- MCP 握手：`handshake: ok, 12 tools`（`mas_run`, `mas_status`, `mas_ledger`, `mas_tickets`, `mas_ticket_resolve`, `mas_resume`, `mas_report`, `mas_replay`, `mas_export`, `mas_teams`, `mas_doctor`, `mas_config`）

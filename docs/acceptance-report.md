@@ -309,3 +309,59 @@ CLI 新增子命令：`report` `replay` `export` `verify` `bench` `http`；
 2. 若要把「四个小 Skills」的既有读者导流过来：在 README 加一节「和 story 系列的关系」，说明 MAS 是**通用闭环层**，story 系列是**写作域的用法**。
 3. 若要接更多协议（HTTP 化 MCP、Slack/飞书机器人入口），当前仓库尚未包含，可作为 v0.2.0 议题。
 4. 需要给项目配仓库 Pages / Release / 中文视频脚本，可在本机继续做。
+
+---
+
+## 附录 A：v0.4.8 增量验收（2026-11-13，本轮实测）
+
+> 本文档主体是 **v0.2.0 时期**的历史验收记录，保留原文作为演进轨迹。下面列出到 v0.4.8 为止**已被推翻或已补齐**的旧结论。
+
+### A.1 旧结论的更正
+
+| 旧结论（v0.2.0 原文） | v0.4.8 现状 | 证据 |
+| --- | --- | --- |
+| 「本轮 OpenMausBot 端到端闭环用的是 **mock provider**（`config.json` 里 `provider = "mock"`），交付物正文是占位草稿」 | **已推翻**。本机 `~/.mas/config.json` 现为 `provider=openai_compat` / `model=claude-opus-5-5` @ `http://127.0.0.1:16024/v1`；OpenMausBot 端到端闭环 `R-1ee0025b0f` 是**真实端点**产出，`artifact_sha=d0f3091cb554`，`tokens_used=4009`，`iterations=1`，`status=closed` | `mas run` 输出 JSON + `openmausbot run MausBot` 事件流 |
+| 「若要接更多协议（**HTTP 化 MCP**、Slack/飞书机器人入口），当前仓库尚未包含，可作为 v0.2.0 议题」 | **已推翻**。HTTP 化 MCP 自 v0.2.0 起就存在（`mas/http_server.py`，`/health` `/tools` `/call` `/events`）；**v0.4.8 起还内置了鉴权** | `mas/http_server.py`、`tests/test_http_auth.py` |
+| 「**手机接入未配置** —— 本机无 HTTPS 入口（未启用 Tailscale / 隧道 / 反代）」 | **已推翻**。v0.4.8 用真实 Tailscale HTTPS 入口 `https://win-io6eufe3grh.tail4c219e.ts.net:8768` 实测过鉴权链路（health 200 / 无令牌 401 / 错令牌 401 / 正确令牌 200）。**但未留常驻配置**，验证后已 `tailscale serve --https=8768 off` 清理 | Tailscale serve 真实进程探针输出 |
+| 「v0.2.0 新链路尚未在真实模型端点跑过」（并行候选、故障转移、对抗评审） | **部分更正**。真实端点已验证**主闭环链路**（`mas run` + OpenMausBot 端到端）；并行候选 / 故障转移 / 对抗评审三条链路仍**只有 mock 与注入式测试**覆盖，**未在真实端点跑过** | v0.4.8 真实端点闭环 `R-aea1a8ba15` / `R-1ee0025b0f`；`tests/` 139 条 |
+| 「PyPI 未真实发布」 | **仍然成立**。`https://pypi.org/pypi/openloop-mas/json` 返回 404；`gh secret list` 为空，缺 `PYPI_API_TOKEN` | 本轮 `gh secret list` + PyPI JSON 接口 |
+
+### A.2 v0.4.8 新增的安全承诺
+
+**`mas http` 从「无鉴权」升级为「内置鉴权 + fail-closed」** —— 这是本版本最重要的改动。修复前，绑定非本机地址即等于公开远程控制台（可开任务、可读账本）。修复后：
+
+- 除 `/health` 外所有路由需 `Authorization: Bearer <tok>` 或 `X-MAS-Token: <tok>`；
+- 用 `hmac.compare_digest` 常量时间比较；
+- 绑定非 loopback 且无令牌 → **拒绝启动，退出码 2**；
+- 附带修掉鉴权拒绝发生在读请求体之前导致的 keep-alive 解析错位（客户端卡死）；
+- 开启鉴权后 CORS 从 `*` 钉到 `http://127.0.0.1`。
+
+### A.3 v0.4.8 验收证据汇总（本轮工具输出）
+
+| 项 | 结果 |
+| --- | --- |
+| `unittest discover -s tests` | **Ran 139 tests OK**（连跑 5 次全绿） |
+| `pytest tests -q` | **139 passed, 8 subtests passed** |
+| `ruff check mas tests tools` | **All checks passed!**（新增 `[tool.ruff]` 配置 + CI `lint` job） |
+| 隔离 HOME 全新安装 + `tools/verify_install.py` | 7 项全 OK（断言 / MCP 12 工具 / version / doctor / demo / bench） |
+| 真实进程 HTTP 鉴权探针 | health 200 / 无令牌 401 / 错令牌 401 / 正确令牌 200 |
+| fail-closed 探针 | `mas http --host 0.0.0.0` 无令牌 → **exit 2** |
+| 真实 Tailscale HTTPS 路径 | 401/401/200 三段对照全部符合预期 |
+| CI `ci` workflow（run 43307161987） | **success** —— `lint` + `site` + `build` + 15 个 test 矩阵 |
+| CI `install` workflow（run 43307161900） | **success** —— windows / macos / ubuntu 三平台 |
+| CI `release` workflow（run 43307190818） | **success** —— wheel 80,422 B + sdist 104,481 B |
+| CI `pages` workflow（run 43307161819） | **success** |
+| Release wheel 用户路径 | 全新 venv → `openloop-mas 0.4.8`，doctor provider/endpoint 全 OK，方言 `openai-responses-events` |
+| 真实端点 `mas run` | `R-aea1a8ba15` / closed / iter 1 / 3934 tokens |
+| OpenMausBot 端到端 | `R-1ee0025b0f` / closed / iter 1 / 4009 tokens，MCP 握手 12 工具 |
+
+### A.4 仍然成立的边界（v0.4.8）
+
+1. **真实模型实测只覆盖一个端点**（`claude-opus-5-5` @ Codex Responses 桥接 `http://127.0.0.1:16024/v1`，免鉴权）。Kimi / DeepSeek / Qwen / 原生 OpenAI 本机无端点，**未实测**；方言风险由契约测试覆盖（非真实端点）。
+2. **契约测试覆盖协议形状**，不保证每个厂商接受额外的 `input` 字段（严格厂商可能 400，可用 `extra_headers` / `fallbacks` 切换）。
+3. **判定的是结构不是事实**；对抗评审发现的 `return list(seen)` 恒空 bug 仍是模型判断，未做语义级自动校验。
+4. **真实端点下未做多轮崩溃恢复的账本重放校验** —— 账本一致性 100% 是 mock 结论。
+5. **PyPI 仍未发布**：缺 secret `PYPI_API_TOKEN`。
+6. **手机接入未常驻配置** —— 链路已验证可通（见 A.1），但 `mas http` 未常驻、Tailscale serve 已关闭。
+7. `install.ps1` 只在本机 Windows 跑过；`install.sh` 的原生 Linux/macOS 验证依赖 install CI（v0.4.8 三平台全绿）。
+8. **不承诺流量、签约、平台批准或检测结果**。
