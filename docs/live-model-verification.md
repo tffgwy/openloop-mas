@@ -381,3 +381,20 @@ c1 pass=true source=rule note=regex /(?s)def dedupe.*set/ matched
 - 契约测试保证的是「请求和响应能被正确理解和组装」，不保证每个厂商都接受
   `input` 这个额外字段（严格 OpenAI 会忽略它，但个别厂商可能拒绝未知字段）。
   若某个厂商因此报 400，可用 `extra_headers` 或改用 `fallbacks` 切换后端。
+
+## v0.4.4：让 CI 矩阵和运行时说同一种话
+
+v0.4.3 的 Release 产物本身是好的（构建、twine 检查、GitHub Release 全部成功），但**CI 矩阵是全红的**。
+
+**根因**：v0.4.3 新增的 `tests/test_provider_dialects.py` 与 `tests/test_probe.py` 使用了 pytest 风格断言与参数化装饰器，而 CI 矩阵执行的是 `python -m unittest discover -s tests`。项目定位是「零第三方依赖」，CI 环境并未安装 pytest，于是收集阶段直接 `ModuleNotFoundError: No module named 'pytest'`。
+
+**修法**：把这两个文件全部改写为标准库 `unittest` 写法 —— `pytest.raises` → `assertRaises`，`pytest.mark.parametrize` → `subTest`。运行时代码一行未改，`mas/` 目录与 v0.4.3 完全一致。
+
+**验证（两套 runner 同源）**：
+
+- `python -m unittest discover -s tests` → `Ran 123 tests ... OK`
+- `python -m pytest tests -q` → `123 passed, 8 subtests passed`
+- `ruff check mas tests tools --select F821,F401,F811` → `All checks passed`
+- GitHub Actions 15 任务矩阵（build / site / 3 OS × 5 Python 版本）全部 `success`
+
+**意义**：这不只是「让 CI 变绿」。它把「零依赖」这条产品承诺真正落到了测试层 —— 任何人 clone 下来 `pip install -e .` 就能跑全套测试，不需要先猜该装 pytest 还是 unittest。

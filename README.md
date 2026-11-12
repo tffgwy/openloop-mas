@@ -5,6 +5,12 @@
 
 **v0.2.0 加入了什么**：并行多候选竞争选优、对抗式交叉评审、多后端故障转移、HTTP/SSE 远程接入、闭环复盘报告与回放、交互式初始化向导、离线基准测试、真实闭环自检。
 
+**v0.4.4 修了什么**（把 CI 矩阵修回全绿，运行时行为与 v0.4.3 完全一致）：
+
+- v0.4.3 的新增测试用了 pytest 风格（`pytest.raises` / `parametrize`），但 CI 矩阵跑的是标准库 `unittest`，pytest 又不在依赖列表里 —— 结果 Release 产物是好的，CI 却是全红；
+- v0.4.4 把这批测试全部改写成纯 `unittest`（`assertRaises` / `subTest`），恢复「零第三方依赖」的项目定位；
+- 同一份测试现在两套 runner 都通过：`python -m unittest discover -s tests` 与 `python -m pytest tests -q` 各 123 条全绿。
+
 **v0.4.3 修了什么**（协议方言保障 + 端点握手，详见 [真实模型验证报告](docs/live-model-verification.md)）：
 
 - **协议方言变成可执行契约** —— 6 种真实世界的接入形状（标准 OpenAI、只读 `input` 的桥接、SSE 流、Responses 事件流、不支持 `response_format` 的网关、Anthropic Messages）各有契约测试，连带全链路闭环测试；
