@@ -53,5 +53,5 @@ jobs:
             -InstallDir $env:MAS_HOME
 
       - name: Assert the fresh install is complete and working
-        shell: python
+        shell: bash
         run: python tools/verify_install.py "${{ runner.temp }}/fresh-home"
