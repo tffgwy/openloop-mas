@@ -221,6 +221,87 @@ Workflow name = release.yml。登记后直接 `gh workflow run release.yml -f ta
 替代路径：用户自行 `gh secret set PYPI_API_TOKEN` 写入一个 PyPI API token
 （**不要在对话里回显明文**），workflow 会自动走 token 路径。
 
+---
+
+## v0.7.2 追加验收（2026-11-13）
+
+### 触发原因
+
+v0.7.1 修完了三个真实缺陷，但**判定语义本身没有文档契约，也没有测试钉住**。
+机检是整个闭环的仲裁者——「模型说可以」永远压不过「规则说不通过」——
+可如果 `section` 到底认不认 `#` 一级标题、`regex` 跨不跨行、
+`lines_min` 算不算空行，这些都只存在于实现里，那么「写标准的人」就只能靠试。
+
+v0.7.2 的主题是：**把 8 种 check 类型的精确语义公开成契约，并用测试钉死。**
+
+### C.1 审计范围与结论
+
+| 审计项 | 方法 | 结论 |
+| --- | --- | --- |
+| CLI 子命令一致性 | 枚举真实 subcommand 后全量扫描 README/README.en/全部 SKILL.md/全部 docs | **一致**，3 处命中均为误报（裸词 `mas`、散文里的 `probe`、路径里的 `tests`），无需修 |
+| 8 种 check 类型语义 | 直接读 `mas/engine.py::evaluate_check` 源码 + 逐类型实测 | 与文档描述一致，但**精确口径此前只存在于实现里**，见 C.2 |
+
+### C.2 钉死的精确语义（本轮实测确认）
+
+| 类型 | 精确判定 | 容易踩的坑 |
+| --- | --- | --- |
+| `contains` | 产物含给定字符串；`arg` 可为数组，**全部命中**才算通过 | 数组漏一项整条失败 |
+| `not_contains` | 产物**不含**任何给定字符串 | 数组是「一个都不能出现」 |
+| `min_chars` / `max_chars` | 产物的**字符数**（含空白与换行） | 不是字数也不是字节数 |
+| `regex` | `re.search` 匹配，**自动带 DOTALL**（`.` 能跨行） | 想跨行不必加 `(?s)`；命中的是子串不是全串 |
+| `lines_min` | **非空行**数（空行不计） | 段落间空行不影响计数 |
+| `section` | 产物里存在 `## <arg>` 这一行 | **必须是二级标题 `##`**，`#`/`###` 都不算 |
+| `json_keys` | 产物须是 JSON **对象**且含全部给定键 | 产物不是合法 JSON 直接判不通过 |
+
+另外两条边界：
+
+- **未知类型 → `unjudged`（不通过）**，不会静默放过。
+- **参数非法（如 `min_chars:很多`）→ 退回纯描述**，即该标准**没有机检**，由模型判定。
+  标准宁可没有机检，也不能声称自己能检查却做不到。
+
+### C.3 本轮改动
+
+| 文件 | 改动 |
+| --- | --- |
+| `mas/skills/mas-loop/SKILL.md` | 新增「各类型的精确语义」表 + CLI 简写形式的说明 |
+| `README.md` | 机检章节补精确语义表 + 简写参数非法时的退回行为 |
+| `README.en.md` | 补**整节**简写写法（此前英文版完全缺失，中英不一致）并补精确语义表 |
+| `tests/test_engine.py` | 新增 `CheckSemanticsTest`，9 个方法逐条钉死上表口径 |
+| `mas/__init__.py` / `pyproject.toml` | 版本 0.7.1 → 0.7.2 |
+
+`README.en.md` 此前没有简写章节，而 `README.md` 有——这是本轮发现的**真实中英文档不一致**。
+
+### C.4 本轮实测证据
+
+| 验收项 | 结果 | 证据 |
+| --- | --- | --- |
+| 全量测试 | **225 tests OK (skipped=4)**，~18.1 秒 | `unittest discover -s tests`（较 0.7.1 的 216 增 9） |
+| 语义测试 | `CheckSemanticsTest` 20 → 9 个新方法全绿 | `unittest discover -s tests -p test_engine.py` → Ran 20, OK |
+| lint | All checks passed | `ruff check mas tests tools` |
+| 站点构建 | 9 页正常生成 | `tools/build_site.py` |
+| 版本号 | `mas.__version__ == 0.7.2` | `python -c "import mas; print(mas.__version__)"` |
+
+### C.5 v0.7.2 仍然成立的边界
+
+1. **PyPI 仍未发布**——本轮验证的是 GitHub Release 的正式 wheel，不是 PyPI 包。
+2. 真实端点实测只覆盖 `claude-opus-5-5` @ `127.0.0.1:16024/v1`（免鉴权）；Kimi / DeepSeek / Qwen / 原生 OpenAI 本机无端点，**未实测**。
+3. 契约测试覆盖协议形状，不保证每厂商接受额外的 `input` 字段。
+4. 判定的是结构不是事实；对抗评审发现的 `return list(seen)` 恒空 bug 仍是模型判断。
+5. 真实端点下未做多轮崩溃恢复的账本重放校验。
+6. 手机接入是 **tailnet only**（`https://win-io6eufe3grh.tail4c219e.ts.net:8768`），非公网 Funnel。
+7. `install.ps1` 的 PATH 步骤写 HKCU 注册表，**不受隔离 HOME 影响**；后续隔离测试须加 `-SkipPath`。
+8. `mas install` **不写 PATH**（pip 装时 `mas` 已可用；源码装仍需 `install.ps1`/`install.sh`）。
+9. `mas uninstall` **不删 `~/.mas`**（账本保留），也不动 pip 包。
+10. 不承诺流量 / 签约 / 平台批准 / 检测结果。
+11. 星数说法无法核实：`gh search repos` 未找到「四个小 Skills 400+ 星」对应仓库；OpenMausBot 主仓库 `milind-soni/OpenMausBot` 实测 21,590 星。**「400+ 星」不要复述为事实**。
+12. `tffgwy/openloop-mas` 当前 stars=0 / forks=0 / open issues=0。
+13. OpenMausBot 端口 28799；Windows 无官方 service install，用 Startup 文件夹。
+14. 本机 OpenMausBot 配置各实例 `environment` 均为空 → 本机不存在明文 API key。
+15. `mas http` 的 `/health` 永远开放（只含版本号）。
+16. `mas http` 绑定非 loopback 且无令牌 → **拒绝启动，退出码 2**（fail-closed）。
+17. `RunResult` 字段是 `tokens_used`（不是 `tokens`）。
+18. `mas/util.py` 的 `parse_criterion_shorthand` 返回 `{"desc": ...}`（无 check）表示「不是简写」。
+
 
 ---
 

@@ -150,5 +150,61 @@ class TestLoopClosure(unittest.TestCase):
             self.assertTrue(merged[0]["pass"])
 
 
+
+class CheckSemanticsTest(unittest.TestCase):
+    """Pin the exact semantics of every supported machine check type."""
+
+    def check(self, kind, arg, artifact):
+        criterion = Criterion("c1", "d", {"type": kind, "arg": arg})
+        return evaluate_check(criterion, artifact)
+
+    def test_contains_accepts_array_and_requires_all(self):
+        self.assertTrue(self.check("contains", ["a", "b"], "a and b")["pass"])
+        result = self.check("contains", ["a", "b"], "only a")
+        self.assertFalse(result["pass"])
+        self.assertIn("b", result["note"])
+
+    def test_not_contains_fails_if_any_forbidden_present(self):
+        self.assertTrue(self.check("not_contains", ["x", "y"], "clean output")["pass"])
+        result = self.check("not_contains", ["x", "y"], "contains x")
+        self.assertFalse(result["pass"])
+
+    def test_char_limits_count_characters_including_whitespace(self):
+        self.assertTrue(self.check("min_chars", 5, "abcd\n")["pass"])
+        self.assertFalse(self.check("min_chars", 6, "abcd\n")["pass"])
+        self.assertTrue(self.check("max_chars", 5, "abcd\n")["pass"])
+        self.assertFalse(self.check("max_chars", 4, "abcd\n")["pass"])
+
+    def test_regex_is_dotall_by_default(self):
+        self.assertTrue(self.check("regex", "a.b", "a\nb")["pass"])
+        self.assertFalse(self.check("regex", "a.b", "ab")["pass"])
+
+    def test_lines_min_counts_only_non_empty_lines(self):
+        self.assertTrue(self.check("lines_min", 2, "one\n\n\ntwo")["pass"])
+        self.assertFalse(self.check("lines_min", 3, "one\n\n\ntwo")["pass"])
+
+    def test_section_requires_second_level_heading(self):
+        self.assertTrue(self.check("section", "结论", "## 结论\n内容")["pass"])
+        self.assertFalse(self.check("section", "结论", "# 结论\n内容")["pass"])
+
+    def test_json_keys_requires_json_object(self):
+        payload = json.dumps({"a": 1, "b": 2}, ensure_ascii=False)
+        self.assertTrue(self.check("json_keys", ["a", "b"], payload)["pass"])
+        self.assertFalse(self.check("json_keys", ["a", "c"], payload)["pass"])
+        self.assertFalse(self.check("json_keys", "a", "[1, 2]")["pass"])
+        self.assertFalse(self.check("json_keys", "a", "not json")["pass"])
+
+    def test_unknown_type_is_unjudged_not_passed(self):
+        result = self.check("mystery", "x", "anything")
+        self.assertIsNone(result["pass"])
+        self.assertIn("unknown check type", result["note"])
+
+    def test_invalid_argument_is_a_failed_check_not_an_exception(self):
+        result = self.check("min_chars", "not-a-number", "abc")
+        self.assertFalse(result["pass"])
+        self.assertIn("check error", result["note"])
+
+
+
 if __name__ == "__main__":
     unittest.main()

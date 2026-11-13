@@ -163,6 +163,39 @@ Output:
 | `section` | must contain a `## heading` | `arg` (heading) |
 | `json_keys` | required keys of a JSON object | `arg` (array) |
 
+Exact semantics (verified against the implementation - write criteria against this):
+
+| type | exact verdict | common trap |
+| --- | --- | --- |
+| `contains` | artifact contains the string(s); `arg` may be an array and **every** item must be present | one missing item fails the whole criterion |
+| `not_contains` | artifact contains **none** of the given strings | an array means "not one of them may appear" |
+| `min_chars` / `max_chars` | **character** count of the artifact, whitespace and newlines included | not a word count, not a byte count |
+| `regex` | `re.search`, **DOTALL is always on** (`.` spans lines) | no `(?s)` needed; it matches a substring, not the whole artifact |
+| `lines_min` | count of **non-empty** lines (blank lines do not count) | blank lines between paragraphs do not help |
+| `section` | the artifact contains the line `## <arg>` | it must be a **second-level** heading - `#` and `###` do not count |
+| `json_keys` | the artifact must be a JSON **object** holding every given key | invalid JSON fails immediately |
+
+An unknown type is judged `unjudged` (i.e. **not passed**) - it is never silently let through.
+
+### Shorthand notation (since v0.4.2)
+
+Machine checks do not have to be written as JSON. The CLI accepts `<type>:<arg>` directly:
+
+```bash
+mas run --goal "write a dedupe function" \
+  --criteria 'regex:def dedupe.*set' \
+  --criteria 'min_chars:200' \
+  --criteria 'contains:key conclusion'
+```
+
+Shorthand and JSON are fully equivalent - the verdict still comes from the engine's
+deterministic checker (recorded as `source: rule` in the ledger). Shorthand is
+resolved in the engine layer, so criteria replayed from MCP, HTTP or the ledger
+are handled identically. An unknown type prefix (e.g. `just write it well`) stays
+a plain description and is never mistaken for a machine check, and a numeric type
+with a non-numeric argument (e.g. `min_chars:many`) falls back to a plain
+description too - a criterion may never claim a check it cannot perform.
+
 Criteria without a machine check fall back to the model verifier - but **if the
 model gives no verdict, the default is fail** (`unjudged`). A criterion marked
 `"required": false` is recorded but never blocks closure.

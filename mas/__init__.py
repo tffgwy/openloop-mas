@@ -4,5 +4,5 @@ Pure standard library: no third-party dependency is needed to run, test or
 install this package.
 """
 
-__version__ = "0.7.1"
+__version__ = "0.7.2"
 __all__ = ["__version__"]
