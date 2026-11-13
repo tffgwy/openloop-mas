@@ -1872,3 +1872,70 @@ X-MAS-Token 200
 - 判定读的是**结构**，不是事实：模型说「不通过」不等于产物真的不合格，
   只是引擎不再把「说不通过」误读成「通过」。
 - PyPI 发布状态见下节（仍未完成）。
+
+## M. v0.7.12 — 总结不许和逐条判定打架
+
+### M.1 问题
+
+v0.7.11 把「判定值怎么读」彻底修好了，但留了一个尾巴：`normalize_verdict`
+的 canonical 路径只归一化逐条 `scores`，**原样保留**模型写的顶层 `verdict`。
+
+于是模型自己前后矛盾时，引擎把矛盾原样传下去：
+
+```
+输入   {"verdict": "pass", "scores": [{"id": "c1", "pass": "false"}]}
+修前   {"verdict": "pass",  "scores": [{"id": "c1", "pass": false}]}
+       ↑ 顶层说「通过」，逐条说「不通过」
+```
+
+**闭合判定本身不受影响**——`engine.py` 的 `passed` 只由逐条 `scores` 算出
+（`all(bool(s["pass"]) for s in blocking)`），顶层 `verdict` 从不参与闭合。
+但每一份报告、每一次回放、每一条账本条目都显示着这个矛盾，
+读者无从判断引擎到底信了哪一半。这属于「机器做对了、机器说出来的话是错的」，
+同样要修。
+
+### M.2 修复
+
+`mas/util.py::normalize_verdict` 的 canonical 路径：
+
+- 有**任何一条**标准的判定读得懂 → 顶层 `verdict` 由这些判定重新算出
+  （全部通过才算 `pass`）；
+- 只有**一条都读不懂**（全部 `unreadable`）→ 模型自己的总结被保留，
+  因为那时它是唯一的信号。
+
+落点是「报告说的和引擎做的一致」，**不是**「更容易通过」。
+
+### M.3 实测
+
+| 输入 | 修前 | 修后 |
+| --- | --- | --- |
+| `{"verdict":"pass","scores":[{"id":"c1","pass":"false"}]}` | `verdict: pass` | `verdict: fail` |
+| `{"verdict":"fail","scores":[{"id":"c1","pass":true}]}` | `verdict: fail` | `verdict: pass` |
+| `{"verdict":"pass","scores":[{"id":"c1","pass":true},{"id":"c2","pass":false}]}` | `verdict: pass` | `verdict: fail` |
+| `{"verdict":"pass","scores":[{"id":"c1","pass":"maybe"}]}` | `verdict: pass` | `verdict: pass`（全不可读，保留模型总结） |
+
+### M.4 回归门禁
+
+| 项 | 结果 |
+| --- | --- |
+| `python -m unittest discover -s tests` | **287 tests OK (skipped=4)**（v0.7.11 为 283，新增 4） |
+| `ruff check mas tests tools` | All checks passed! |
+| `mas bench` | 9/9，闭环率 **100%**，账本一致性 **100%** |
+| `mas demo` | closure / stagnation / budget 三场景全 OK |
+| 真实端点 `claude-opus-5-5` @ `127.0.0.1:16024/v1` | 完整闭环 `exit 0`，`closed`，迭代 1，token 3966 |
+
+**新增测试**（4 个，`tests/test_config_providers.py`）：
+
+- `test_a_pass_summary_cannot_contradict_a_failed_score`
+- `test_a_fail_summary_cannot_contradict_a_passing_score`
+- `test_a_mixed_payload_summarises_as_fail`
+- `test_the_summary_survives_when_no_score_is_readable`
+
+### M.5 边界说明
+
+- 本轮真实端点实测仍只覆盖 `claude-opus-5-5` @ `http://127.0.0.1:16024/v1`（免鉴权）。
+- 这条修复**不影响闭合判定**，只影响载荷归一化后的顶层 `verdict` 字段。
+  闭合一直只看逐条 `scores`。
+- 真实模型目前很少自相矛盾；这个场景需要人工构造的输入才会触发，
+  属于**代码审计 + 离线复现**得到的缺陷，不是真实端点现场发现的。
+- PyPI 发布状态见下节（仍未完成）。

@@ -12,6 +12,11 @@
 [![python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![deps](https://img.shields.io/badge/dependencies-0-orange.svg)]()
 
+**What v0.7.12 fixes** (the summary may not contradict the per-criterion answers):
+
+- **The model contradicted itself, and the report repeated it** - `normalize_verdict` normalised the individual `scores` but **kept** whatever top-level `verdict` the model had typed. So `{"verdict": "pass", "scores": [{"id": "c1", "pass": "false"}]}` came out with a summary saying "passed" and its own per-criterion answer saying "no". The closure decision itself was never affected (it is computed from the per-criterion `scores`), but **every report, every replay and every ledger entry** showed that contradiction, and a reader had no way to tell which half of the answer the engine believed;
+- The summary now **follows the per-criterion answers**: whenever **at least one** criterion carries a readable verdict, the top-level `verdict` is computed from those answers (all of them must pass). Only when **none** of them is readable does the model's own summary survive - then it is the only signal there is. The point of this fix is "what the report says matches what the engine did", not "it passes more often".
+
 **What v0.7.11 fixes** (a verdict is read by its meaning - the last class of fake closure):
 
 - **Two reviewers both said "no", and the aggregate said "yes"** - the aggregation layer used `bool(vote)` to read a verdict, and `bool("false")` is `True`. A reviewer answering `"pass": "false"` (a string instead of a boolean) was therefore counted as **one passing vote**: two reviewers said "no", the engine aggregated `pass: true, votes: 2/2`, and the loop closed on it. This is the most dangerous class of fake closure this project exists to kill - **the machine was saying no while the ledger said it passed**. A verdict is now read by its **meaning** (`"false"` / `"0"` / `"no"` means not passing), an **unreadable vote never counts as a passing vote** (the conservative side), and the result carries an `unreadable_votes` count. `mode="any"` is no longer fooled by string fake votes either;

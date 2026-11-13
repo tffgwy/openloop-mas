@@ -508,6 +508,44 @@ class VerdictNormalizationTest(unittest.TestCase):
         self.assertEqual(canonical["verdict"], alternative["verdict"])
         self.assertEqual(canonical["scores"][0]["pass"], alternative["scores"][0]["pass"])
 
+    def test_a_pass_summary_cannot_contradict_a_failed_score(self):
+        # The model answered "pass" in the summary while its own
+        # per-criterion answer said "no". The closure is computed from
+        # the scores, but every report showed the contradicting summary.
+        from mas.util import normalize_verdict
+
+        payload = {"verdict": "pass", "scores": [{"id": "c1", "pass": "false", "note": "no"}]}
+        out = normalize_verdict(payload)
+        self.assertEqual(out["verdict"], "fail")
+        self.assertIs(out["scores"][0]["pass"], False)
+
+    def test_a_fail_summary_cannot_contradict_a_passing_score(self):
+        from mas.util import normalize_verdict
+
+        payload = {"verdict": "fail", "scores": [{"id": "c1", "pass": True, "note": "yes"}]}
+        out = normalize_verdict(payload)
+        self.assertEqual(out["verdict"], "pass")
+
+    def test_a_mixed_payload_summarises_as_fail(self):
+        from mas.util import normalize_verdict
+
+        payload = {
+            "verdict": "pass",
+            "scores": [{"id": "c1", "pass": True}, {"id": "c2", "pass": False}],
+        }
+        out = normalize_verdict(payload)
+        self.assertEqual(out["verdict"], "fail")
+
+    def test_the_summary_survives_when_no_score_is_readable(self):
+        # With nothing readable in the scores, the model's summary is
+        # the only signal there is - it must not be thrown away.
+        from mas.util import normalize_verdict
+
+        payload = {"verdict": "pass", "scores": [{"id": "c1", "pass": "maybe"}]}
+        out = normalize_verdict(payload)
+        self.assertEqual(out["verdict"], "pass")
+        self.assertTrue(out["scores"][0].get("unreadable"))
+
     def test_unrelated_payload_is_left_alone(self):
         from mas.util import normalize_verdict
 

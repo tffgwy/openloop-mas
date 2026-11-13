@@ -219,10 +219,19 @@ def normalize_verdict(payload: Dict[str, Any]) -> Dict[str, Any]:
             scores.append(score)
         result = dict(payload)
         result["scores"] = scores
-        if not result.get("verdict"):
+        # The summary must not contradict the per-criterion answers.  The
+        # engine decides the closure from ``scores``, so a payload whose
+        # verdict says "pass" while its own scores say "no" reports a
+        # green light for a criterion that failed.  The model's summary
+        # only survives when *no* score carries a readable verdict - then
+        # it is the only signal there is.
+        decided = [s for s in scores if not s.get("unreadable")]
+        if decided:
             result["verdict"] = (
-                "pass" if scores and all(s.get("pass") is True for s in scores) else "fail"
+                "pass" if all(s.get("pass") is True for s in decided) else "fail"
             )
+        elif not result.get("verdict"):
+            result["verdict"] = "fail"
         return result
 
     # Alternative shape: {"criteria": [...]} or {"results": [...]}.
