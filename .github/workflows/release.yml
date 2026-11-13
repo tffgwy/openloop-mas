@@ -55,7 +55,10 @@ jobs:
         #   https://pypi.org/manage/project/openloop-mas/settings/publishing/
         #   provider = "GitHub Actions", workflow = "release.yml"
         # The step stays non-fatal so a release is never blocked by an
-        # unfinished PyPI registration.
+        # unfinished PyPI registration - but its real outcome is recorded
+        # in the step outcome, so the report below never claims a publish
+        # that did not happen.
+        id: publish_trusted
         if: ${{ env.TWINE_PASSWORD == '' }}
         continue-on-error: true
         uses: pypa/gh-action-pypi-publish@release/v1
@@ -63,11 +66,42 @@ jobs:
           print-hash: true
           skip-existing: true
       - name: Report the PyPI publish status
+        # The status is *verified*, not inferred: the version is looked up
+        # on pypi.org. Guessing from the previous step's exit code was
+        # wrong twice over - a non-fatal Trusted Publishing failure still
+        # reported "success", and a successful one still reported
+        # "not published".
         if: always()
+        env:
+          VERSION: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          if [ -z "${TWINE_PASSWORD}" ]; then
-            echo "::warning::The GitHub release was created, but PyPI was not published."
-            echo "::warning::Either add the repository secret PYPI_API_TOKEN, or register this workflow as a Trusted Publisher on pypi.org."
+          version="${VERSION#v}"
+          published=no
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsS "https://pypi.org/pypi/openloop-mas/${version}/json" >/dev/null 2>&1; then
+              published=yes
+              break
+            fi
+            sleep 6
+          done
+          if [ "$published" = "yes" ]; then
+            echo "Published to PyPI: openloop-mas ${version}"
+            echo "https://pypi.org/project/openloop-mas/${version}/"
+            {
+              echo "### Published to PyPI"
+              echo ""
+              echo "- version: \`${version}\`"
+              echo "- https://pypi.org/project/openloop-mas/${version}/"
+            } >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "Published to PyPI."
+            echo "::warning::The GitHub release was created, but openloop-mas ${version} is not on pypi.org."
+            if [ -z "${TWINE_PASSWORD}" ] && [ "${{ steps.publish_trusted.outcome }}" != "success" ]; then
+              echo "::warning::Trusted Publishing failed - register this workflow at https://pypi.org/manage/project/openloop-mas/settings/publishing/ (provider: GitHub Actions, workflow: release.yml), or add the repository secret PYPI_API_TOKEN."
+            fi
+            {
+              echo "### PyPI publish status"
+              echo ""
+              echo "- version: \`${version}\`"
+              echo "- status: **not published**"
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
