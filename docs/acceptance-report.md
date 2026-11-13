@@ -1803,7 +1803,66 @@ EXIT: 0
 - `tests/test_roles.py`（**新增文件**）：三态显示的 6 个测试
   （PASS / FAIL / UNDECIDED / 无效规则 / 三态共存 / 缺 `pass` 键）
 
-### L.9 边界说明
+### L.9 发布产物与本机运行时复验（v0.7.11）
+
+**CI 四绿**（tag `v0.7.11` 推送后）：
+
+| workflow | run id | 结论 |
+| --- | --- | --- |
+| `ci` | 43389388580 | success |
+| `pages` | 43389388663 | success |
+| `install` | 43389388678 | success |
+| `release` | 43389396693 | success |
+
+**Release 产物**（`gh release view v0.7.11`）：
+
+- `openloop_mas-0.7.11-py3-none-any.whl`（110340 B）
+- `openloop_mas-0.7.11.tar.gz`（171294 B）
+- <https://github.com/tffgwy/openloop-mas/releases/tag/v0.7.11>
+
+**全新 wheel 的隔离安装 E2E**（`pip install --no-index <wheel>`）：
+
+| 项 | 结果 |
+| --- | --- |
+| 隔离安装 | `Successfully installed openloop-mas-0.7.11` |
+| `mas --version` | `openloop-mas 0.7.11` |
+| `mas install` | exit 0，MCP 注册 codex + claude，9 个 skill 落盘 |
+| `mas doctor --no-network` | exit 0，`skills_sync 6 个已安装 skill 均与包内版本一致` |
+| `mas demo` | closure / stagnation / budget 三场景全 OK |
+| skill 指纹 | `.codex` / `.claude` × `mas-loop` / `mas-review` / `mas-scaffold` 全部 **MATCH** |
+| MCP | `[mcp_servers.mas_loop]` 存在 + `.claude.json` 有 `mas_loop` |
+
+**发布产物上的契约复验**（缺参数必须当场拒绝、零 token、账本零污染）：
+
+| 输入 | exit | 账本条数 | 报错 |
+| --- | --- | --- | --- |
+| `regex:` | 1 | 0 | `missing argument: regex needs a regular expression` |
+| `min_chars:many` | 1 | 0 | `invalid argument: min_chars needs a minimum character count, got 'many'` |
+| `{"type":"mystery"}` | 1 | 0 | `unknown check type: 'mystery'` |
+
+**本机运行时升级**：备份 `~/.mas/backup/app_backup_0711`，
+用发布 wheel 的包内容替换 `~/.mas/app/mas` → `mas 0.7.11 可导入`。
+`mas install` 同步 9 个 skill（旧副本备份为 `mas-loop.bak-20261113-162631`），
+`mas doctor` 全绿：
+`package mas 0.7.11 可导入`、`skills_sync 9 个已安装 skill 均与包内版本一致`、
+`provider openai_compat / claude-opus-5-5 @ http://127.0.0.1:16024/v1（免鉴权端点）`、
+`endpoint 端点可用，协议方言 = openai-responses-events`。
+
+**常驻 HTTP 服务**（重启后）：`/health` → 200，`version: 0.7.11`
+
+**鉴权矩阵**（v0.7.11）：health 200 / 无令牌 401 / 错令牌 401 / Bearer 200 /
+X-MAS-Token 200
+
+**OpenMausBot 集成**（v0.7.11，端口 28799）：
+
+- MCP 握手：`ok: True`，**12 个工具**
+  （`mas_run`, `mas_status`, `mas_ledger`, `mas_tickets`, `mas_ticket_resolve`,
+  `mas_resume`, `mas_report`, `mas_replay`, `mas_export`, `mas_teams`,
+  `mas_doctor`, `mas_config`）
+- 端到端闭环：`exit 0`，`status: closed`，iterations 1，tokens 3466，
+  c1 regex `[一-龥]{4,}` 命中 → pass
+
+### L.10 边界说明
 
 - 本轮真实端点实测仍只覆盖 `claude-opus-5-5` @ `http://127.0.0.1:16024/v1`（免鉴权）。
 - 修前行为是**代码审计 + 离线复现**得到的，不是真实端点现场发现的：

@@ -20,6 +20,27 @@ PyPI 拿它换成一个短期的上传 token。**仓库里不需要存任何长�
    - Environment name: 留空
 3. 保存。
 
+## 当前待补发：v0.7.11
+
+`v0.7.11` 的 GitHub Release 已发布（CI 四绿，wheel / sdist 都在），
+但 **PyPI 上还没有 `openloop-mas`**——`release.yml` 的 Trusted Publishing 步骤
+真实执行过，PyPI 返回：
+
+```
+invalid-publisher: valid token, but no corresponding publisher
+(Publisher with matching publisher was not found)
+```
+
+即：仓库里**还没有登记过** Trusted Publisher（`gh secret list` 为空，
+所以走的不是 token 路径）。登记完成后补发：
+
+```bash
+gh workflow run release.yml -f tag=v0.7.11
+```
+
+或者按上面的「一次性登记」把 Trusted Publisher 挂好，让**下一次**打 tag
+自动发布。
+
 ## 之后每次发版
 
 ```bash
