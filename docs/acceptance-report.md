@@ -370,6 +370,19 @@ README（中英）与 SKILL.md 都加了显式变更说明，不做静默语义�
 | 离线基准 | 9/9 符合预期，闭环率 100%，1.67 迭代 / 4.2 ms / 1265.7 token | `mas bench`（structured 场景用的正是 `section`，未回归） |
 | 离线演示 | closure/stagnation/budget 三场景全 OK | `mas demo` |
 | 语义对照 | D.2 表中 7 个用例逐条实测 | 直接调用 `evaluate_check` |
+| CI | 4 个 workflow 全 success（ci / pages / install / release） | run 43352079157 等 |
+| Release 产物 | `openloop_mas-0.7.3-py3-none-any.whl` 100,455 B + sdist | `gh release view v0.7.3` |
+| Release wheel 隔离安装 | 全新 venv + 全新 HOME + cwd 在仓库外 → install/doctor/demo 全绿，6 skill 全 MATCH，MCP 双 host 注册 | `work/_e2e_wheel73.py` |
+| 本机运行时升级 | `mas --version` → `openloop-mas 0.7.3`；9 个 skill 全部 MATCH | 备份至 `~/.mas/backup/app_backup_073` |
+| 常驻服务版本 | `/health` → `0.7.3` | Startup 脚本重启后 |
+| **真实端点正例** | 模型产出 `## 结论` → `closed` / 1 iter / 4031 tokens / c1 `section '## 结论' found` PASS | `mas run --criteria 'section:结论'` |
+| **真实端点负例** | 模型只产出 `### 结论` → **`budget_exhausted`**（8 iter / 52967 tokens），c1 `section '## 结论' missing` **FAIL** | 同上，改目标要求三级标题 |
+| 鉴权矩阵 | health 200 / 无令牌 401 / 错令牌 401 / Bearer 200 / X-MAS-Token 200 | 本机 8768 真实进程 |
+
+**真实端点负例是本轮最关键的一条证据**：修复前，同一份产物（三级标题）
+会因为子串匹配被判 PASS，循环直接 `closed`——一个**假闭合**。修复后它判 FAIL，
+循环反复修不好直到预算触顶，诚实退出为 `budget_exhausted`。
+这正是本项目主张的「宁可升级到人工，不假装成功」在真实模型上的体现。
 
 ### D.6 v0.7.3 仍然成立的边界
 
