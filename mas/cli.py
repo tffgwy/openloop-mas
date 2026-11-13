@@ -50,7 +50,11 @@ def _load_criteria(args: argparse.Namespace) -> List[Any]:
             raise ValueError("criteria 文件必须是 JSON 数组或含 criteria 数组的对象")
         criteria.extend(data)
     for text in getattr(args, "criteria", None) or []:
-        criteria.append(_parse_criterion(text))
+        parsed = _parse_criterion(text)
+        if isinstance(parsed, list):
+            criteria.extend(parsed)
+        else:
+            criteria.append(parsed)
     return criteria
 
 
@@ -60,7 +64,9 @@ def _parse_criterion(text: Any) -> Any:
 
     ``--criteria '{"id":"c1","check":{...}}'`` is the documented form and
     must not degrade into a raw description string, otherwise the machine
-    check silently never runs. The shorthand ``--criteria 'regex:def'`` is
+    check silently never runs. A JSON *array* of criteria is accepted the
+    same way and is returned as a list, so the caller can extend its
+    criteria collection instead of nesting it. The shorthand ``--criteria 'regex:def'`` is
     the convenient form and must not degrade either. The shorthand parser
     itself lives in :mod:`mas.util` so that the engine applies the same
     rules to criteria arriving through the MCP or HTTP server.
@@ -68,7 +74,7 @@ def _parse_criterion(text: Any) -> Any:
     if not isinstance(text, str):
         return text
     stripped = text.strip()
-    if stripped.startswith("{"):
+    if stripped.startswith(("{", "[")):
         try:
             return json.loads(stripped)
         except json.JSONDecodeError as exc:

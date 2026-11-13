@@ -236,6 +236,66 @@ class TestLoopClosure(unittest.TestCase):
 
 
 
+class RequiredFlagTest(unittest.TestCase):
+    """The ``required`` flag must be read by meaning, not by truthiness."""
+
+    def test_string_false_is_not_truthy(self):
+        # bool("false") is True. A criterion that travels through JSON,
+        # an MCP client or a shell script often arrives with the flag as a
+        # string - and the user asked for a soft standard, not a hard one.
+        criterion = Criterion.from_raw(
+            {"id": "c1", "desc": "d", "required": "false"}, 0
+        )
+        self.assertFalse(criterion.required)
+
+    def test_string_spellings_of_false(self):
+        for raw in ("false", "no", "0", "False", "NO"):
+            with self.subTest(raw=raw):
+                criterion = Criterion.from_raw(
+                    {"id": "c1", "desc": "d", "required": raw}, 0
+                )
+                self.assertFalse(criterion.required, raw)
+
+    def test_string_spellings_of_true(self):
+        for raw in ("true", "yes", "1", "True", "YES"):
+            with self.subTest(raw=raw):
+                criterion = Criterion.from_raw(
+                    {"id": "c1", "desc": "d", "required": raw}, 0
+                )
+                self.assertTrue(criterion.required, raw)
+
+    def test_real_booleans_and_numbers(self):
+        self.assertFalse(Criterion.from_raw({"required": False}, 0).required)
+        self.assertFalse(Criterion.from_raw({"required": 0}, 0).required)
+        self.assertTrue(Criterion.from_raw({"required": True}, 0).required)
+        self.assertTrue(Criterion.from_raw({"required": 1}, 0).required)
+
+    def test_missing_and_unreadable_values_stay_required(self):
+        # The strict reading is the safe one: an unreadable flag must
+        # never silently relax a standard.
+        self.assertTrue(Criterion.from_raw({"desc": "d"}, 0).required)
+        self.assertTrue(Criterion.from_raw({"desc": "d", "required": None}, 0).required)
+        self.assertTrue(Criterion.from_raw({"desc": "d", "required": "maybe"}, 0).required)
+        self.assertTrue(Criterion.from_raw({"desc": "d", "required": []}, 0).required)
+
+    def test_a_string_false_optional_criterion_does_not_block(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = make_config(tmp)
+            engine = LoopEngine(config, team=load_team("default"))
+            result = engine.run(
+                "字符串 required 的任务",
+                [
+                    {"id": "c1", "desc": "必选",
+                     "check": {"type": "contains", "arg": "关键结论"}},
+                    {"id": "c2", "desc": "可选", "required": "false",
+                     "check": {"type": "min_chars", "arg": 999999}},
+                ],
+            )
+            self.assertEqual(result.status, "closed")
+            by_id = {s["id"]: s for s in result.scores}
+            self.assertFalse(by_id["c2"]["blocking"])
+
+
 class CheckSemanticsTest(unittest.TestCase):
     """Pin the exact semantics of every supported machine check type."""
 

@@ -1355,3 +1355,91 @@ secret 是否存在，于是两种情况都会说错——Trusted Publishing 失
 - 可选标准的机检**照常执行**，只是不参与闭合判定；不因为可选就跳过检查。
 - `blocking` 字段是新增的公开字段，旧账本记录没有该字段时按 `True` 处理
   （历史记录语义不变）。
+
+## J. v0.7.9 — 标志读含义，JSON 数组不再整体退化
+
+### J.1 问题（两个）
+
+**问题一：`required` 标志被真值转换。**
+`Criterion.from_raw` 用 `bool(raw.get("required", True))`。Python 里 `bool("false")` 是 `True`，
+所以 `{"required": "false"}`（**字符串**）被当成必选标准。标准经 JSON / MCP / shell 传递时
+带上引号是极常见的写法，用户写的是"这条是可选的"，引擎执行的是"这条必须过"——
+循环于是永远闭合不了。这与 v0.7.7 修的模型判定真值转换同源：**同一个值，读含义而不是读真值**。
+
+**问题二：`--criteria` 的 JSON 数组形式整体退化。**
+`mas/cli.py` 的 `_parse_criterion` 只判断 `stripped.startswith("{")`，数组以 `[` 开头，
+于是落到 `parse_criterion_shorthand` → 无 check → **原样返回字符串**。
+结果：一整个数组被当成**一条纯文本描述**，机检一次都没跑，闭合其实来自模型说"看起来没问题"。
+
+实测（修前，真实端点）：
+
+```
+exit: 0  status: closed
+  [PASS] c1 (model) 原文同时包含 "def dedupe" 和 "set"...
+--- 交付物预览 ---
+## 本轮修复
+- 已处理：c1: no machine check          ← 机检根本没跑
+```
+
+### J.2 修复
+
+- `mas/engine.py`：新增 `_required_flag(value)`——
+  `bool` 直接取用；否则走 `_as_bool` **读含义**
+  （`"false"` / `"0"` / `"no"` → 可选；`"true"` / `"1"` / `"yes"` → 必选）；
+  **读不懂的值（`None`、缺失、`"maybe"`、空容器）一律按必选处理**——
+  严格解读是安全的一侧，读不懂的标志绝不能悄悄放宽标准。
+  `Criterion.from_raw` 的两处（字符串简写路径 + 字典路径）都改用它。
+- `mas/cli.py`：`_parse_criterion` 现在接受 `{` 与 `[` 两种开头，数组 `json.loads` 后
+  **返回 list**；`_load_criteria` 遇到 list 时 `extend` 而非 `append`（否则数组会被当成一条标准）。
+
+### J.3 实测
+
+`_required_flag` 的读值结果（本轮实测）：
+
+| 输入 | 结果 | 输入 | 结果 |
+| --- | --- | --- | --- |
+| `"false"` | `False` | `"true"` | `True` |
+| `"no"` | `False` | `"yes"` | `True` |
+| `"0"` | `False` | `"1"` | `True` |
+| `False` / `0` | `False` | `True` / `1` | `True` |
+| `None` / 缺失 | `True`（必选） | `"maybe"` / `[]` | `True`（必选） |
+
+**CLI 真实端点复验**（`claude-opus-5-5` @ `http://127.0.0.1:16024/v1`），
+JSON 数组形式 + `"required": "false"` 字符串标志：
+
+```
+exit: 0
+状态：closed（迭代 1 次，token 4310）
+  [PASS] c1 (rule) all required strings present
+  [FAIL] c2 (rule)，可选 length 249 < 999999
+```
+
+账本里的 score（`blocking` 字段如实区分）：
+
+```json
+[{"id": "c1", "pass": true,  "note": "all required strings present", "source": "rule", "blocking": true},
+ {"id": "c2", "pass": false, "note": "length 249 < 999999", "source": "rule",
+  "optional": true, "blocking": false}]
+```
+
+即：**JSON 数组里的机检真的跑了**（`source: rule`，修前是 `model`），
+字符串 `"false"` 真的被读成可选（`blocking: false`），可选失败可见但不阻塞闭合。
+
+**必选标准失败的负例**（同一端点，c1 = `min_chars:999999` 必选）：
+
+```
+exit: 2
+状态：escalated（迭代 2 次，token 102601）
+  [FAIL] c1 (rule) length 336218 < 999999
+已升级为人工工单：T-20261113-131408-5a77
+```
+
+必选标准失败 → 不闭合 → 升级人工工单 → 退出码 2，行为正确。
+
+### J.4 验证
+
+- `unittest discover -s tests` → **268 tests OK (skipped=4)**
+  （新增 11 个用例：`RequiredFlagTest` 6 个 + `CriterionJsonArrayTest` 5 个）
+- `ruff check mas tests tools` → All checks passed
+- `mas bench` → 9/9 符合预期、闭环率 100%、平均迭代 1.67、账本一致性 100%
+- `mas demo` → closure / stagnation / budget 三场景全 OK

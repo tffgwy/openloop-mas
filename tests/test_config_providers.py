@@ -577,6 +577,69 @@ class CriterionShorthandTest(unittest.TestCase):
         self.assertEqual(parsed["check"]["arg"], "")
 
 
+class CriterionJsonArrayTest(unittest.TestCase):
+    """A JSON *array* of criteria must not degrade into one description.
+
+    ``--criteria '[{...},{...}]'`` was rejected as "not a shorthand" and
+    kept as a plain text description, so every machine check in the array
+    silently never ran. The run then closed on a *model* judgement and
+    the report claimed the machine-verified standards had passed.
+    """
+
+    def test_a_json_array_is_parsed_into_a_list(self):
+        from mas.cli import _parse_criterion
+
+        parsed = _parse_criterion('[{"id":"c1","desc":"a"},{"id":"c2","desc":"b"}]')
+        self.assertIsInstance(parsed, list)
+        self.assertEqual([c["id"] for c in parsed], ["c1", "c2"])
+
+    def test_a_json_array_keeps_the_machine_checks(self):
+        from mas.cli import _parse_criterion
+        from mas.engine import Criterion, evaluate_check
+
+        parsed = _parse_criterion(
+            '[{"id":"c1","desc":"has def","check":{"type":"contains","arg":"def dedupe"}}]'
+        )
+        criterion = Criterion.from_raw(parsed[0], 0)
+        self.assertEqual(criterion.check["type"], "contains")
+        outcome = evaluate_check(criterion, "def dedupe(items):\n    return items")
+        self.assertTrue(outcome["pass"])
+        self.assertEqual(outcome["source"], "rule")
+
+    def test_the_cli_flattens_a_json_array_into_the_criteria_list(self):
+        import argparse
+
+        from mas.cli import _load_criteria
+
+        args = argparse.Namespace(
+            criteria_file=None,
+            criteria=['[{"id":"c1","desc":"a"},{"id":"c2","desc":"b"}]', "regex:hello"],
+        )
+        criteria = _load_criteria(args)
+        self.assertEqual(len(criteria), 3)
+        self.assertEqual(criteria[0]["id"], "c1")
+        self.assertEqual(criteria[1]["id"], "c2")
+        self.assertEqual(criteria[2]["check"]["type"], "regex")
+
+    def test_a_json_array_with_a_soft_requirement_stays_soft(self):
+        from mas.cli import _parse_criterion
+        from mas.engine import Criterion
+
+        parsed = _parse_criterion(
+            '[{"id":"c1","desc":"hard","check":{"type":"contains","arg":"x"}},'
+            '{"id":"c2","desc":"soft","required":"false",'
+            '"check":{"type":"min_chars","arg":999999}}]'
+        )
+        self.assertTrue(Criterion.from_raw(parsed[0], 0).required)
+        self.assertFalse(Criterion.from_raw(parsed[1], 1).required)
+
+    def test_a_broken_json_array_is_refused(self):
+        from mas.cli import _parse_criterion
+
+        with self.assertRaises(ValueError):
+            _parse_criterion('[{"id":"c1",}')
+
+
 class DegenerateShorthandTest(unittest.TestCase):
     """A broken shorthand must be refused before the loop spends tokens.
 

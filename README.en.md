@@ -249,7 +249,19 @@ mas run --goal "write a dedupe function" \
 Shorthand and JSON are fully equivalent - the verdict still comes from the engine's
 deterministic checker (recorded as `source: rule` in the ledger). Shorthand is
 resolved in the engine layer, so criteria replayed from MCP, HTTP or the ledger
-are handled identically. An unknown type prefix (e.g. `just write it well`) stays
+are handled identically.
+
+**Several criteria at once** are given as a JSON array - every entry in the array
+keeps its own machine check and is actually verified. The array is never taken
+as one plain description (that would mean no machine check ran at all and the
+closure actually came from a model saying "looks fine"):
+
+```bash
+mas run --goal "write a release note for v0.1.0" \
+  --criteria '[{"id":"c1","desc":"contains the version","check":{"type":"contains","arg":"v0.1.0"}},
+               {"id":"c2","desc":"at least 200 chars","check":{"type":"min_chars","arg":200}}]'
+```
+ An unknown type prefix (e.g. `just write it well`) stays
 a plain description and is never mistaken for a machine check, and a numeric type
 with a non-numeric argument (e.g. `min_chars:many`) falls back to a plain
 description too - a criterion may never claim a check it cannot perform.
@@ -260,6 +272,14 @@ model gives no verdict, the default is fail** (`unjudged`). A criterion marked
 machine check the rule still runs and its real result lands in the report
 (`PASS` or `FAIL`), it just never keeps the loop open; without a machine
 check the reviewer's verdict is recorded the same way.
+
+**The `required` flag is read by meaning, not by truthiness.** Writing
+`"required": "false"` as a *string* really does mean optional - `bool("false")`
+is `True`, and a criterion that travels through JSON, MCP or a shell script
+easily picks up those quotes. The engine reads the meaning of the value:
+`"false"` / `"0"` / `"no"` are optional, `"true"` / `"1"` / `"yes"` are
+required, and anything unreadable (`"maybe"`, missing, `null`) stays
+**required** - an unreadable flag must never silently relax a standard.
 
 ---
 

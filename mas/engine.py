@@ -60,6 +60,30 @@ STATUS_BUDGET = "budget_exhausted"
 STATUS_ERROR = "error"
 
 
+def _required_flag(value: Any) -> bool:
+    """Read the ``required`` flag of a criterion without guessing.
+
+    ``bool("false")`` is True, so a criterion written as
+    ``{"required": "false"}`` - a very natural mistake when a criterion
+    travels through JSON, an MCP client or a shell script - would be
+    treated as *required*. The user asked for a soft standard and got a
+    hard one, and the loop would then refuse to close on it.
+
+    The rule is the same as everywhere else in this project: read the
+    *meaning* of the value, never its truthiness. A value that cannot be
+    read stays required, because the strict reading is the safe one -
+    an unreadable flag must never silently relax a standard.
+    """
+    if value is None:
+        return True
+    if isinstance(value, bool):
+        return value
+    decided = _as_bool(value)
+    if decided is None:
+        return True
+    return decided
+
+
 @dataclass
 class Criterion:
     id: str
@@ -78,7 +102,7 @@ class Criterion:
                 id=str(parsed.get("id") or f"c{index + 1}"),
                 desc=str(parsed.get("desc") or raw),
                 check=parsed.get("check"),
-                required=bool(parsed.get("required", True)),
+                required=_required_flag(parsed.get("required")),
             )
         if not isinstance(raw, dict):
             return cls(id=f"c{index + 1}", desc=str(raw), check=None, required=True)
@@ -90,7 +114,7 @@ class Criterion:
             id=str(raw.get("id") or f"c{index + 1}"),
             desc=desc,
             check=check,
-            required=bool(raw.get("required", True)),
+            required=_required_flag(raw.get("required")),
         )
 
     def to_dict(self) -> Dict[str, Any]:
