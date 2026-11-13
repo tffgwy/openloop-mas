@@ -973,3 +973,57 @@ mas run --goal "随便写点东西" --criteria "regex:"
 
 **本机运行时升级**：备份 `~/.mas/backup/app_backup_075`，`mas install` 后
 `mas doctor` 全绿（`package mas 0.7.5 可导入`、`skills_sync 9 个已安装 skill 均与包内版本一致`）。
+
+## G. v0.7.6 — 未知机检类型不再被模型"顺手闭合"
+
+### G.1 问题
+
+v0.7.4 引入 `source="invalid"` 来表示"机检存在但判不了"，但**合并层没认它**：
+
+- `evaluate_check` 对未知类型返回 `pass=None, source="none"`；
+- `_merge_verdict_scores` 用 `check.get("pass") is not None` 判断"这条标准有机检"；
+- 于是 `pass=None` 被当成"没有机检" → **落回模型判定** → 模型说"看起来没问题"就闭合。
+
+这与文档承诺的「未知类型 → `unjudged`（不通过）」直接矛盾——判定层是 unjudged，
+合并层却把它放行了。
+
+复现（v0.7.5 代码，本机直接调用）：
+
+```
+evaluate_check(未知类型) -> {'pass': None, 'note': 'unknown check type: mystery', 'source': 'none'}
+_merge_verdict_scores(模型说 pass=True) -> {'pass': True, 'source': 'model'}
+=> 该标准被判为: PASS（假闭合）
+```
+
+### G.2 修复
+
+- `mas/engine.py` / `evaluate_check`：未知类型返回 `source="invalid"`（与参数非法同一类）；
+- `mas/engine.py` / `_merge_verdict_scores`：合并层显式处理 `source=="invalid"`
+  → `pass=False`、`source="invalid"`，**模型永远不能覆盖一条判不了的机检**；
+- `mas/engine.py` / `validate_criteria`：JSON 形式的未知类型名在开跑前被拒绝，
+  并列出所有已知类型。
+
+### G.3 契约
+
+| 情况 | 判定层 | 合并层 | 开跑前 |
+| --- | --- | --- | --- |
+| 有机检、参数合法 | `pass=True/False`, `source=rule` | 由规则决定 | 正常跑 |
+| 有机检、参数非法 | `pass=None`, `source=invalid` | **不通过**（模型无权覆盖） | **拒绝，exit 1** |
+| 有机检、类型名未知（JSON） | `pass=None`, `source=invalid` | **不通过** | **拒绝，exit 1** |
+| 无机检 | `pass=None`, `source=none` | 由模型判定 | 正常跑 |
+| 简写、类型名未知 | 无 check | 由模型判定 | 正常跑（压根没打算写机检） |
+
+### G.4 验证
+
+- `unittest discover -s tests` → **245 tests OK (skipped=4)**（新增 `UnknownCheckTypeCannotFakeClosureTest`，4 个方法）
+- `ruff check mas tests tools` → All checks passed
+- `mas bench` → 9/9、闭环率 100%、账本一致性 100%
+- `mas demo` → 三场景全 OK
+- 隔离环境实测（真实 provider）：
+
+| 输入 | exit | 账本 |
+| --- | --- | --- |
+| JSON `{"check":{"type":"mystery","arg":"x"}}` | 1 | 0 行 |
+| JSON `{"check":{"type":"mystery"}}` | 1 | 0 行 |
+| 简写 `mystery:abc` | 0 | 2 行（**契约不变**：压根没打算写机检） |
+| JSON `{"check":{"type":"contains","arg":"循环"}}` | 0 | 4 行（正常闭环，rule 命中） |

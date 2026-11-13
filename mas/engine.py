@@ -223,9 +223,15 @@ def validate_criteria(crits: List[Criterion]) -> List[str]:
             continue
         kind = str(criterion.check.get("type") or "").lower()
         if kind not in _ARG_REQUIRED:
-            # An unknown type is reported as unjudged by the checker; it is
-            # still worth telling the author, but it is not a broken
-            # argument, so it is surfaced separately below.
+            # An unknown type is a typo in the type name, not a missing
+            # argument. The checker refuses to decide it, so the run must
+            # not start either - otherwise the criterion would be handed
+            # to the model and could be closed by a guess.
+            known = ", ".join(sorted(_ARG_REQUIRED))
+            problems.append(
+                f"{criterion.id}: unknown check type: {kind!r} "
+                f"(known types: {known})"
+            )
             continue
         problem = _check_arg_problem(kind, criterion.check.get("arg"))
         if problem:
@@ -304,7 +310,16 @@ def evaluate_check(criterion: Criterion, artifact: str) -> Dict[str, Any]:
                 passed = not missing
                 note = "all keys present" if passed else f"missing keys: {missing}"
         else:
-            return {"id": criterion.id, "pass": None, "note": f"unknown check type: {kind}", "source": "none"}
+            # An unknown type is a *broken check*, not an absent one. If it
+            # stayed undecided the merge step would hand it to the model,
+            # and a model that says "looks fine" would close a criterion
+            # whose rule was never written - a fake closure.
+            return {
+                "id": criterion.id,
+                "pass": None,
+                "note": f"unknown check type: {kind}",
+                "source": "invalid",
+            }
     except (TypeError, ValueError) as exc:
         return {"id": criterion.id, "pass": False, "note": f"check error: {exc}", "source": "rule"}
     return {"id": criterion.id, "pass": passed, "note": note, "source": "rule"}
@@ -861,6 +876,20 @@ class LoopEngine:
                         "pass": bool(check["pass"]),
                         "note": str(check.get("note", "")),
                         "source": "rule",
+                    }
+                )
+                continue
+            if check.get("source") == "invalid":
+                # The criterion carries a machine check, but the check could
+                # not decide anything (a missing argument, an unknown type).
+                # The model never gets to override a rule - and a rule that
+                # cannot decide is never a pass.
+                merged.append(
+                    {
+                        "id": criterion.id,
+                        "pass": False,
+                        "note": str(check.get("note", "")),
+                        "source": "invalid",
                     }
                 )
                 continue

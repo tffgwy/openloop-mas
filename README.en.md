@@ -220,8 +220,14 @@ above - exit code 1, zero tokens. The same standard written as JSON or as a shor
 now behaves identically: a missing argument is a missing argument, never a quiet
 fallback to "the model decides".
 
-Only an **unknown type name** (e.g. `unknown_type:abc`) falls back to a plain
-description - that is not a broken argument, it is the absence of a machine check.
+A **misspelled type name** is refused too. In the JSON form a type that does
+not exist (`{"check":{"type":"mystery"}}`) stops the run up front and lists the
+known types - a typo that slipped through would degrade into "the model decides",
+and a model that says "looks fine" would close the criterion.
+
+Only in the **shorthand** form does an unknown type name fall back to a plain
+description (`--criteria 'unknown_type:abc'`) - there the intention was never to
+write a machine check, which is different from writing one and getting it wrong.
 
 ### Shorthand notation (since v0.4.2)
 

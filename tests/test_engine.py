@@ -216,6 +216,60 @@ class CheckSemanticsTest(unittest.TestCase):
         self.assertIn("invalid argument", result["note"])
 
 
+class UnknownCheckTypeCannotFakeClosureTest(unittest.TestCase):
+    """An unknown check type must never be closed by the model.
+
+    ``evaluate_check`` reported an unknown type as undecided
+    (``pass=None``). The merge step used "the check did not decide" as
+    "there is no check", so the criterion fell back to the model verifier:
+    a model that said "looks fine" closed a criterion whose rule had never
+    been written. The documented contract says an unknown type is
+    *unjudged*, which means it never passes.
+    """
+
+    def _criterion(self, kind="mystery", arg="x"):
+        from mas.engine import Criterion
+
+        return Criterion(id="c1", desc="产物满足某条标准", check={"type": kind, "arg": arg})
+
+    def test_the_check_reports_the_type_as_invalid(self):
+        from mas.engine import evaluate_check
+
+        result = evaluate_check(self._criterion(), "anything")
+        self.assertIsNone(result["pass"])
+        self.assertEqual(result["source"], "invalid")
+
+    def test_the_model_cannot_close_it(self):
+        from mas.engine import LoopEngine, evaluate_check
+
+        criterion = self._criterion()
+        check = evaluate_check(criterion, "anything")
+        verdict = {"scores": [{"id": "c1", "pass": True, "note": "模型说没问题"}]}
+        scores = LoopEngine._merge_verdict_scores([criterion], [check], [verdict])
+        self.assertFalse(scores[0]["pass"])
+        self.assertEqual(scores[0]["source"], "invalid")
+
+    def test_an_invalid_argument_cannot_be_closed_by_the_model_either(self):
+        from mas.engine import LoopEngine, evaluate_check
+
+        criterion = self._criterion("min_chars", "not-a-number")
+        check = evaluate_check(criterion, "anything")
+        verdict = {"scores": [{"id": "c1", "pass": True, "note": "模型说没问题"}]}
+        scores = LoopEngine._merge_verdict_scores([criterion], [check], [verdict])
+        self.assertFalse(scores[0]["pass"])
+        self.assertEqual(scores[0]["source"], "invalid")
+
+    def test_a_criterion_without_a_check_is_still_decided_by_the_model(self):
+        from mas.engine import Criterion, LoopEngine, evaluate_check
+
+        criterion = Criterion(id="c1", desc="说清楚就好", check=None)
+        check = evaluate_check(criterion, "anything")
+        verdict = {"scores": [{"id": "c1", "pass": True, "note": "模型说没问题"}]}
+        scores = LoopEngine._merge_verdict_scores([criterion], [check], [verdict])
+        self.assertTrue(scores[0]["pass"])
+        self.assertEqual(scores[0]["source"], "model")
+
+
 class DegenerateArgumentTest(unittest.TestCase):
     """A machine check with no usable argument must never look like a pass.
 
