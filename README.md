@@ -3,6 +3,16 @@
 > 一个 **零依赖、纯标准库** 的多智能体闭环运行时：把「规划 → 执行 → 验证 → 复盘」写成**有验收标准、有退出条件、有过程账本**的工程循环。
 > 一条命令安装，初学者也能跑起来。
 
+**v0.7.1 修了什么**（升级不再悄悄留下旧版本）：
+
+- **升级后 skills 会漂移，而且没人发现** —— 之前 `mas install` 只是把文件覆盖过去，从不比较内容；0.6.0 时代装下的旧 skill 副本可以一路留到 0.7.0，而 `mas doctor` 只检查「在不在」，不检查「是不是这一版」；
+- 现在安装器按**内容指纹**判断漂移：装之前先备份旧副本，换成包内版本，并清掉新版已删除的残留文件；
+- `mas doctor` 新增 **`skills_sync`** 检查项，直接告诉你哪几个 host 的哪个 skill 与包内版本不一致；
+- **新增 `mas sync`** —— 一条命令把已安装的 skills 同步回包内版本（`--dry-run` 只报告不写入）；
+- **失效的 MCP 注册不再被当成「已注册」** —— 以前只要配置里有 `mas_loop` 这个键就算通过；但如果它指向的 Python 已被删除、或指向一份已卸载的包，MCP 服务器根本起不来，而自检全绿；现在这类注册会被识别、刷新，`mas doctor` 也会报出来；
+- **目录级备份修好了** —— `_backup()` 原本只处理文件，skill 目录的备份调用直接静默失败，等于没有备份；
+- **发布到 PyPI 不再需要长期 token** —— release workflow 新增 **Trusted Publishing（OIDC）** 通道，仓库不需要保存任何密钥。
+
 **v0.2.0 加入了什么**：并行多候选竞争选优、对抗式交叉评审、多后端故障转移、HTTP/SSE 远程接入、闭环复盘报告与回放、交互式初始化向导、离线基准测试、真实闭环自检。
 
 **v0.4.8 修了什么**（远程接入不再是一扇没锁的门）：
@@ -96,6 +106,8 @@ OpenLoop MAS 的做法是把闭环写成代码约束，而不是寄望于提示�
 pip install openloop-mas
 mas install        # 装 skills + 注册 MCP 服务器
 mas demo           # 不需要任何 API Key，先看它自己跑通闭环
+mas doctor         # 自检（包含 skills 版本是否漂移）
+mas sync           # 把已安装的 skills 同步回包内版本
 ```
 
 `mas install` 做的是**装 agent skills 到 Codex / Claude Code 的 skill 目录**、
@@ -543,6 +555,7 @@ openloop-mas/
 
 ```bash
 mas install       # 装 skills + 注册 MCP 服务器
+mas sync          # 把已安装的 skills 同步回包内版本（修复漂移）
 mas uninstall     # 移除 skills + MCP 注册（保留账本）
 mas init          # 生成/更新配置
 mas init --wizard # 交互式向导，一步步配好
@@ -570,7 +583,7 @@ mas http          # 以 HTTP + SSE 运行（远程接入；对外部署请设 MA
 ## 开发与测试
 
 ```bash
-python -m unittest discover -s tests -v   # 76 个离线测试，不需要网络
+python -m unittest discover -s tests -v   # 213 个离线测试，不需要网络
 python -m mas demo                        # 三个闭环场景
 python -m mas bench                       # 离线基准测试
 python -m mas verify                      # 真实闭环自检

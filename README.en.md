@@ -12,6 +12,29 @@
 [![python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![deps](https://img.shields.io/badge/dependencies-0-orange.svg)]()
 
+**What v0.7.1 fixes** (an upgrade no longer silently leaves old copies behind):
+
+- **The skills drifted after an upgrade and nobody noticed** - `mas install`
+  overwrote the files without ever comparing them. A 0.6.0-era copy could
+  survive all the way to 0.7.0, and `mas doctor` only checked *presence*, not
+  *version*;
+- The installer now compares **content fingerprints**: it backs the old copy
+  up first, installs the packaged version, and removes files the new version
+  no longer has;
+- `mas doctor` gained a **`skills_sync`** check that names the host and the
+  skill whose content no longer matches the packaged copy;
+- **New `mas sync`** repairs the drift with one command (`--dry-run` reports
+  without writing anything);
+- **A dead MCP registration is no longer reported as "registered"** - the key
+  merely having to exist used to be enough, but an entry pointing at a deleted
+  Python or an uninstalled package cannot start, while every self-check stayed
+  green. Such entries are now detected and refreshed;
+- **Directory backups actually work now** - `_backup()` only handled files, so
+  backing up a skill folder silently failed and there was no backup at all;
+- **Publishing to PyPI no longer needs a long-lived token** - the release
+  workflow gained a **Trusted Publishing (OIDC)** path, so the repository
+  stores no credential.
+
 **What v0.2.0 adds**: parallel candidate competition, adversarial cross-review,
 multi-backend failover, HTTP/SSE remote access, closure reports and replay,
 an interactive setup wizard, an offline benchmark and a real closure self-check.
@@ -62,6 +85,8 @@ ledger entry** all exist. Otherwise the status is one of exactly three:
 ```bash
 pip install openloop-mas
 mas install        # install skills + register the MCP server
+mas doctor         # self-check (including skill version drift)
+mas sync           # bring the installed skills back to the packaged version
 mas demo           # no API key needed - watch it close a loop on its own
 ```
 
@@ -426,6 +451,7 @@ pip uninstall openloop-mas
 
 ```bash
 mas install       # install skills + register the MCP server
+mas sync          # bring the installed skills back to the packaged version
 mas uninstall     # remove the skills + MCP registration (keeps the ledger)
 mas init          # write/update config
 mas init --wizard # interactive setup
@@ -454,7 +480,7 @@ gate.
 ## Development and tests
 
 ```bash
-python -m unittest discover -s tests -v   # 76 offline tests, no network needed
+python -m unittest discover -s tests -v   # 213 offline tests, no network needed
 python -m mas demo                        # three closure scenarios
 python -m mas bench                       # offline benchmark
 python -m mas verify                      # real closure self-check

@@ -76,5 +76,40 @@ class PackagedSkillsTest(unittest.TestCase):
         self.assertIn("skills/*/SKILL.md", pp)
 
 
+class ReleaseWorkflowTest(unittest.TestCase):
+    """The release workflow must be able to publish without a stored token.
+
+    The repository carries no secrets, so the only path that can work
+    out of the box is PyPI Trusted Publishing: GitHub mints an OIDC
+    token for the job and PyPI exchanges it for a short-lived upload
+    token. The classic token path stays as the fallback.
+    """
+
+    def setUp(self):
+        self.text = (_ROOT / ".github" / "workflows" / "release.yml").read_text(
+            encoding="utf-8"
+        )
+
+    def test_the_workflow_requests_an_oidc_token(self):
+        self.assertIn("id-token: write", self.text)
+
+    def test_the_trusted_publishing_path_exists(self):
+        self.assertIn("pypa/gh-action-pypi-publish", self.text)
+
+    def test_the_token_path_still_exists(self):
+        self.assertIn("PYPI_API_TOKEN", self.text)
+        self.assertIn("twine upload", self.text)
+
+    def test_the_two_paths_are_mutually_exclusive(self):
+        # Exactly one of the two publish steps may run per job.
+        self.assertIn("if: ${{ env.TWINE_PASSWORD != '' }}", self.text)
+        self.assertIn("if: ${{ env.TWINE_PASSWORD == '' }}", self.text)
+
+    def test_a_failed_pypi_upload_does_not_fail_the_release(self):
+        # The GitHub release is the primary artifact; a missing PyPI
+        # registration must not turn a good release into a red run.
+        self.assertIn("continue-on-error: true", self.text)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

@@ -15,6 +15,12 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      TWINE_USERNAME: __token__
+      TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -34,32 +40,34 @@ jobs:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           generate_release_notes: true
           files: dist/*
-      - name: Publish to PyPI
-        # NOTE: the `secrets` context is not available inside `if:` expressions.
-        # Using it there invalidates the whole workflow file, which GitHub
-        # reports as a zero-job failed run. The token is therefore passed via
-        # `env:` and the step decides what to do with an empty value itself.
-        id: publish
-        continue-on-error: true
+      - name: Publish to PyPI (API token)
+        # Classic path: an explicit token in the repository secrets.
+        if: ${{ env.TWINE_PASSWORD != '' }}
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
-        run: |
-          if [ -z "${TWINE_PASSWORD}" ]; then
-            echo "::warning::PYPI_API_TOKEN is not configured - skipping the PyPI upload."
-            exit 0
-          fi
-          python -m twine upload dist/*
+        run: python -m twine upload dist/*
+      - name: Publish to PyPI (Trusted Publishing)
+        # Tokenless path: PyPI Trusted Publishing. The OIDC token that
+        # GitHub mints for this job is exchanged for a short-lived upload
+        # token, so no long-lived credential is stored in the repository.
+        # One-time setup on pypi.org:
+        #   https://pypi.org/manage/project/openloop-mas/settings/publishing/
+        #   provider = "GitHub Actions", workflow = "release.yml"
+        # The step stays non-fatal so a release is never blocked by an
+        # unfinished PyPI registration.
+        if: ${{ env.TWINE_PASSWORD == '' }}
+        continue-on-error: true
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          print-hash: true
+          skip-existing: true
       - name: Report the PyPI publish status
         if: always()
-        env:
-          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
         run: |
           if [ -z "${TWINE_PASSWORD}" ]; then
-            echo "::warning::PYPI_API_TOKEN is not configured - the GitHub release was created, but PyPI was not published."
-            echo "::warning::Add the repository secret PYPI_API_TOKEN and re-run this workflow to publish."
-          elif [ "${{ steps.publish.outcome }}" = "success" ]; then
-            echo "Published to PyPI."
+            echo "::warning::The GitHub release was created, but PyPI was not published."
+            echo "::warning::Either add the repository secret PYPI_API_TOKEN, or register this workflow as a Trusted Publisher on pypi.org."
           else
-            echo "::warning::The PyPI upload failed. The GitHub release was still created."
+            echo "Published to PyPI."
           fi

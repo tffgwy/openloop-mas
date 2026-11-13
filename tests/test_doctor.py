@@ -94,5 +94,59 @@ class DoctorSkillsSourceTest(unittest.TestCase):
         self.assertIn("not-a-real-skill", by_name["skills_source"]["detail"])
 
 
+class DoctorSkillsSyncTest(unittest.TestCase):
+    """``mas doctor`` must see skill drift, not just skill presence.
+
+    Presence alone was not enough: the 0.6.0 copies survived a 0.7.0
+    upgrade with every check green, because nothing compared the
+    installed content with the packaged copy.
+    """
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="mas-doctor-sync-")
+        self._saved = {
+            name: os.environ.get(name)
+            for name in ("MAS_CONFIG_PATH", "MAS_STATE_DIR")
+        }
+        os.environ["MAS_CONFIG_PATH"] = os.path.join(self.root, "config.json")
+        os.environ["MAS_STATE_DIR"] = os.path.join(self.root, "state")
+        from mas import installer
+
+        self._orig_home = installer._home
+        installer._home = lambda: pathlib.Path(self.root)
+        self.addCleanup(lambda: setattr(installer, "_home", self._orig_home))
+
+    def tearDown(self):
+        for name, value in self._saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+    def test_the_sync_check_exists(self):
+        checks = run_doctor()
+        by_name = {c["check"]: c for c in checks}
+        self.assertIn("skills_sync", by_name)
+
+    def test_drift_is_reported(self):
+        from mas import installer
+
+        installer.install_skills()
+        target = pathlib.Path(self.root) / ".codex" / "skills" / "mas-loop" / "SKILL.md"
+        target.write_text("edited by hand\n", encoding="utf-8")
+        checks = run_doctor()
+        by_name = {c["check"]: c for c in checks}
+        self.assertEqual(by_name["skills_sync"]["status"], "warn")
+        self.assertIn("不一致", by_name["skills_sync"]["detail"])
+
+    def test_a_fresh_install_reports_no_drift(self):
+        from mas import installer
+
+        installer.install_skills()
+        checks = run_doctor()
+        by_name = {c["check"]: c for c in checks}
+        self.assertEqual(by_name["skills_sync"]["status"], "ok")
+
+
 if __name__ == "__main__":
     unittest.main()

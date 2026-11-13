@@ -7,6 +7,7 @@ same truth.
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import sys
@@ -111,15 +112,91 @@ def run_doctor(config: Dict[str, Any] | None = None, allow_network: bool = True)
         else:
             results.append(_check(label, "warn", f"未安装: {target}（运行 mas install）"))
 
+    # Presence is not enough. An installed skill whose content no longer
+    # matches the packaged copy is drift: the agent is following a skill
+    # the runtime knows nothing about. This is exactly what survived an
+    # upgrade silently in 0.6.0 -> 0.7.0, so it gets its own check.
+    from mas.installer import skill_sync_report
+
+    sync = skill_sync_report()
+    rows = sync.get("rows") or []
+    drift = [row for row in rows if row.get("status") == "drift"]
+    missing = [row for row in rows if row.get("actual") == "missing"]
+    if sync.get("error"):
+        results.append(_check("skills_sync", "fail", str(sync["error"])))
+    elif missing:
+        names = ", ".join(sorted({row["skill"] for row in missing}))
+        results.append(
+            _check(
+                "skills_sync",
+                "warn",
+                f"未安装: {names}（运行 mas install）",
+            )
+        )
+    elif drift:
+        detail = ", ".join(
+            f"{row['host']}/{row['skill']}" for row in drift[:6]
+        )
+        if len(drift) > 6:
+            detail += f" 等 {len(drift)} 项"
+        results.append(
+            _check(
+                "skills_sync",
+                "warn",
+                f"内容与包内版本不一致: {detail}（运行 mas install 同步）",
+            )
+        )
+    else:
+        results.append(
+            _check("skills_sync", "ok", f"{len(rows)} 个已安装 skill 均与包内版本一致")
+        )
+
+    from mas.installer import _codex_block_is_current
+
     codex_cfg = home / ".codex" / "config.toml"
     if codex_cfg.exists():
         text = codex_cfg.read_text(encoding="utf-8", errors="ignore")
-        if "[mcp_servers.mas_loop]" in text:
+        if "[mcp_servers.mas_loop]" not in text:
+            results.append(_check("mcp_codex", "warn", "~/.codex/config.toml 未注册 mcp_servers.mas_loop"))
+        elif _codex_block_is_current(text, sys.executable):
             results.append(_check("mcp_codex", "ok", "已在 ~/.codex/config.toml 注册 mcp_servers.mas_loop"))
         else:
-            results.append(_check("mcp_codex", "warn", "~/.codex/config.toml 未注册 mcp_servers.mas_loop"))
+            # The entry exists but points at an interpreter or a package
+            # path that is not this one - the server could not start.
+            results.append(
+                _check(
+                    "mcp_codex",
+                    "warn",
+                    "mcp_servers.mas_loop 已注册但指向失效的运行时（运行 mas install 刷新）",
+                )
+            )
     else:
         results.append(_check("mcp_codex", "warn", "未找到 ~/.codex/config.toml"))
+
+    claude_cfg = home / ".claude.json"
+    if claude_cfg.exists():
+        try:
+            data = json.loads(claude_cfg.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        servers = data.get("mcpServers") if isinstance(data, dict) else None
+        if not isinstance(servers, dict) or "mas_loop" not in servers:
+            results.append(_check("mcp_claude", "warn", "~/.claude.json 未注册 mas_loop"))
+        else:
+            from mas.installer import _claude_entry_is_current
+
+            if _claude_entry_is_current(servers["mas_loop"], sys.executable):
+                results.append(_check("mcp_claude", "ok", "已在 ~/.claude.json 注册 mas_loop"))
+            else:
+                results.append(
+                    _check(
+                        "mcp_claude",
+                        "warn",
+                        "mas_loop 已注册但指向失效的运行时（运行 mas install 刷新）",
+                    )
+                )
+    else:
+        results.append(_check("mcp_claude", "warn", "未找到 ~/.claude.json"))
 
     provider = str(config.get("provider") or "mock")
     env_name = str(config.get("api_key_env") or "MAS_API_KEY")

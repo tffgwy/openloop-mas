@@ -183,5 +183,247 @@ class UninstallerTest(unittest.TestCase):
         self.assertIn("kept", text)
 
 
+class SkillSyncTest(unittest.TestCase):
+    """Drift between the packaged skills and the installed copies.
+
+    The packaged copy is the truth. When they disagree, the agent is
+    following a skill that the runtime does not know about - and every
+    other check still says "installed". These tests pin the detection
+    and the repair.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="mas-sync-test-")
+        self.addCleanup(self._tmp.cleanup)
+        self.home = pathlib.Path(self._tmp.name)
+        self._orig_home = installer._home
+        installer._home = lambda: self.home
+        self.addCleanup(lambda: setattr(installer, "_home", self._orig_home))
+
+    def test_a_fresh_install_has_no_drift(self):
+        installer.install_skills()
+        report = installer.skill_sync_report()
+        rows = report["rows"]
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertEqual(row["status"], "match", row)
+
+    def test_an_edited_skill_is_reported_as_drift(self):
+        installer.install_skills()
+        target = self.home / ".codex" / "skills" / "mas-loop" / "SKILL.md"
+        target.write_text("edited by hand\n", encoding="utf-8")
+        report = installer.skill_sync_report()
+        drifted = [r for r in report["rows"] if r["status"] == "drift"]
+        self.assertTrue(drifted)
+        self.assertEqual(drifted[0]["skill"], "mas-loop")
+
+    def test_a_missing_skill_is_not_drift_but_is_missing(self):
+        installer.install_skills()
+        import shutil as _shutil
+
+        _shutil.rmtree(self.home / ".codex" / "skills" / "mas-review")
+        report = installer.skill_sync_report()
+        rows = {r["path"]: r for r in report["rows"]}
+        missing = [r for r in rows.values() if r["actual"] == "missing"]
+        self.assertTrue(missing)
+
+    def test_the_fingerprint_ignores_the_timestamp(self):
+        import os
+        import time
+
+        source = installer.skills_source() / "mas-loop"
+        before = installer.skill_fingerprint(source)
+        os.utime(source, (time.time() - 10000, time.time() - 10000))
+        self.assertEqual(installer.skill_fingerprint(source), before)
+
+    def test_dry_run_reports_without_writing(self):
+        installer.install_skills()
+        target = self.home / ".codex" / "skills" / "mas-loop" / "SKILL.md"
+        target.write_text("edited by hand\n", encoding="utf-8")
+        report = installer.run_sync(dry_run=True)
+        self.assertTrue(report["drift"])
+        self.assertEqual(report["fixed"], [])
+        self.assertEqual(target.read_text(encoding="utf-8"), "edited by hand\n")
+
+    def test_sync_repairs_the_drift(self):
+        installer.install_skills()
+        target = self.home / ".codex" / "skills" / "mas-loop" / "SKILL.md"
+        target.write_text("edited by hand\n", encoding="utf-8")
+        report = installer.run_sync()
+        self.assertTrue(report["fixed"])
+        self.assertEqual(report["remaining"], [])
+        source = installer.skills_source() / "mas-loop" / "SKILL.md"
+        self.assertEqual(target.read_text(encoding="utf-8"),
+                         source.read_text(encoding="utf-8"))
+
+    def test_sync_backs_up_the_replaced_copy(self):
+        installer.install_skills()
+        target = self.home / ".codex" / "skills" / "mas-loop" / "SKILL.md"
+        target.write_text("edited by hand\n", encoding="utf-8")
+        report = installer.run_sync()
+        self.assertTrue(report.get("backups"))
+
+    def test_sync_on_a_fresh_install_is_a_no_op(self):
+        installer.install_skills()
+        report = installer.run_sync()
+        self.assertEqual(report["drift"], [])
+        self.assertIn("无需同步", installer.format_sync_report(report))
+
+
+class StaleMcpRegistrationTest(unittest.TestCase):
+    """A registration that cannot start must not be reported as fine.
+
+    ``mas install`` used to treat "the key exists" as "the registration
+    is good". An entry pointing at an interpreter that was deleted - or
+    at a package path from an uninstalled copy - makes the MCP server
+    fail to start, while every self-check still said "registered".
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="mas-stale-mcp-")
+        self.addCleanup(self._tmp.cleanup)
+        self.home = pathlib.Path(self._tmp.name)
+        self._orig_home = installer._home
+        installer._home = lambda: self.home
+        self.addCleanup(lambda: setattr(installer, "_home", self._orig_home))
+
+    def test_a_dead_interpreter_is_refreshed(self):
+        config = self.home / ".codex" / "config.toml"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(
+            '[mcp_servers.mas_loop]\n'
+            'command = "C:/definitely/not/here/python.exe"\n'
+            'args = ["-m", "mas", "serve"]\n',
+            encoding="utf-8",
+        )
+        state, _ = installer._register_codex(sys.executable)
+        self.assertEqual(state, "updated")
+        text = config.read_text(encoding="utf-8")
+        self.assertIn(sys.executable.replace(chr(92), "/"), text)
+
+    def test_a_live_registration_is_left_alone(self):
+        installer._register_codex(sys.executable)
+        state, _ = installer._register_codex(sys.executable)
+        self.assertEqual(state, "already")
+
+    def test_refreshing_keeps_the_other_settings(self):
+        config = self.home / ".codex" / "config.toml"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(
+            'model = "gpt-5"\n\n'
+            '[mcp_servers.mas_loop]\n'
+            'command = "C:/definitely/not/here/python.exe"\n'
+            'args = ["-m", "mas", "serve"]\n\n'
+            '[mcp_servers.other]\ncommand = "x"\n',
+            encoding="utf-8",
+        )
+        installer._register_codex(sys.executable)
+        text = config.read_text(encoding="utf-8")
+        self.assertIn('model = "gpt-5"', text)
+        self.assertIn("[mcp_servers.other]", text)
+        self.assertEqual(text.count("[mcp_servers.mas_loop]"), 1)
+
+    def test_a_dead_claude_entry_is_refreshed(self):
+        config = self.home / ".claude.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "theme": "dark",
+                    "mcpServers": {
+                        "mas_loop": {
+                            "command": "C:/definitely/not/here/python.exe",
+                            "args": ["-m", "mas", "serve"],
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+        state, _ = installer._register_claude(sys.executable)
+        self.assertEqual(state, "updated")
+        data = json.loads(config.read_text(encoding="utf-8"))
+        self.assertEqual(data["theme"], "dark")
+        self.assertEqual(
+            data["mcpServers"]["mas_loop"]["command"].replace(chr(92), "/"),
+            sys.executable.replace(chr(92), "/"),
+        )
+
+    def test_a_live_claude_entry_is_left_alone(self):
+        installer._register_claude(sys.executable)
+        state, _ = installer._register_claude(sys.executable)
+        self.assertEqual(state, "already")
+
+    def test_the_report_mentions_a_refresh(self):
+        report = {
+            "mcp": {
+                "codex": {"state": "updated", "detail": "x"},
+                "claude": {"state": "already", "detail": "y"},
+            }
+        }
+        text = installer.format_report(report)
+        self.assertIn("refreshed", text)
+
+
+class UsableRegistrationTest(unittest.TestCase):
+    """A registration is judged by whether it works, not by equality.
+
+    ``mas install`` runs from wherever the package happens to live. If a
+    registration were compared against the *currently imported* module,
+    a perfectly good installation in ``~/.mas/app`` would be declared
+    broken every time the tool ran from a source checkout.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="mas-usable-")
+        self.addCleanup(self._tmp.cleanup)
+        self.home = pathlib.Path(self._tmp.name)
+        self._orig_home = installer._home
+        installer._home = lambda: self.home
+        self.addCleanup(lambda: setattr(installer, "_home", self._orig_home))
+
+    def test_a_registration_pointing_at_a_real_package_is_usable(self):
+        other = self.home / "other-app"
+        (other / "mas").mkdir(parents=True)
+        (other / "mas" / "__init__.py").write_text("", encoding="utf-8")
+        config = self.home / ".codex" / "config.toml"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(
+            '[mcp_servers.mas_loop]\n'
+            f'command = "{sys.executable.replace(chr(92), "/")}"\n'
+            'args = ["-m", "mas", "serve"]\n'
+            f'env = {{ PYTHONPATH = "{str(other).replace(chr(92), "/")}" }}\n',
+            encoding="utf-8",
+        )
+        state, _ = installer._register_codex(sys.executable)
+        self.assertEqual(state, "already", "a working registration must be kept")
+
+    def test_a_registration_without_a_package_path_falls_back_to_the_interpreter(self):
+        # A pip-installed package needs no PYTHONPATH; the interpreter
+        # itself can import mas.
+        config = self.home / ".codex" / "config.toml"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(
+            '[mcp_servers.mas_loop]\n'
+            f'command = "{sys.executable.replace(chr(92), "/")}"\n'
+            'args = ["-m", "mas", "serve"]\n',
+            encoding="utf-8",
+        )
+        state, _ = installer._register_codex(sys.executable)
+        self.assertEqual(state, "already")
+
+    def test_a_registration_pointing_at_a_missing_package_is_refreshed(self):
+        config = self.home / ".codex" / "config.toml"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(
+            '[mcp_servers.mas_loop]\n'
+            f'command = "{sys.executable.replace(chr(92), "/")}"\n'
+            'args = ["-m", "mas", "serve"]\n'
+            'env = { PYTHONPATH = "C:/definitely/not/here" }\n',
+            encoding="utf-8",
+        )
+        state, _ = installer._register_codex(sys.executable)
+        self.assertEqual(state, "updated")
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

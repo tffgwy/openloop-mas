@@ -14,7 +14,14 @@ from mas.config import load_config, load_persisted_config, save_config
 from mas.demo import run_scenarios
 from mas.doctor import run_doctor, summarize
 from mas.engine import LoopEngine
-from mas.installer import format_report, format_uninstall_report, run_install, run_uninstall
+from mas.installer import (
+    format_report,
+    format_sync_report,
+    format_uninstall_report,
+    run_install,
+    run_sync,
+    run_uninstall,
+)
 from mas.orchestration import CANDIDATE_ANGLES
 from mas.report import build_report, ledger_markdown, render_markdown, replay_trace
 from mas.setup import format_verify, run_verify, run_wizard
@@ -100,6 +107,21 @@ def cmd_install(args: argparse.Namespace) -> int:
         print("  mas doctor        # 自检")
         print("  mas demo          # 离线跑通三个闭环场景")
     return 0
+
+
+def cmd_sync(args: argparse.Namespace) -> int:
+    """Bring the installed skills back in line with the packaged ones.
+
+    This is the repair path for drift: the packaged skills are the truth,
+    and after an upgrade (or an accidental hand-edit) the installed copy
+    can be stale. ``mas sync`` reports what drifted and fixes it.
+    """
+    report = run_sync(dry_run=getattr(args, "dry_run", False))
+    if getattr(args, "json", False):
+        _print(report, as_json=True)
+    else:
+        print(format_sync_report(report))
+    return 0 if not report.get("errors") else 1
 
 
 def cmd_uninstall(args: argparse.Namespace) -> int:
@@ -404,6 +426,11 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--skip-mcp", action="store_true", help="不注册 MCP 服务器")
     add_json(install)
     install.set_defaults(func=cmd_install)
+
+    sync = sub.add_parser("sync", help="把已安装的 skills 同步回包内版本（修复漂移）")
+    sync.add_argument("--dry-run", action="store_true", help="只报告漂移，不写入")
+    add_json(sync)
+    sync.set_defaults(func=cmd_sync)
 
     uninstall = sub.add_parser("uninstall", help="移除 skills 与 MCP 注册（保留账本）")
     uninstall.add_argument("--skip-skills", action="store_true", help="不移除 agent skills")

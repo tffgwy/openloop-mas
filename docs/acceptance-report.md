@@ -36,8 +36,8 @@ openloop-mas/
 │  ├─ doctor.py         9 项安装自检
 │  ├─ demo.py           三个离线闭环场景
 │  └─ teams/            default / review / content 团队模板
-├─ skills/              mas-loop / mas-review / mas-scaffold 三个 Agent Skill
-├─ tests/               31 个离线测试
+├─ skills/              mas-loop / mas-review / mas-scaffold 三个 Agent Skill（单一真源，随 wheel 分发）
+├─ tests/               213 个离线测试
 ├─ docs/                quickstart / architecture / loop-engineering / mcp / positioning
 ├─ install.ps1          Windows 一键安装
 ├─ install.sh           macOS / Linux 一键安装
