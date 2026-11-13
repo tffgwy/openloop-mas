@@ -898,3 +898,78 @@ v0.7.4 让 **JSON 形式**的坏参数在开跑前快速失败，但**简写形�
 - `unittest discover -s tests` → **241 tests OK (skipped=4)**
 - `ruff check mas tests tools` → All checks passed
 - 隔离环境 CLI 实测：上表 6 类坏简写全部 exit=1、`runs.jsonl` 0 行
+
+### F.5 发布产物与真实端点复验（v0.7.5）
+
+**Release 产物**（`gh release view v0.7.5`）：
+
+- `openloop_mas-0.7.5-py3-none-any.whl`（103167 B）
+- `openloop_mas-0.7.5.tar.gz`（153481 B）
+- CI 四个 workflow 全绿：`ci` / `pages` / `install` / `release`
+
+**全新 wheel 隔离安装 E2E**（新 venv + 新 HOME + 仓库外 cwd）：
+
+| 检查 | 结果 |
+| --- | --- |
+| `pip install --no-index <wheel>` | `Successfully installed openloop-mas-0.7.5` |
+| 解析到的包路径 | `_venv75\Lib\site-packages\mas`（不是仓库源码） |
+| `mas --version` | `0.7.5` |
+| `mas install` | exit 0，skills 装到 6 个，codex/claude 双端 MCP 注册成功 |
+| `mas doctor --no-network` | exit 0，全项 OK（含 `skills_sync 6 个已安装 skill 均与包内版本一致`） |
+| `mas demo` | exit 0，closure / stagnation / budget 三场景全 OK |
+| skill 指纹（6 组 codex/claude × 3 skill） | 全部 **MATCH** |
+| MCP 注册 | codex `True` / claude `True` |
+
+**v0.7.5 契约在发布产物上复验**（隔离环境，坏简写）：
+
+| 简写 | exit | 账本行数 | 提示 |
+| --- | --- | --- | --- |
+| `regex:` | 1 | 0 | `missing argument: regex needs a regular expression` |
+| `contains:` | 1 | 0 | `missing argument: contains needs a string or a list of strings to look for` |
+| `min_chars:` | 1 | 0 | `missing argument: min_chars needs a minimum character count` |
+| `min_chars:many` | 1 | 0 | `invalid argument: ... got 'many'` |
+| `min_chars:-1` | 1 | 0 | `invalid argument: ... needs a non-negative count, got -1` |
+| `regex:([unclosed` | 1 | 0 | `invalid argument: regex cannot compile /([unclosed/: ...` |
+
+**真实端点正例**（`claude-opus-5-5` @ `http://127.0.0.1:16024/v1`，免鉴权）：
+
+```
+mas run --goal "写一个 Python 去重函数 dedupe，保留首次出现顺序" \
+  --criteria "regex:def dedupe.*set" --criteria "min_chars:120"
+-> exit 0，closed，迭代 1 次，token 5214
+-> [PASS] c1 (rule) regex /def dedupe.*set/ matched
+-> [PASS] c2 (rule) length 489 >= 120
+```
+
+**真实端点负例**（同一端点，坏标准）：
+
+```
+mas run --goal "随便写点东西" --criteria "regex:"
+-> exit 1，错误：验收标准里有无法执行的机检规则:
+     - c1: missing argument: regex needs a regular expression
+-> 账本行数 before=100 / after=100，delta=0（零污染、零 token）
+```
+
+**常驻 HTTP 服务**（重启后）：`/health` → 200，`version: 0.7.5`
+
+**鉴权矩阵**（v0.7.5）：
+
+| 场景 | 结果 |
+| --- | --- |
+| `/health` 无令牌 | 200（只含版本号） |
+| `/tools` 无令牌 | 401 |
+| `/tools` 错令牌 | 401 |
+| `/tools` `Authorization: Bearer <token>` | 200 |
+| `/tools` `X-MAS-Token: <token>` | 200 |
+
+**OpenMausBot 集成**（端口 28799）：
+
+- MCP 握手：`ok: True`，**12 个工具**
+  （`mas_run` / `mas_status` / `mas_ledger` / `mas_tickets` / `mas_ticket_resolve` /
+  `mas_resume` / `mas_report` / `mas_replay` / `mas_export` / `mas_teams` /
+  `mas_doctor` / `mas_config`）
+- 端到端闭环：`exit 0`，`status: closed`，iterations 1，tokens 3497，
+  c1 regex `[一-龥]{4,}` 命中 → pass
+
+**本机运行时升级**：备份 `~/.mas/backup/app_backup_075`，`mas install` 后
+`mas doctor` 全绿（`package mas 0.7.5 可导入`、`skills_sync 9 个已安装 skill 均与包内版本一致`）。
