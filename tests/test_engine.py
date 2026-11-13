@@ -136,7 +136,78 @@ class TestLoopClosure(unittest.TestCase):
             engine.tickets.resolve(result.ticket_id, "approved", "请补充数据")
             resumed = engine.resume(result.ticket_id, "请补充数据")
             self.assertIn(resumed.status, ("closed", "escalated", "budget_exhausted"))
+
+    def test_a_failed_resume_keeps_the_ticket_in_the_human_queue(self):
+        # A resumed loop that still cannot close must NOT look finished.
+        # Marking the ticket resolved anyway emptied the human queue: the
+        # escalation disappeared from `mas tickets` while the very problem
+        # it was opened for was still open.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = make_config(tmp, stagnation_limit=2)
+            provider = StaticProvider("同样的输出")
+            engine = LoopEngine(config, provider=provider, team=load_team("default"))
+            result = engine.run(
+                "停滞任务",
+                [{"id": "c1", "desc": "d", "check": {"type": "min_chars", "arg": 9999}}],
+            )
+            self.assertEqual(result.status, "escalated")
+            resumed = engine.resume(result.ticket_id, "再试一次")
+            self.assertFalse(resumed.closed)
+            ticket = engine.tickets.get(result.ticket_id)
+            self.assertEqual(ticket["state"], "waiting_human")
+            self.assertIsNone(ticket["decision"])
+            self.assertEqual(ticket["note"], "再试一次")
+            attempts = (ticket.get("payload") or {}).get("resume_attempts") or []
+            self.assertEqual(len(attempts), 1)
+            self.assertIn("resume did not close the loop", attempts[0]["reason"])
+
+    def test_a_successful_resume_resolves_the_ticket(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = make_config(tmp, stagnation_limit=2)
+            provider = StaticProvider("同样的输出")
+            engine = LoopEngine(config, provider=provider, team=load_team("default"))
+            result = engine.run(
+                "停滞任务",
+                [{"id": "c1", "desc": "d", "check": {"type": "min_chars", "arg": 9999}}],
+            )
+            self.assertEqual(result.status, "escalated")
+            engine.tickets.resolve(result.ticket_id, "approved", "请补充数据")
+            # A criterion the artifact actually satisfies: the resumed
+            # loop closes, so the ticket may be closed as well.
+            ticket = engine.tickets.get(result.ticket_id)
+            payload = ticket["payload"]
+            payload["criteria"] = [{"id": "c1", "desc": "d", "check": {"type": "min_chars", "arg": 1}}]
+            engine.tickets._file(result.ticket_id).write_text(
+                json.dumps(ticket, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            )
+            resumed = engine.resume(result.ticket_id, "标准已改")
+            self.assertTrue(resumed.closed)
             self.assertEqual(engine.tickets.get(result.ticket_id)["state"], "resolved")
+
+    def test_a_failed_resume_does_not_open_a_second_ticket(self):
+        # One problem must be one ticket. A resumed loop that escalates
+        # again used to open a brand new ticket, so the human queue listed
+        # the same escalation twice.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = make_config(tmp, stagnation_limit=2)
+            provider = StaticProvider("同样的输出")
+            engine = LoopEngine(config, provider=provider, team=load_team("default"))
+            result = engine.run(
+                "停滞任务",
+                [{"id": "c1", "desc": "d", "check": {"type": "min_chars", "arg": 9999}}],
+            )
+            self.assertEqual(result.status, "escalated")
+            before = len(engine.tickets.list())
+            resumed = engine.resume(result.ticket_id, "再试一次")
+            self.assertFalse(resumed.closed)
+            after = engine.tickets.list()
+            self.assertEqual(len(after), before)
+            waiting = [t for t in after if t["state"] == "waiting_human"]
+            self.assertEqual(len(waiting), 1)
+            self.assertEqual(waiting[0]["id"], result.ticket_id)
+            # The fresh evidence lands on the ticket that was already open.
+            payload = waiting[0]["payload"]
+            self.assertEqual(payload.get("attempts_total"), 1)
 
     def test_optional_criterion_never_blocks(self):
         with tempfile.TemporaryDirectory() as tmp:

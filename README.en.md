@@ -12,6 +12,52 @@
 [![python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![deps](https://img.shields.io/badge/dependencies-0-orange.svg)]()
 
+**What v0.7.10 fixes** (a failed resume no longer pretends to be solved):
+
+- **A failing resume used to mark the ticket as resolved** - an escalation
+  ticket is the human queue: it says "the machine could not close this on its
+  own, a human has to decide". When `mas resume` finished **without closing
+  the loop**, the ticket was still written as `resolved`: the escalation
+  vanished from `mas tickets` while the problem it was opened for was not
+  solved at all - the queue under-reported and the loop falsely closed. A
+  ticket is now closed only when the loop **actually** closes; otherwise it
+  stays in the queue, and the failure (status, error, failing criteria) is
+  recorded on it under `resume_attempts`;
+- **A failed resume opened a duplicate ticket** - one failure was counted as
+  two open items, so the human queue lied about how many problems were
+  waiting. One problem is now one ticket: the fresh evidence (latest
+  artifact, failing criteria, iteration history) lands on it instead of
+  spawning another one;
+- The CLI now says plainly that ticket X is still open and still in the queue,
+  instead of letting an `exit 0` look like a finished job.
+
+**What v0.7.9 fixes** (the flag is read by meaning; a JSON array no longer degrades):
+
+- **`"required": "false"` was treated as required** - `bool("false")` is `True`,
+  and quotes are exactly what a criterion picks up when it travels through JSON,
+  MCP or a shell script. The user asked for a soft standard, the engine enforced
+  a hard one, and the loop could then never close. The flag is now read by
+  *meaning* (`"false"` / `"0"` / `"no"` are optional), and **anything unreadable
+  stays required** - an unreadable flag must never silently relax a standard;
+- **A JSON array passed to `--criteria` degraded as a whole** - an array starts
+  with `[`, was not recognised as JSON, and was therefore taken as **one plain
+  description**: no machine check ran at all and the closure actually came from
+  a model saying "looks fine". Every entry in the array now keeps its own
+  machine check, and the report says `source: rule` because that is what ran;
+- the CLI layer gained regression tests: array parsing, the machine check really
+  running, a string flag read as optional, and a broken JSON array refused.
+
+**What v0.7.8 fixes** (an optional criterion no longer reports a false pass):
+
+- A `required: false` criterion used to be **hard-coded** as passing in the merge
+  layer - a criterion with a machine check had its result thrown away, so the
+  report showed a green light for a rule that actually failed;
+- the rule now runs and its **real** result lands in the report (`PASS` or
+  `FAIL`) - it just never keeps the loop open. Without a machine check the
+  reviewer's verdict is recorded the same way;
+- every verdict gained an explicit `blocking` field: `true` for required, `false`
+  for optional. Only blocking criteria decide the closure.
+
 **What v0.7.1 fixes** (an upgrade no longer silently leaves old copies behind):
 
 - **The skills drifted after an upgrade and nobody noticed** - `mas install`

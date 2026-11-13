@@ -1518,3 +1518,98 @@ gh workflow run release.yml -f tag=v0.7.9
   读不懂的标志绝不能悄悄放宽标准。
 - JSON 数组形式只影响 `--criteria`；`--criteria-file` 的数组形式本就一直有效。
 - 本轮真实端点实测仍只覆盖 `claude-opus-5-5` @ `http://127.0.0.1:16024/v1`（免鉴权）。
+
+## K. v0.7.10 — resume 失败不再伪装成已解决
+
+### K.1 问题（本轮真实端点发现，非推演）
+
+升级工单是给人看的队列：它说「机器自己合不了，需要人拍板」。用不可满足的正则
+`a^` 触发升级后，`mas resume` 的行为暴露了两个缺陷：
+
+1. **失败的 resume 把工单标成 `resolved`** —— resume 跑完**仍然闭合不了**
+   （status=escalated / budget_exhausted），工单却已经是 `resolved`。
+   升级事项从 `mas tickets` 人工队列里消失，而它本该解决的那个问题一个都没解决。
+   队列少报问题、循环「假闭合」。
+2. **失败的 resume 多开一张重复工单** —— 一次失败被记成两个待办，
+   人工队列因此谎报「有几个问题在等」。
+
+### K.2 修复
+
+- `mas/engine.py::LoopEngine.resume()`：只有 `result.closed` 为真才
+  `tickets.resolve(...)`；否则 `tickets.reopen(...)`，把失败现场
+  （status / error / 失败的标准 / run_id）写进工单的 `resume_attempts`。
+- `mas/tickets.py::TicketStore.reopen()`（新增）：状态回 `waiting_human`，
+  `decision=None`、`resolved_at=None`，并追加 `resume_attempts` 列表。
+- `mas/tickets.py::TicketStore.append_attempt()`（新增）：把新一轮的
+  产物、失败标准、迭代历史合并到**已有**工单上，不再另起一张。
+- `mas/engine.py::LoopEngine.run()` 新增 `parent_ticket_id`：resume 路径
+  把父工单传下去，升级时复用它。
+- `mas/cli.py::cmd_resume()`：未闭合时打印
+  「工单 X 仍未解决，仍在人工队列里：mas tickets」。
+
+### K.3 真实端点复验（`claude-opus-5-5` @ `http://127.0.0.1:16024/v1`）
+
+**失败分支**（标准 `regex:"a^"`，token 预算 3000 触发升级）：
+
+```
+== run exit: 2
+    已升级为人工工单：T-20261113-144731-1a66
+== resume exit: 2
+状态：escalated（迭代 1 次）
+  [FAIL] c1 regex /a^/ not found
+工单 T-20261113-144731-1a66 仍未解决，仍在人工队列里：mas tickets
+== tickets exit: 0
+T-20261113-144731-1a66  waiting_human  loop_escalation  用一段话介绍循环工程
+
+A ticket state: waiting_human | decision: None | resolved_at: None
+A resume_attempts: [{"at": "2026-11-13T06:48:09+00:00",
+  "reason": "resume did not close the loop: status=escalated, budget: tokens 4834 >= 3000, issues: c1: regex /a^/ not found",
+  "status": "escalated", "iterations": 1,
+  "issues": ["c1: regex /a^/ not found"], "run_id": "R-230711b82e"}]
+```
+
+**修前对比**：同一场景修前队列里出现 **两张** 工单（`...144240-8d53` 与
+`...144324-9641`），原工单被标 `resolved`；修后**只有一张**且为
+`waiting_human`。
+
+**成功分支**（人工把标准放宽成可满足的 `min_chars:30`）：
+
+```
+run exit: 2  TICKET: T-20261113-144924-9dc2
+== resume exit: 0
+状态：closed（迭代 1 次）
+  [PASS] c1 length 82 >= 30
+== tickets exit: 0
+T-20261113-144924-9dc2  resolved       loop_escalation  用一段话介绍循环工程
+== replay exit: 0
+回放 4 条账本记录
+- #1 iter=1 planner
+- #2 iter=1 closure escalate c1: regex /a^/ not found
+- #3 iter=1 planner
+* #4 iter=1 closure escalate
+```
+
+两条分支都验证到位：真闭合才关单，没闭合就留在队列并记下原因。
+
+### K.4 本机门禁
+
+| 检查 | 结果 |
+| --- | --- |
+| `python -m unittest discover -s tests` | **271 tests OK (skipped=4)**（v0.7.9 为 268） |
+| `ruff check mas tests tools` | All checks passed! |
+| `mas bench` | 9/9，闭环率 100%，平均迭代 1.67，账本一致性 100% |
+| `mas demo` | closure / stagnation / budget 三场景全 OK |
+
+新增测试 3 项：
+
+- `test_a_failed_resume_keeps_the_ticket_in_the_human_queue`
+- `test_a_successful_resume_resolves_the_ticket`
+- `test_a_failed_resume_does_not_open_a_second_ticket`
+
+### K.5 边界说明
+
+- 本轮真实端点实测仍只覆盖 `claude-opus-5-5` @ `http://127.0.0.1:16024/v1`（免鉴权）。
+- `resume_attempts` 是新增的公开字段，旧工单没有该字段时不影响读取。
+- 触发升级在真实端点上依赖 token 预算（`max_tokens`）而非停滞判定：
+  真实模型每轮都会改写产物，哈希不变几乎不会发生。
+- PyPI 发布状态见下节（仍未完成）。

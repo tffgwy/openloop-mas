@@ -19,7 +19,7 @@
 
 - **Provider**：只负责「给定提示词，返回文本」。判定权不在模型手里。
 - **Ledger**：append-only 的 JSONL，每轮一条 `closure` 条目，外加 `planner` 条目。
-- **Tickets**：循环无法自行闭合时的升级对象，携带完整上下文。
+- **Tickets**：循环无法自行闭合时的升级对象，携带完整上下文。工单只有在 `resume` **真的闭合**时才置为 `resolved`；没闭合就留在 `waiting_human` 队列里，并把失败现场追加到 `resume_attempts`，不另开重复工单。
 - **Roles**：五个角色的系统提示词与任务状态模板。
 
 ## 一次循环的状态机

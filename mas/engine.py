@@ -410,6 +410,7 @@ class LoopEngine:
         reviewers: Optional[int] = None,
         review_mode: Optional[str] = None,
         perspective: str = "",
+        parent_ticket_id: Optional[str] = None,
     ) -> RunResult:
         # Per-run overrides win over the configured defaults, so the CLI can
         # ask for a heavier setup for one task without touching the config.
@@ -572,23 +573,39 @@ class LoopEngine:
                     status = STATUS_CLOSED
                     break
                 if decision == "escalate":
-                    ticket = self.tickets.create(
-                        "loop_escalation",
-                        {
-                            "run_id": run_id,
-                            "task_id": task_id,
-                            "goal": goal,
-                            "title": title or goal[:40],
-                            "criteria": [c.to_dict() for c in crits],
-                            "last_artifact": artifact,
-                            "issues": issues,
-                            "attempts": attempt,
-                            "history": history,
-                            "stagnation": stagnant,
-                            "reason": error or "loop could not close itself",
-                        },
-                    )
-                    ticket_id = ticket["id"]
+                    payload = {
+                        "run_id": run_id,
+                        "task_id": task_id,
+                        "goal": goal,
+                        "title": title or goal[:40],
+                        "criteria": [c.to_dict() for c in crits],
+                        "last_artifact": artifact,
+                        "issues": issues,
+                        "attempts": attempt,
+                        "history": history,
+                        "stagnation": stagnant,
+                        "reason": error or "loop could not close itself",
+                    }
+                    if parent_ticket_id:
+                        # A resumed loop keeps the ticket it already has.
+                        # Opening a second one for the same problem would
+                        # leave two tickets in the human queue describing
+                        # one single escalation - the queue then lies about
+                        # how many problems are open.
+                        ticket_id = parent_ticket_id
+                        self.tickets.append_attempt(
+                            parent_ticket_id,
+                            payload,
+                            reason=(
+                                "resume did not close the loop: status="
+                                + str(status)
+                                + (f", {error}" if error else "")
+                                + (f", issues: {'; '.join(issues)}" if issues else "")
+                            ),
+                        )
+                    else:
+                        ticket = self.tickets.create("loop_escalation", payload)
+                        ticket_id = ticket["id"]
                     status = STATUS_ESCALATED
                     break
             except ProviderError as exc:
@@ -1047,7 +1064,25 @@ class LoopEngine:
             criteria=payload.get("criteria") or [],
             title=str(payload.get("title", "")),
             human_note=note or str(ticket.get("note") or ""),
+            parent_ticket_id=ticket_id,
         )
-        if ticket.get("state") != "resolved":
-            self.tickets.resolve(ticket_id, "resumed", note)
+        # A resumed loop that still cannot close must NOT look finished.
+        # Marking the ticket resolved anyway would empty the human queue:
+        # the escalation would disappear from `mas tickets` while the very
+        # problem it was opened for is still open. The ticket stays
+        # waiting_human in that case, and it carries the new failure.
+        if result.closed:
+            if ticket.get("state") != "resolved":
+                self.tickets.resolve(ticket_id, "resumed", note)
+        else:
+            self.tickets.reopen(
+                ticket_id,
+                note,
+                reason=(
+                    f"resume did not close the loop: status={result.status}"
+                    + (f", {result.error}" if result.error else "")
+                    + (f", issues: {'; '.join(result.issues)}" if result.issues else "")
+                ),
+                result=result.to_dict(),
+            )
         return result

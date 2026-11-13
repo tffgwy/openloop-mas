@@ -294,6 +294,10 @@ def cmd_resume(args: argparse.Namespace) -> int:
             flag = "PASS" if score["pass"] else "FAIL"
             optional = "" if score.get("blocking", True) else "，可选"
             print(f"  [{flag}] {score['id']}{optional} {score['note']}")
+        if not result.closed:
+            # The ticket stays open on purpose - say so, so the human
+            # knows the escalation did not disappear.
+            print(f"工单 {args.ticket_id} 仍未解决，仍在人工队列里：mas tickets")
     return 0 if result.closed else 2
 
 
