@@ -1244,7 +1244,113 @@ if not criterion.required:
 - `mas bench` → 9/9 符合预期、闭环率 100%、平均迭代 1.67、账本一致性 100%
 - `mas demo` → closure / stagnation / budget 三场景全 OK
 
-### I.5 边界说明
+
+### I.5 发布产物与真实端点复验（v0.7.8）
+
+**Release 产物**（`gh release view v0.7.8`）：
+
+- `openloop_mas-0.7.8-py3-none-any.whl`（105198 B）
+- `openloop_mas-0.7.8.tar.gz`（158096 B）
+- CI 四个 workflow 全绿：`ci` / `pages` / `install` / `release`
+
+**全新 wheel 隔离安装 E2E**（新 venv + 新 HOME + 仓库外 cwd）：
+
+| 检查 | 结果 |
+| --- | --- |
+| `pip install --no-index <wheel>` | `Successfully installed openloop-mas-0.7.8` |
+| 解析到的包路径 | `_venv78\Lib\site-packages\mas`（不是仓库源码） |
+| `mas --version` | `0.7.8` |
+| `mas install` | exit 0，双端 MCP 注册成功 |
+| `mas doctor --no-network` | exit 0，全项 OK（含 `skills_sync 6 个已安装 skill 均与包内版本一致`） |
+| `mas demo` | exit 0，closure / stagnation / budget 三场景全 OK |
+| skill 指纹（6 组） | 全部 **MATCH** |
+| MCP 注册 | codex `True` / claude `True` |
+
+**契约在发布产物上复验**：
+
+| 输入 | exit | 账本行数 |
+| --- | --- | --- |
+| `regex:` | 1 | 0 |
+| `min_chars:many` | 1 | 0 |
+| JSON `{"check":{"type":"mystery","arg":"x"}}` | 1 | 0 |
+
+**真实端点实测**（`claude-opus-5-5` @ `http://127.0.0.1:16024/v1`，免鉴权）：
+
+任务：写一个 Python 去重函数 `dedupe`，返回 set；
+c1 = `regex:def dedupe.*set`（必选）、c2 = `min_chars:120`（必选）、
+c3 = `min_chars:999999`（**可选**，模型不可能满足）。
+
+```
+-> exit 0，closed，迭代 1 次，token 4602
+-> [PASS] c1 (rule) regex /def dedupe.*set/ matched
+-> [PASS] c2 (rule) length 282 >= 120
+-> [FAIL] c3 (rule) length 282 < 999999   ← 可选标准真实失败，可见
+-> issues: []                            ← 但不阻塞闭合，也没有触发返工
+```
+
+**报告渲染**（同一份账本）：
+
+```
+- 验收判定：
+  - [PASS] `c1` regex /def dedupe.*set/ matched
+  - [PASS] `c2` length 282 >= 120
+  - [FAIL] `c3` length 282 < 999999（可选，不阻塞闭合）
+```
+
+`failed: []`（必选失败清单为空）、`optional_failed: [c3]`（可选失败单独列出）。
+
+**常驻 HTTP 服务**（重启后）：`/health` → 200，`version: 0.7.8`
+
+**鉴权矩阵**（v0.7.8）：health 200 / 无令牌 401 / 错令牌 401 / Bearer 200 / X-MAS-Token 200
+
+**本机运行时升级**：备份 `~/.mas/backup/app_backup_078`，`mas install` 后
+`mas doctor` 全绿（`package mas 0.7.8 可导入`、`skills_sync 9 个已安装 skill 均与包内版本一致`）。
+
+**OpenMausBot 集成**（v0.7.8，端口 28799）：
+
+- MCP 握手：`ok: True`，**12 个工具**
+- 端到端闭环：`exit 0`，`status: closed`，iterations 1，tokens 3539，
+  c1 regex `[一-龥]{4,}` 命中 → pass
+
+### I.6 PyPI 发布状态（本轮唯一未完成项）
+
+`release.yml` 的 PyPI 发布步骤**真实执行过**，失败原因为 PyPI 返回：
+
+```
+invalid-publisher: valid token, but no corresponding publisher
+(Publisher with matching claims was not found)
+```
+
+即 **pypi.org 上还没有为 `openloop-mas` 登记 Trusted Publisher**。
+`https://pypi.org/pypi/openloop-mas/json` 仍返回 404（名称未被占用，可注册）。
+
+需要用户一次性登记（唯一需要人做的步骤）：
+
+| 字段 | 值 |
+| --- | --- |
+| Provider | GitHub Actions |
+| Organization | tffgwy |
+| Repository | openloop-mas |
+| Workflow name | release.yml |
+| Environment name | 留空 |
+
+地址：<https://pypi.org/manage/project/openloop-mas/settings/publishing/>
+
+登记后补发：
+
+```bash
+gh workflow run release.yml -f tag=v0.7.8
+```
+
+替代路径：`gh secret set PYPI_API_TOKEN`（**不要在对话或日志里回显明文**）。
+
+**顺带修掉的一个真实缺陷**（commit `4e23b2d`）：原来的状态上报步骤只看
+secret 是否存在，于是两种情况都会说错——Trusted Publishing 失败（非致命）
+仍然打印「Published to PyPI.」，而 Trusted Publishing 成功（无 token 路径）
+反而打印「未发布」。现在改为直接查 pypi.org 的版本 JSON 判断真实结果，
+并把结论写进 job summary；失败时给出具体的登记地址与参数。
+
+### I.7 边界说明
 
 - 可选标准的机检**照常执行**，只是不参与闭合判定；不因为可选就跳过检查。
 - `blocking` 字段是新增的公开字段，旧账本记录没有该字段时按 `True` 处理
