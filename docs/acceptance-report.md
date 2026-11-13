@@ -1931,7 +1931,59 @@ v0.7.11 把「判定值怎么读」彻底修好了，但留了一个尾巴：`no
 - `test_a_mixed_payload_summarises_as_fail`
 - `test_the_summary_survives_when_no_score_is_readable`
 
-### M.5 边界说明
+### M.5 发布产物与本机运行时复验（v0.7.12）
+
+**CI 四绿**（tag `v0.7.12` 推送后）：
+
+| workflow | run id | 结论 |
+| --- | --- | --- |
+| `ci` | 43397479360 | success |
+| `pages` | 43397479374 | success |
+| `install` | 43397479421 | success |
+| `release` | 43397493651 | success |
+
+**Release 产物**（`gh release view v0.7.12`）：
+
+- `openloop_mas-0.7.12-py3-none-any.whl`（111117 B）
+- `openloop_mas-0.7.12.tar.gz`（173180 B）
+- <https://github.com/tffgwy/openloop-mas/releases/tag/v0.7.12>
+
+**全新 wheel 的隔离安装 E2E**：
+
+| 项 | 结果 |
+| --- | --- |
+| 隔离安装 | `Successfully installed openloop-mas-0.7.12` |
+| `mas --version` | `openloop-mas 0.7.12` |
+| `mas install` | exit 0，MCP 注册 codex + claude，9 个 skill 落盘 |
+| `mas doctor --no-network` | exit 0，`skills_sync 6 个已安装 skill 均与包内版本一致` |
+| `mas demo` | closure / stagnation / budget 三场景全 OK |
+| skill 指纹 | `.codex` / `.claude` × `mas-loop` / `mas-review` / `mas-scaffold` 全部 **MATCH** |
+| MCP | `[mcp_servers.mas_loop]` 存在 + `.claude.json` 有 `mas_loop` |
+
+**发布产物上的契约复验**（缺参数当场拒绝、零 token、账本零污染）：
+`regex:` / `min_chars:many` / `{"type":"mystery"}` 三种非法输入全部
+`exit 1`、账本 0 条。
+
+**本机运行时升级**：备份 `~/.mas/backup/app_backup_0712`，
+用发布 wheel 的包内容替换 `~/.mas/app/mas` → `mas 0.7.12 可导入`。
+`mas install` 同步 9 个 skill（旧副本备份为 `mas-loop.bak-20261113-171233`），
+`mas doctor` 全绿：
+`package mas 0.7.12 可导入`、`skills_sync 9 个已安装 skill 均与包内版本一致`、
+`provider openai_compat / claude-opus-5-5 @ http://127.0.0.1:16024/v1（免鉴权端点）`、
+`endpoint 端点可用，协议方言 = openai-responses-events`。
+
+**常驻 HTTP 服务**（重启后）：`/health` → 200，`version: 0.7.12`
+
+**鉴权矩阵**（v0.7.12）：health 200 / 无令牌 401 / 错令牌 401 / Bearer 200 /
+X-MAS-Token 200
+
+**OpenMausBot 集成**（v0.7.12，端口 28799）：
+
+- MCP 握手：`ok: True`，**12 个工具**
+- 端到端闭环：`exit 0`，`status: closed`，iterations 1，tokens 3481，
+  c1 regex `[一-龥]{4,}` 命中 → pass，账本无未结票据
+
+### M.6 边界说明
 
 - 本轮真实端点实测仍只覆盖 `claude-opus-5-5` @ `http://127.0.0.1:16024/v1`（免鉴权）。
 - 这条修复**不影响闭合判定**，只影响载荷归一化后的顶层 `verdict` 字段。
