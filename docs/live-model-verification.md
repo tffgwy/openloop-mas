@@ -1034,3 +1034,27 @@ provider 为 `mock（离线模式，无需密钥）`；`mas demo` 三个场景�
    从源码装的用户仍需用 `install.ps1` / `install.sh`（或自行加 PATH）。
 3. skills 的目标目录策略是「Codex/Claude 总是，.agents/.gemini 仅在已用时」——
    与 `install.ps1` 的既有策略保持一致。
+
+### v0.6.0 发布与最终验证
+
+`5acf91d` 触发 4 个 workflow：ci / pages / install / release 全部 success。
+Release `v0.6.0`：`openloop_mas-0.6.0-py3-none-any.whl`（92,092 B）+ `openloop_mas-0.6.0.tar.gz`（121,346 B）。
+wheel 内实测含 3 个 SKILL.md。
+
+全新 venv + 全新隔离 HOME 装 v0.6.0 wheel：
+
+```
+openloop-mas 0.6.0
+mas install
+  [OK ] skills installed: 6
+  [OK ] MCP registered (codex): ...\.codex\config.toml
+  [OK ] MCP registered (claude): ...\.claude.json
+mas doctor   -> skill_codex / skill_claude / mcp_codex 全 [OK]，provider mock（免密钥）
+mas demo     -> closure / stagnation / budget 三场景全 [OK]
+```
+
+本机安装同步到 0.6.0（`install.ps1 -SkipDemo` 全 `[OK]`，9 个 skill 目录已装，
+MCP 已注册），真实端点闭环 `R-ea68a0b85b` / `closed` / 1 iter / 3905 tokens。
+常驻服务重启后 `/health` → `"version": "0.6.0"`，Tailscale HTTPS 鉴权矩阵 3 条探针符合预期。
+
+最终测试计数：**179 tests OK (skipped=4)**，`ruff check` → All checks passed。
