@@ -13,3 +13,4 @@ site/
 *.bak
 *.bak-*
 .DS_Store
+Microsoft/

@@ -3,6 +3,25 @@
 > 一个 **零依赖、纯标准库** 的多智能体闭环运行时：把「规划 → 执行 → 验证 → 复盘」写成**有验收标准、有退出条件、有过程账本**的工程循环。
 > 一条命令安装，初学者也能跑起来。
 
+**v0.7.14 加了什么**（接入 DeepSeek Harness，闭环能力跨客户端共用）：
+
+- **多一个客户端，就多一份真相？** —— Codex、Claude Code、OpenMausBot 都是通过 MCP
+  接进来的，判定与账本本来就只有一份。现在 **DeepSeek Harness** 也能接：仓库里
+  新增了 DSH 插件 `integrations/dsh-openloop-mas`，它**不重写闭环逻辑**，而是用
+  MCP 调用本地运行时——因此 DSH 对话里的判定、票数、账本，和其他客户端看到的
+  **是同一份事实**；
+- **一键安装多了个可选开关** —— `install.ps1 -InstallDshPlugin`。**默认关闭**：
+  主线安装仍然是**零依赖的纯 Python**，初学者不需要装 Node、DSH 或 npm。
+  开启后脚本会 `npm pack` 打包插件并装进指定 profile；**DSH 命令失败时优雅降级**
+  （打印 tarball 路径与手动安装命令），不会让整个安装崩掉；
+- **插件在真实 DSH 宿主里跑通，并抓出两个离线测不出的坑** —— 一是 DSH 认的挂载
+  字段是 `dsh.bundle.patch`（指向 `cordis.patch.yml`），不是 `dsh.profile.bundles`，
+  放错会被装成普通依赖、**根本不挂载**；二是工具参数 schema 必须满足 DSH 的
+  JSON Schema 子集，`items.additionalProperties` 要**显式**为 `true`/`false`，
+  否则 `defineTool` 直接抛 `JsonSchemaError`、整个插件 entry 不激活。
+  这两个 bug 只有**真跑一次宿主**才会暴露；
+- 插件的 MCP 客户端（`lib/mcp-client.js`）**零依赖**，可脱离 DSH 独立做单元测试。
+
 **v0.7.13 修了什么**（缺席的评审不能再冒充弃权票）：
 
 - **三位评审只答了两位，报告却写「全票通过」** —— 对抗评审跑真实端点时，评审面板会**间歇性地少答**：某位评审调用失败或超时后，这次评审结果里就没有他。聚合层此前只统计「答了的人」（`usable`），缺席者既不计入通过票也不计入失败票，于是一块 **3 票的面板只收到 2 票**时，账本写出 `votes: "2/2"`、`pass: true`，报告宣称「全票通过」——**3 位评审里 1 位根本没表态，引擎却当作一致通过收口**。这与 v0.7.11/v0.7.12 修的是同一类假闭合，但这一版是**真实端点现场发现**的，不是离线审计发现的；
@@ -606,6 +625,22 @@ python tools/install_openmausbot_mcp.py         # 把 MAS 注册成它的 MCP se
 
 ---
 
+## 接入 DeepSeek Harness（可选）
+
+仓库里带了一个 **DSH 插件**（`integrations/dsh-openloop-mas`）：它不重写闭环逻辑，
+而是通过 **MCP** 调用本地运行时，因此 DSH 对话里的判定与账本，和 Codex / Claude Code
+客户端看到的是**同一份事实**。
+
+```powershell
+# 可选开关：默认关闭，主线安装仍然零依赖（纯 Python，不需要 Node / DSH / npm）
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -InstallDshPlugin
+```
+
+装好后 DSH 里多出 6 个工具：`mas_run`、`mas_status`、`mas_ledger`、`mas_tickets`、
+`mas_report`、`mas_doctor`。
+
+细节、配置项、实测证据与边界见 **[docs/dsh-integration.md](docs/dsh-integration.md)**。
+
 ## 随包附带的 Agent Skill
 
 | Skill | 作用 |
@@ -648,13 +683,12 @@ openloop-mas/
 │  ├─ demo.py           三个离线场景
 │  └─ teams/            团队模板（default / review / content）
 │  └─ skills/           Agent Skill 包（唯一真源，随 wheel 一起分发）
+├─ integrations/        DSH 插件（DeepSeek Harness 集成）
 ├─ tests/               离线测试
 ├─ install.ps1          Windows 一键安装
 ├─ install.sh           macOS / Linux 一键安装
 └─ docs/                架构、方法论、MCP、定位说明
 ```
-
----
 
 ## 命令速查
 

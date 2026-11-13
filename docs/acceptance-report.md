@@ -2040,3 +2040,78 @@ X-MAS-Token 200
   本次修复只保证缺席**被记录和展示**，不被伪装成一致通过。
 - 契约测试覆盖协议形状，不保证每厂商接受额外的 `input` 字段。
 - PyPI 仍未发布（Trusted Publisher 未在 pypi.org 登记），详见 `docs/publishing-to-pypi.md`。
+
+### O. v0.7.14 — DeepSeek Harness 插件集成（真实宿主验证）
+
+**目标**：让 DSH 对话也能跑 OpenLoop MAS 的闭环，且**判定与账本不产生第二份真相**。
+
+**架构决定**：插件**不重写闭环逻辑**，而是通过 MCP（stdio 换行分隔 JSON-RPC 2.0）
+调用本地运行时。因此 DSH 走的是和 Codex / Claude Code / OpenMausBot **完全相同**的
+调用路径，写进**同一个 append-only 账本**。
+
+**新增文件**：
+
+```
+integrations/dsh-openloop-mas/
+├─ package.json          插件清单（含 dsh.bundle.patch）
+├─ cordis.patch.yml      bundle patch 层
+├─ lib/index.js          DSH 胶水层（Config / apply / inject / 6 个工具）
+├─ lib/mcp-client.js     纯 Node MCP 客户端（零依赖）
+├─ tests/mcp-client.test.mjs
+└─ README.md
+```
+
+**新增工具**（6 个）：`mas_run`、`mas_status`、`mas_ledger`、`mas_tickets`、
+`mas_report`、`mas_doctor`。
+
+**本轮实测证据**：
+
+| 项 | 结果 |
+| --- | --- |
+| 插件在**真实 DSH 宿主**激活 | `dsh --profile cli headless` 启动打印 `[openloop-mas] ready: python=python` |
+| 真实 `defineTool` 下工具注册 | **6 个全部注册通过**，schema 校验通过 |
+| `dsh --profile cli --dump-config` | 正确合成 `- id: openloop-mas / name: dsh-openloop-mas / config: {masHome, python, timeoutMs}` |
+| `dsh plugin --profile cli add` | 安装成功，**无** `declares no dsh.bundle` 警告 |
+| 纯 Node MCP 客户端 `listTools` | **12 个工具**（`mas_run` … `mas_config`） |
+| 纯 Node MCP 客户端 `mas_status` | 真实账本 **127 条**记录、2 张未结工单 |
+| `mas_run` 端到端闭环（Node 客户端） | `status=closed`、`closed=true`、评审 `votes=3/3`、token 65299 |
+| Node 单元测试 | **5/5 通过** |
+| `npm pack` 产物 | `dsh-openloop-mas-0.7.14.tgz`（5 个文件，~14 KB 解包） |
+| 隔离安装（`-SkipPath -SkipMcp -SkipDemo`） | 通过 |
+| `-InstallDshPlugin` 在 DSH 命令失败时 | **优雅降级**：打印 tarball 路径 + 手动安装命令，exit 0，不崩溃 |
+
+**真实宿主抓出来的两个 bug（离线测试测不到）**：
+
+1. **挂载字段放错**：DSH 认的是 `dsh.bundle.patch`（指向 `cordis.patch.yml`），
+   不是 `dsh.profile.bundles`。放错的结果是插件被装成普通依赖、**不挂载**，
+   pnpm 警告 `declares no dsh.bundle`；
+2. **schema 不满足 DSH 的 JSON Schema 子集**：`items.additionalProperties` 必须
+   **显式**为 `true`/`false`，否则 `defineTool` 抛 `JsonSchemaError`，
+   整个插件 entry 不激活（宿主报 `1 entry did not activate`）。
+
+两个都是**真跑一次宿主**才暴露的。
+
+**回归**：
+
+| 项 | 结果 |
+| --- | --- |
+| `unittest discover` | **299 OK (skipped=4)** |
+| `ruff check` | All checks passed! |
+| `mas bench` | 9/9，闭环率 100%，账本一致性 100% |
+
+**边界说明（v0.7.14）**：
+
+- **没有在 DSH 桌面应用（Electron）里实测**：本机 `desktop` profile 由桌面应用独占
+  管理，命令行报 `profile "desktop" is managed exclusively by the Electron
+  application`；验证是在 **cli profile + headless 宿主**下完成的；
+- 本机 DSH 运行时实测为 **0.2.1-rc.5**，**低于** MOKI 声明的 `>=0.2.2-rc.1`。
+  本插件未声明版本下限（只用 `ctx.tools` 稳定接口），但**没有在 0.2.2+ 上实测过**；
+- headless 模式在本机等待模型端点时挂起（与插件无关），因此**没有在 headless 里
+  跑完一次真实的 `mas_run` 工具调用**；`mas_run` 本身是通过 Node MCP 客户端直连
+  运行时验证的；
+- 本机 `dsh.cmd` shim 存在**批处理递归溢出**（多个 shim 副本互调），是本机环境
+  问题；插件安装走 `dsh plugin --profile <p> add` 的 pnpm 路径，不受影响；
+- **MOKI 与 OpenMausBot 是两个不同项目**（视频文案把它们混在一段里）。
+  本仓库只做了 OpenLoop MAS 自身的 DSH 插件，**没有**把 MOKI 打包进来；
+  两者的分工见 `docs/dsh-integration.md` 第 6 节；
+- PyPI 仍未发布（Trusted Publisher 未在 pypi.org 登记）。

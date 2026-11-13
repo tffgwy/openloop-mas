@@ -20,7 +20,9 @@ param(
     [switch]$SkipPath,
     [switch]$SkipMcp,
     [switch]$SkipSkills,
-    [switch]$SkipDemo
+    [switch]$SkipDemo,
+    [switch]$InstallDshPlugin,
+    [string]$DshProfile = "desktop"
 )
 
 $ErrorActionPreference = "Stop"
@@ -168,6 +170,76 @@ if (-not $SkipSkills -or -not $SkipMcp) {
 }
 
 
+# ---------------------------------------------------------------- dsh plugin
+# Optional: install the DeepSeek Harness plugin that exposes the MAS loop as
+# DSH tools. Off by default so the main line stays dependency free - a
+# beginner never needs Node, DSH or npm to get a working MAS.
+if ($InstallDshPlugin) {
+    Write-Step "Installing the DeepSeek Harness plugin (profile: $DshProfile)"
+    $pluginSrc = Join-Path $SourceRoot "integrations\dsh-openloop-mas"
+    if (-not (Test-Path $pluginSrc)) {
+        Write-Warn "plugin source not found at $pluginSrc - skipping"
+    } else {
+        $dshCmd = Get-Command dsh -ErrorAction SilentlyContinue
+        if (-not $dshCmd) {
+            Write-Warn "'dsh' is not on PATH - skipping the DSH plugin. Install DeepSeek Harness first."
+        } else {
+            $pkgDir = Join-Path $InstallDir "dsh-plugin"
+            New-Item -ItemType Directory -Force -Path $pkgDir | Out-Null
+            Push-Location $pluginSrc
+            try {
+                & npm pack --pack-destination $pkgDir
+                $packExit = $LASTEXITCODE
+            } finally {
+                Pop-Location
+            }
+            if ($packExit -ne 0) {
+                Write-Warn "npm pack failed - skipping the DSH plugin"
+            } else {
+                $tgz = Get-ChildItem $pkgDir -Filter "dsh-openloop-mas-*.tgz" |
+                    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                if (-not $tgz) {
+                    Write-Warn "no tarball produced - skipping the DSH plugin"
+                } else {
+                    Write-Step "Adding the plugin to the '$DshProfile' profile"
+                    # The DSH command line can be slow (it bootstraps a profile) and
+                    # on some machines the generated .cmd shim recurses. Both must
+                    # degrade into a warning, never take the whole installer down.
+                    $addOk = $false
+                    try {
+                        $job = Start-Job -ScriptBlock {
+                            param($profile, $archive)
+                            & dsh plugin --profile $profile add ("dsh-openloop-mas@file:" + $archive) 2>&1
+                            $LASTEXITCODE
+                        } -ArgumentList $DshProfile, $tgz.FullName
+                        if (Wait-Job $job -Timeout 180) {
+                            $out = Receive-Job $job
+                            $out | ForEach-Object { Write-Host "      $_" -ForegroundColor DarkGray }
+                            $addOk = ($out | Select-Object -Last 1) -eq 0
+                        } else {
+                            Stop-Job $job
+                            Write-Warn "the 'dsh plugin add' command did not finish within 180s - skipping"
+                        }
+                        Remove-Job $job -Force -ErrorAction SilentlyContinue
+                    } catch {
+                        Write-Warn "the 'dsh plugin add' command failed: $($_.Exception.Message)"
+                    }
+                    if ($addOk) {
+                        Write-Ok "DSH plugin installed from $($tgz.Name)"
+                    } else {
+                        Write-Warn "the DSH plugin was not installed automatically"
+                        Write-Host "      the tarball is ready: $($tgz.FullName)" -ForegroundColor DarkGray
+                        Write-Host "      install it manually with:" -ForegroundColor DarkGray
+                        Write-Host "        dsh plugin --profile $DshProfile add `"dsh-openloop-mas@file:$($tgz.FullName)`"" -ForegroundColor DarkGray
+                        Write-Host "      the 'desktop' profile is managed by the DSH Electron app;" -ForegroundColor DarkGray
+                        Write-Host "      install it from the DSH plugin panel, or use -DshProfile cli." -ForegroundColor DarkGray
+                    }
+                }
+            }
+        }
+    }
+}
+
 # ---------------------------------------------------------------- verify
 Write-Step "Running the self-check"
 $env:MAS_STATE_DIR = $InstallDir
@@ -209,5 +281,7 @@ Write-Host "       set MAS_API_KEY=<your key>"
 Write-Host "  4) run a task:  mas run --goal ""..."" --criteria ""..."""
 Write-Host "  5) review the result:  mas report    (or: mas replay)"
 Write-Host "  6) serve it remotely:  mas http --port 8765"
+Write-Host "  7) (optional) plug it into DeepSeek Harness:" -ForegroundColor DarkGray
+Write-Host "       powershell -ExecutionPolicy Bypass -File .\install.ps1 -InstallDshPlugin"
 Write-Host ""
 exit 0

@@ -12,6 +12,31 @@
 [![python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![deps](https://img.shields.io/badge/dependencies-0-orange.svg)]()
 
+**What v0.7.14 adds** (DeepSeek Harness integration - one set of facts across clients):
+
+- **Another client, another truth?** - Codex, Claude Code and OpenMausBot already
+  come in over MCP, so the verdicts and the ledger were always single sourced. Now
+  **DeepSeek Harness** can join: the repo ships a DSH plugin
+  (`integrations/dsh-openloop-mas`) that does **not** re-implement the loop but
+  calls the local runtime over **MCP** - so the verdicts, vote counts and ledger in
+  a DSH conversation are the *same facts* the other clients see;
+- **One more switch on the one-click installer** - `install.ps1 -InstallDshPlugin`.
+  It is **off by default**: the main line stays **dependency-free pure Python**, so
+  a beginner never has to install Node, DSH or npm. When enabled the script packs
+  the plugin with `npm pack` and installs it into the chosen profile; if the DSH
+  command fails it **degrades gracefully** (prints the tarball path and the manual
+  command) instead of taking the whole installer down;
+- **The plugin runs inside a real DSH host, and that caught two bugs offline tests
+  could never see** - first, DSH mounts a plugin through `dsh.bundle.patch`
+  (pointing at `cordis.patch.yml`), *not* `dsh.profile.bundles`; get it wrong and
+  the plugin is installed as a plain dependency and **never mounts**. Second, tool
+  parameter schemas must satisfy DSH's JSON Schema subset: `items.additionalProperties`
+  has to be **explicitly** `true`/`false`, otherwise `defineTool` throws
+  `JsonSchemaError` and the whole plugin entry fails to activate. Both bugs only
+  show up when you actually boot the host;
+- The plugin's MCP client (`lib/mcp-client.js`) has **zero dependencies** and can be
+  unit tested without DSH.
+
 **What v0.7.13 fixes** (an absent reviewer may no longer masquerade as an abstention):
 
 - **Three reviewers, two answers, yet the report claimed a unanimous pass** - when the adversarial panel runs against a real endpoint it intermittently comes back short: one reviewer's call fails or times out and its verdict simply is not there. The aggregator only counted the answers that arrived (`usable`); an absent reviewer was neither a passing nor a failing vote, so a **3-seat panel that received 2 votes** was recorded as `votes: "2/2"`, `pass: true`, and the report announced a unanimous pass - **one of three reviewers never expressed a verdict, yet the engine closed the loop as if it had**. This is the same family of false closure as v0.7.11/v0.7.12, but this one was **found on a live endpoint**, not by offline audit;
@@ -602,6 +627,25 @@ The protocol is a pure-standard-library JSON-RPC 2.0 over stdio -
 **no `pip install mcp` required**.
 
 ---
+
+## DeepSeek Harness integration (optional)
+
+The repo ships a **DSH plugin** (`integrations/dsh-openloop-mas`). It does not
+re-implement the loop: it talks to the local runtime over **MCP**, so the
+verdicts and the ledger in a DSH conversation are the *same facts* a Codex or
+Claude Code client sees.
+
+```powershell
+# optional switch, off by default - the main line stays dependency free
+# (pure Python, no Node / DSH / npm needed)
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -InstallDshPlugin
+```
+
+That adds 6 tools to DSH: `mas_run`, `mas_status`, `mas_ledger`, `mas_tickets`,
+`mas_report`, `mas_doctor`.
+
+Details, configuration, measured evidence and the boundaries are in
+**[docs/dsh-integration.md](docs/dsh-integration.md)**.
 
 ## Bundled Agent Skills
 

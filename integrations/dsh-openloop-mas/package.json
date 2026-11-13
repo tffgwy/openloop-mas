@@ -1,0 +1,38 @@
+{
+  "name": "dsh-openloop-mas",
+  "version": "0.7.14",
+  "description": "OpenLoop MAS plugin for DeepSeek Harness: run a multi-agent loop that actually closes, with machine-checked acceptance criteria, an auditable ledger and human escalation tickets.",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "mas",
+    "multi-agent",
+    "loop-engineering",
+    "closure"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json",
+    "./mcp-client": "./lib/mcp-client.js"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.19"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
+    }
+  }
+}
