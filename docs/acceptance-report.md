@@ -280,6 +280,16 @@ v0.7.2 的主题是：**把 8 种 check 类型的精确语义公开成契约，�
 | lint | All checks passed | `ruff check mas tests tools` |
 | 站点构建 | 9 页正常生成 | `tools/build_site.py` |
 | 版本号 | `mas.__version__ == 0.7.2` | `python -c "import mas; print(mas.__version__)"` |
+| CI | 4 个 workflow 全 success（ci / pages / install / release） | run 43349639396 等 |
+| Release 产物 | `openloop_mas-0.7.2-py3-none-any.whl` 99,768 B + sdist | `gh release view v0.7.2` |
+| Release wheel 隔离安装 | 全新 venv + 全新 HOME + cwd 在仓库外 → install/doctor/demo 全绿，6 skill 全 MATCH，MCP 双 host 注册 | `work/_e2e_wheel72.py` |
+| 本机运行时升级 | `mas --version` → `openloop-mas 0.7.2`；`mas install` 后 9 个 skill 全部 MATCH | `~/.mas/app` 备份至 `~/.mas/backup/app_backup_072` |
+| 常驻服务版本 | `/health` → `0.7.2` | Startup 脚本重启后 |
+| 真实端点闭环 | `claude-opus-5-5` @ `127.0.0.1:16024/v1` → `closed` / 1 iter / 4619 tokens / c1+c2 双 PASS | `mas run` 实跑 |
+| 离线基准 | 9/9 符合预期，闭环率 100%，1.67 迭代 / 4.2 ms / 1265.7 token | `mas bench` |
+| HTTPS 鉴权矩阵 | health 200 / 无令牌 401 / 错令牌 401 / Bearer 200 / X-MAS-Token 200 | 本机 8768 真实进程 |
+| OpenMausBot MCP 握手 | ok，12 tools | `POST /api/mcp/servers/openloop-mas/test` |
+| OpenMausBot 端到端 | `R-d808d9ff5a` / closed / 1 iter / 3457 tokens / c1 pass | `openmausbot run MausBot` |
 
 ### C.5 v0.7.2 仍然成立的边界
 
