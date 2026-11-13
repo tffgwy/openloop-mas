@@ -2235,3 +2235,153 @@ file_lines_min  file_min_bytes  file_max_bytes  file_sha256  file_mtime_newer
 - 写文件协议对模型是**新协议**：不同厂商模型照抄模板的忠实度未实测，
   可能需要重试或人工介入；
 - PyPI 仍未发布（Trusted Publisher 未在 pypi.org 登记）。
+
+
+---
+
+## Q. v0.7.16 — `mas relay`：DSH 宿主内的 `mas_run` 真实跑通
+
+### Q.0 本轮解决的根因（纠正上一轮的误判）
+
+上一轮结论是「DSH 宿主内 `mas_run` 跑不通」，归因为 headless 命令形态错误 + 缺 LLM 凭据。
+**实际根因更精确**，本轮逐条实测纠正：
+
+| 项 | 上一轮说法 | 本轮实测 |
+| --- | --- | --- |
+| `headless` | 子命令 | **profile 名**。正确形态 `dsh --profile <name> headless "<task>"` |
+| DSH 模型通道 | 未知 | `@deepseek-ai/dsh-llm-pi-ai` 注册，支持 4 种 wire 协议：`openai-completions` / `openai-responses` / `anthropic-messages` / `google-generative-ai`，`baseURL` 可指向任意端点 |
+| 本机桥行为 | 「可能需要凭据」 | **带任意 `Authorization` 头 → 401**（`无效的API Key`）；**不带头 → 200** |
+| 死结 | 无 | pi-ai **坚持要 api key**，而本机桥**拒收占位 key** —— 协议契约与端点契约互相打架 |
+
+### Q.1 交付物
+
+| 文件 | 大小 | 说明 |
+| --- | --- | --- |
+| `mas/relay.py` | 16735 B | OpenAI 兼容中继，纯标准库 |
+| `tests/test_relay.py` | — | 12 个单元测试 |
+| `tools/setup_dsh_bridge.py` | 8486 B | 一键生成可跑的 DSH bridge profile |
+| `docs/relay.md` | 5310 B | 中继文档（用途 / 两种鉴权模式 / 安全边界） |
+| `mas/cli.py` | — | 新增 `mas relay` 子命令 |
+
+### Q.2 中继的行为契约
+
+- `GET /v1/models`、`POST /v1/responses`、`POST /v1/chat/completions`
+  （也支持无 `/v1` 前缀的兄弟路径）；
+- **丢弃**客户端的 `Authorization` / `x-api-key` / `cookie`；
+- `--upstream-key-env` 指定时，用该环境变量里的**上游真 key** 替换；
+- `/v1/X` 失败时自动回退 `/X`——**仅对 GET**，避免一次生成被重复请求；
+- SSE 流式按 chunked 正确转发；
+- 非回环地址且无令牌 → **拒绝启动，退出码 2**（与 `mas http` 同策略）；
+- `/health` 永远开放；上游密钥不写盘、不回显、不进日志。
+
+### Q.3 单元测试
+
+`python -X utf8 -m pytest tests/test_relay.py -q` → **12 passed**。
+
+全量：`python -X utf8 -m pytest tests -q` → **377 passed, 4 skipped, 51 subtests**
+（v0.7.15 基线 365 + relay 12）。
+`python -X utf8 -m ruff check mas tests tools` → **All checks passed!**
+
+### Q.4 决定性证据：DSH 宿主内 `mas_run` 真实闭环
+
+**第一次跑通**（profile `masbridge`，DSH `0.2.2-rc.3`，Node `22.23.3`）：
+
+| 字段 | 值 |
+| --- | --- |
+| `status` | `closed` |
+| `closed` | `true` |
+| `iterations` | `1` |
+| `tokens_used` | `4468` |
+| `run_id` | `R-9644103b33` |
+| 逐条判定 | `[{"id":"c1","pass":true,"note":"file exists: out/report.md","source":"file","blocking":true}]` |
+| 产物 | `out/report.md`，**1663 字节**，内容为完整中文 v1.0.0 发布说明 |
+
+账本落盘 `~/.mas/ledgers/runs.jsonl`（seq 152 write / 153 review / 154 closure，共 154 行）。
+
+**脚本一键生成的 profile 也跑通**（`masbridge2`，本轮独立复现）：
+
+```powershell
+python -X utf8 tools/setup_dsh_bridge.py --profile masbridge2 --relay-port 8767 --workspace "<repo>"
+# [OK] profile 已生成：C:\Users\<you>\.dsh\profiles\masbridge2
+# [OK] dsh-openloop-mas 插件已装入 profile 'masbridge2'
+```
+
+| 字段 | 值 |
+| --- | --- |
+| `status` | `closed` |
+| `closed` | `true` |
+| `tokens_used` | `4744` |
+| `run_id` | `R-f2434f4854` |
+| 产物 | `out/report2.md`，**2725 字节** |
+
+中继访问日志证实兄弟路径回退生效：客户端打的是 `POST /responses`（无 `/v1`），
+中继回退后上游返回 200。
+
+### Q.5 引擎防假闭环的正面证据
+
+两次跑通中，模型第一次调 `mas_run` 都把文件级机检的参数**写错了**——平铺在
+`check` 里，而不是包在 `check.arg` 对象中。引擎在**开跑前**就拒绝：
+
+```json
+{"error":"验收标准里有无法执行的机检规则: - c1: missing file path"}
+```
+
+拒绝发生在**零 token、账本零污染**的阶段——引擎把「标准写漏」和「标准不通过」
+严格区分开，不会让一条残缺规则退化成「交给模型主观判定」然后放行。
+
+模型随后自行纠正参数形态，第二次调用即通过。**这是本轮最有价值的观察**：
+闭环的强度来自引擎的拒绝权，而不是模型的自觉。
+
+### Q.6 MOKI 集成证据矩阵
+
+| 项 | 结果 | 判据 |
+| --- | --- | --- |
+| MOKI 身份 | **≠ OpenMausBot** | `dsh-moki-library` 是 DeepSeek Harness 插件；OpenMausBot 是独立的 Grok Bot 平替 |
+| 官方仓库 | `github.com/JKZeng-cell/moki-library-for-dsh` | — |
+| 包 | `dsh-moki-library` v0.1.73 | tgz sha256 `84b536d8...5325e76` |
+| 兼容区间 | `dsh >=0.2.2-rc.1 <0.3.0`，Node >= 22.19 | 本机原 DSH 是 `0.2.1-rc.5`（低于下限）→ 另装隔离运行时 `0.2.2-rc.3` |
+| **真实激活** | ✅ | 带 cookie + `x-moki-library: 1` 头打 `/moki-library/*` → 返回 **MOKI 自己的业务错误（403/400）**，而非 DSH 的 404 |
+| 宿主形态 | **web / 隔离 profile** | MOKI 是 web-platform 插件，在 CLI / headless profile 里**一直 pending**（缺 `webServer` / `connection`） |
+| 双插件共存 | ✅ | `~/.dsh/profiles/masmoki` 同时装了 `dsh-moki-library` + `dsh-openloop-mas` |
+| DSH web 认证 | 必须先换 cookie | `GET /?token=<TOKEN>` → 303 + `set-cookie: dsh-auth-*`；之后带 cookie 才能访问 `/api/*` |
+| 路由探针 | 404 | `/api/plugins`、`/api/tools`、`/api/health` 实测全部 404，**别拿它们当健康检查** |
+| 正确 CLI 形态 | `dsh --profile X --port N --no-open` | `dsh --profile X web` 报 `too many arguments` |
+
+### Q.7 排查过程中的关键技术事实
+
+| 事实 | 影响 |
+| --- | --- |
+| 本机桥 `/v1/models` **直接挂住**（不是 404），`/models` 正常 200 | relay 必须做兄弟路径回退 |
+| 端口 8766 曾被旧进程占用 | 排查时需先 `Stop-Process` |
+| DSH 运行时 `node_modules` 有 **57629** 个 js | 暴力 grep 不可行，必须按包名定向查 |
+| `ctx.llm.registerAdapter` / `registerConfigurableProviders` / `registerModelDiscovery` 存在 | 确认模型通道的扩展点在哪 |
+| npm 上 `dsh-llm-openai-compatible` / `dsh-llm-deepseek-api-key` **不存在** | 不能按名字猜包 |
+| `dsh-llm-fallbacks` 存在（0.8.6） | 故障转移方向可用 |
+
+### Q.8 边界说明（v0.7.16）
+
+- 真实端点实测**只覆盖** `claude-opus-5-5` @ `127.0.0.1:16024/v1`（免鉴权）；
+  **Kimi / DeepSeek / Qwen / 原生 OpenAI 本机无端点，未实测**；
+- **`mas relay` 的 replace 模式未在本机实测**（本机桥不需要凭据），只有单元测试覆盖；
+- **DSH 桌面应用（Electron）内 MOKI 与 `mas_run` 均未实测**——桌面 profile 由
+  Electron 独占管理；
+- MOKI 的**多格式预览**与**草稿写回**流程未做功能级验证（本轮只验证到「路由激活」）；
+- MOKI 与 MAS **同 profile 内的工具协同**未实测；
+- 判定的是**结构与事实**（文件在不在、条款过没过），**语义正确性仍需模型评审**；
+- 手机接入是 **tailnet only**（`https://win-io6eufe3grh.tail4c219e.ts.net:8768`），非公网 Funnel；
+- `install.ps1` 的 PATH 步骤写 HKCU 注册表；隔离测试须加 `-SkipPath`；
+- `mas install` **不**写 PATH；`mas uninstall` **不**删 `~/.mas`；
+- `RunResult` 字段是 `tokens_used`（不是 `tokens`）；
+- `blocking` 字段 v0.7.8 新增，旧账本无该字段按 `True` 处理；
+- 可靠失败用例用正则 `a^`；测试输出会吞掉 `print` → 诊断写 `sys.stderr.write`；
+- **星数说法无法核实**：用户提到的「四个小 Skills 400+ 星」对应仓库未找到；
+  OpenMausBot 实测 **22,078 stars**。**不要复述 400+ 为事实**；
+- `tffgwy/openloop-mas` 当前 **stars=0 / forks=0 / open issues=0**；
+- PyPI 仍未发布（`https://pypi.org/pypi/openloop-mas/json` → 404；Trusted Publisher 报
+  `invalid-publisher: valid token, but no corresponding publisher`；`gh secret list` 为空）——
+  需用户在 https://pypi.org/manage/project/openloop-mas/settings/publishing/ 登记
+  Provider=GitHub Actions / Organization=tffgwy / Repository=openloop-mas /
+  Workflow name=release.yml / Environment 留空；
+- npm registry **必须走代理** `http://127.0.0.1:7890`，直连必超时；
+- `dsh --profile X web` 语法错误；`headless` 是 profile 名不是子命令；
+- DSH web 宿主认证必须先 `GET /?token=` 取 `dsh-auth-*` cookie。

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import sys
 from typing import Any, Dict, List
@@ -23,6 +24,7 @@ from mas.installer import (
     run_uninstall,
 )
 from mas.orchestration import CANDIDATE_ANGLES
+from mas.relay import serve_relay
 from mas.report import build_report, ledger_markdown, render_markdown, replay_trace
 from mas.setup import format_verify, run_verify, run_wizard
 from mas.teams import list_teams, load_team
@@ -581,7 +583,54 @@ def build_parser() -> argparse.ArgumentParser:
     )
     http.set_defaults(func=cmd_http)
 
+    relay = sub.add_parser(
+        "relay",
+        help="中继模式：把私有端点藏在「必须带 api key」的客户端后面",
+    )
+    relay.add_argument("--host", default="127.0.0.1")
+    relay.add_argument("--port", type=int, default=8766)
+    relay.add_argument(
+        "--upstream",
+        default="http://127.0.0.1:16024",
+        help="上游 OpenAI 兼容端点（默认 %(default)s）",
+    )
+    relay.add_argument(
+        "--upstream-key-env",
+        default="",
+        help="存放上游密钥的环境变量名；给了就用它替换客户端的 Authorization",
+    )
+    relay.add_argument(
+        "--token",
+        default=None,
+        help="中继自身鉴权令牌（默认读取环境变量 MAS_RELAY_TOKEN）",
+    )
+    relay.add_argument("--timeout", type=float, default=900.0)
+    relay.add_argument("--verbose", action="store_true")
+    relay.set_defaults(func=cmd_relay)
+
     return parser
+
+
+def cmd_relay(args: argparse.Namespace) -> int:
+    """Run the OpenAI-compatible relay."""
+    upstream_key = ""
+    if getattr(args, "upstream_key_env", ""):
+        upstream_key = os.environ.get(args.upstream_key_env, "").strip()
+        if not upstream_key:
+            print(
+                f"错误：环境变量 {args.upstream_key_env} 为空或未设置。",
+                file=sys.stderr,
+            )
+            return 2
+    return serve_relay(
+        args.host,
+        args.port,
+        args.upstream,
+        upstream_key,
+        args.token,
+        args.verbose,
+        args.timeout,
+    )
 
 
 def main(argv: List[str] | None = None) -> int:

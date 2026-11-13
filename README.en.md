@@ -647,6 +647,53 @@ That adds 6 tools to DSH: `mas_run`, `mas_status`, `mas_ledger`, `mas_tickets`,
 Details, configuration, measured evidence and the boundaries are in
 **[docs/dsh-integration.md](docs/dsh-integration.md)**.
 
+### Making DSH actually talk: `mas relay`
+
+Installing the plugin is not the same as the model being able to use it. DSH's
+`dsh-llm-pi-ai` adapter **insists on an API key**, while a private endpoint often
+**wants no key at all** (and may even reject a placeholder with `401`). That is a
+protocol-contract vs endpoint-contract collision, not a misconfiguration.
+`mas relay` sits in between: it drops the client's `Authorization` and optionally
+substitutes the upstream's real key.
+
+```powershell
+# generate a working DSH profile (writes config + installs the plugin + prints commands)
+python tools/setup_dsh_bridge.py --profile masbridge --relay-port 8766
+
+# terminal 1
+mas relay --upstream http://127.0.0.1:16024 --port 8766
+
+# terminal 2: pi-ai insists on a key - a placeholder is fine, the relay drops it
+$env:MAS_BRIDGE_API_KEY = "placeholder"
+dsh --profile masbridge headless "run a closure with mas_run: write a release note, acceptance criterion file_exists on out/report.md"
+```
+
+> **`headless` is a profile name, not a subcommand.** The correct shape is
+> `dsh --profile <name> headless "<task>"`.
+
+Two authentication modes, the security boundary and the verified/unverified list
+are in **[docs/relay.md](docs/relay.md)**.
+
+### A sibling plugin in the same host: the MOKI library
+
+[MOKI](https://github.com/JKZeng-cell/moki-library-for-dsh) (`dsh-moki-library`) is
+a **different project** - do not confuse it with OpenMausBot. It adds a **local
+resource manager** to DeepSeek Harness: unified organisation of files and web
+links, multi-format preview, `Alt+D` to summon an AI chat over a selection, and
+**edits land in a draft first** - only written back after the user confirms.
+
+The split is clean: **MOKI organises the material, MAS decides whether the
+deliverable actually passes.**
+
+```bash
+dsh plugin --profile web add "dsh-moki-library@file:<abs>/dsh-moki-library-0.1.73.tgz" --allow-build=sharp
+dsh plugin --profile web add "dsh-openloop-mas@file:<abs>/dsh-openloop-mas-0.7.16.tgz"
+```
+
+> MOKI needs **DSH >= 0.2.2-rc.1**, **Node >= 22.19**, and it is a **web-platform
+> plugin** - in a CLI / headless profile it stays **pending** (wrong host shape,
+> not a broken install).
+
 ## Bundled Agent Skills
 
 | Skill | purpose |
@@ -694,6 +741,7 @@ mas teams         # team templates
 mas doctor        # installation self-check
 mas serve         # run as an MCP stdio server
 mas http          # run as an HTTP + SSE server
+mas relay         # OpenAI-compatible relay for clients that insist on an API key (127.0.0.1:8766)
 ```
 
 `mas run` exit codes: `0` = closed, `2` = not closed. Use it directly as a CI

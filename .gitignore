@@ -14,3 +14,5 @@ site/
 *.bak-*
 .DS_Store
 Microsoft/
+out/
+*.tgz

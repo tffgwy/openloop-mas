@@ -3,7 +3,19 @@
 > 一个 **零依赖、纯标准库** 的多智能体闭环运行时：把「规划 → 执行 → 验证 → 复盘」写成**有验收标准、有退出条件、有过程账本**的工程循环。
 > 一条命令安装，初学者也能跑起来。
 
-**v0.7.15 加了什么**（闭环跟的是磁盘，不是文案）：
+**v0.7.16 加了什么**（让模型在宿主里真的能跑闭环）：
+
+- **`mas relay`** —— 一个纯标准库的 OpenAI 兼容中继。它解决一个真实的死结：
+  DeepSeek Harness 的 `dsh-llm-pi-ai` **坚持要一个 API key**，而私有端点常常
+  **不要 key**（甚至会因为占位 key 直接 `401`）。中继丢弃客户端的 `Authorization`，
+  按需换成上游真 key。
+- **`tools/setup_dsh_bridge.py`** —— 一键生成能跑的 DSH profile（写配置 + 装插件 +
+  打印命令）。
+- **实测**：DSH 宿主内 `mas_run` 真实跑出 `status=closed`、`closed=true`、
+  判定 `source="file"` 读的是真实磁盘，产物文件确实落盘。
+- **MOKI 分工写清楚了**（MOKI ≠ OpenMausBot）：MOKI 整理资料，MAS 判定过不过。
+
+**v0.7.15 加了什么**
 
 - **「已写入 out/report.md」不再是一句可以白说的话** —— v0.7.14 为止，MAS 的**全部**
   机检都只搜**模型输出的文本**。于是最要命的那类假闭环成立了：worker 说「已把结论
@@ -697,6 +709,45 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -InstallDshPlugin
 
 细节、配置项、实测证据与边界见 **[docs/dsh-integration.md](docs/dsh-integration.md)**。
 
+### 让 DSH 真的能说话：`mas relay`
+
+装上插件不等于模型能用。DSH 的 `dsh-llm-pi-ai` 适配器**坚持要一个 API key**，
+而私有端点常常**不要 key**（甚至会因为占位 key 直接 `401`）——这是协议契约和
+端点契约打架。`mas relay` 插在中间：丢弃客户端的 `Authorization`，按需换成上游真 key。
+
+```powershell
+# 一键生成能跑的 DSH profile（写配置 + 装插件 + 打印命令）
+python tools/setup_dsh_bridge.py --profile masbridge --relay-port 8766
+
+# 终端 1
+mas relay --upstream http://127.0.0.1:16024 --port 8766
+
+# 终端 2：pi-ai 坚持要 key，给个占位值即可（relay 会丢弃它）
+$env:MAS_BRIDGE_API_KEY = "placeholder"
+dsh --profile masbridge headless "用 mas_run 跑一个闭环：目标是写一份发布说明，验收标准用 file_exists 要求 out/report.md 存在"
+```
+
+> **`headless` 是 profile 名，不是子命令。** 正确形态是 `dsh --profile <name> headless "<task>"`。
+
+中继的两种鉴权模式、安全边界、已验证/未验证清单见 **[docs/relay.md](docs/relay.md)**。
+
+### 同宿主并列插件：MOKI 资料库
+
+[MOKI](https://github.com/JKZeng-cell/moki-library-for-dsh)（`dsh-moki-library`）是
+**另一个项目**，别和 OpenMausBot 混：它给 DeepSeek Harness 加一个**本地资源管理器**——
+文件/网页链接统一整理、多格式预览、选区 `Alt+D` 唤起 AI 对话、**修改先进草稿、
+用户确认后才写回原文件**。
+
+分工很清楚：**MOKI 负责把资料整理成可交付的产物，MAS 负责判定这份产物到底过不过。**
+
+```bash
+dsh plugin --profile web add "dsh-moki-library@file:<绝对路径>/dsh-moki-library-0.1.73.tgz" --allow-build=sharp
+dsh plugin --profile web add "dsh-openloop-mas@file:<绝对路径>/dsh-openloop-mas-0.7.16.tgz"
+```
+
+> MOKI 需要 **DSH >= 0.2.2-rc.1**、**Node >= 22.19**，且是 **web-platform 插件**——
+> 在 CLI / headless profile 里会一直 pending（宿主形态不对，不是装坏了）。
+
 ## 随包附带的 Agent Skill
 
 | Skill | 作用 |
@@ -769,6 +820,7 @@ mas teams         # 团队模板
 mas doctor        # 安装自检
 mas serve         # 以 MCP stdio 服务运行
 mas http          # 以 HTTP + SSE 运行（远程接入；对外部署请设 MAS_HTTP_TOKEN）
+mas relay         # OpenAI 兼容中继：给「非要 API Key」的客户端用（默认 127.0.0.1:8766）
 ```
 
 `mas run` 退出码：`0` = 闭合，`2` = 未闭合（升级或预算耗尽）。CI 里可以直接当门禁用。
@@ -791,6 +843,7 @@ python -m mas verify                      # 真实闭环自检
 ## 延伸阅读
 
 - [文件级机检与写文件协议](docs/file-checks.md) —— 闭环为什么必须跟磁盘
+| [DSH 集成与 relay](docs/dsh-integration.md) —— 让模型在宿主里真的能跑闭环
 
 | 文档 | 内容 |
 | --- | --- |
@@ -798,6 +851,8 @@ python -m mas verify                      # 真实闭环自检
 | [docs/architecture.md](docs/architecture.md) | 运行时架构与数据流 |
 | [docs/loop-engineering.md](docs/loop-engineering.md) | 方法论：闭环为什么这样设计 |
 | [docs/mcp.md](docs/mcp.md) | MCP 接入、握手、9 个工具、协议细节与排障 |
+| [docs/dsh-integration.md](docs/dsh-integration.md) | DeepSeek Harness 集成：DSH 插件、relay 一键流程、MOKI 分工 |
+| [docs/relay.md](docs/relay.md) | `mas relay`：给「非要 API Key」的客户端用的私有端点中继 |
 | [docs/positioning.md](docs/positioning.md) | 定位说明：与「私有化代理团队」类项目的关系与传播口径 |
 | [docs/acceptance-report.md](docs/acceptance-report.md) | 安装与验收报告：本机实测证据、CI 结果、已知限制 |
 | [README.en.md](README.en.md) | English version of this README |
