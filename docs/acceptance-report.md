@@ -1606,7 +1606,64 @@ T-20261113-144924-9dc2  resolved       loop_escalation  用一段话介绍循环
 - `test_a_successful_resume_resolves_the_ticket`
 - `test_a_failed_resume_does_not_open_a_second_ticket`
 
-### K.5 边界说明
+### K.5 发布产物与本机运行时复验（v0.7.10）
+
+**CI 四绿**（tag `v0.7.10` 推送后）：`ci` #53 / `pages` #49 / `install` #35 /
+`release` #29 全部 success。
+
+**Release 产物**（`gh release view v0.7.10`）：
+
+- `openloop_mas-0.7.10-py3-none-any.whl`（108392 B，
+  sha256 `9160b9abcf8fda80f2a70f21024b0565d6204c660f85d5f66ba84b3c1df7ffad`）
+- `openloop_mas-0.7.10.tar.gz`（166353 B，
+  sha256 `450d1ea16ebcb261a0b763a18a7b90df7d0930de9edecf70658c4bfc1f01ab9e`）
+
+**全新 wheel 隔离安装 E2E**（新 venv `_venv710` + 新 HOME `_iso710` + 仓库外 cwd）：
+
+| 检查 | 结果 |
+| --- | --- |
+| `pip install --no-index <wheel>` | `Successfully installed openloop-mas-0.7.10` |
+| 解析路径 | `_venv710\Lib\site-packages\mas` |
+| `mas --version` | `0.7.10` |
+| `mas install` / `mas doctor --no-network` / `mas demo` | 全部 exit 0 |
+| skill 指纹（6 组） | 全部 MATCH |
+| MCP 双端 | True / True |
+| 契约：`regex:` / `min_chars:many` / JSON 未知类型 | 均 exit 1、账本 0 行 |
+
+**发布产物上复验 v0.7.10 的新修复**（mock provider，`min_chars:9999` 不可满足）：
+
+```
+run exit: 2  TICKET: T-20261113-150605-2c36
+== resume exit: 2
+状态：escalated（迭代 5 次）
+  [FAIL] c1 length 1117 < 9999
+工单 T-20261113-150605-2c36 仍未解决，仍在人工队列里：mas tickets
+== tickets exit: 0
+T-20261113-150605-2c36  waiting_human  loop_escalation  停滞任务
+
+ticket count: 1
+   T-20261113-150605-2c36 waiting_human attempts_total= 1
+   resume_attempts= [{"reason": "resume did not close the loop: status=escalated,
+                     issues: c1: length 1117 < 9999", "status": "escalated",
+                     "iterations": 5, "run_id": "R-b561d1fc78"}]
+```
+
+**本机运行时升级**：备份 `~/.mas/backup/app_backup_0710`，`mas install` 后
+`mas doctor` 全绿（`package mas 0.7.10 可导入`、`skills_sync 9 个已安装 skill
+均与包内版本一致`、provider `claude-opus-5-5` 端点可用）。
+
+**常驻 HTTP 服务**（重启后）：`/health` → 200，`version: 0.7.10`
+
+**鉴权矩阵**（v0.7.10）：health 200 / 无令牌 401 / 错令牌 401 / Bearer 200 /
+X-MAS-Token 200
+
+**OpenMausBot 集成**（v0.7.10，端口 28799）：
+
+- MCP 握手：`ok: True`，**12 个工具**
+- 端到端闭环：`exit 0`，`status: closed`，iterations 1，tokens 3597，
+  c1 regex `[一-龥]{4,}` 命中 → pass
+
+### K.6 边界说明
 
 - 本轮真实端点实测仍只覆盖 `claude-opus-5-5` @ `http://127.0.0.1:16024/v1`（免鉴权）。
 - `resume_attempts` 是新增的公开字段，旧工单没有该字段时不影响读取。
