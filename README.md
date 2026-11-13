@@ -11,7 +11,7 @@
 - **新增 `mas sync`** —— 一条命令把已安装的 skills 同步回包内版本（`--dry-run` 只报告不写入）；
 - **失效的 MCP 注册不再被当成「已注册」** —— 以前只要配置里有 `mas_loop` 这个键就算通过；但如果它指向的 Python 已被删除、或指向一份已卸载的包，MCP 服务器根本起不来，而自检全绿；现在这类注册会被识别、刷新，`mas doctor` 也会报出来；
 - **目录级备份修好了** —— `_backup()` 原本只处理文件，skill 目录的备份调用直接静默失败，等于没有备份；
-- **发布到 PyPI 不再需要长期 token** —— release workflow 新增 **Trusted Publishing（OIDC）** 通道，仓库不需要保存任何密钥。
+- **发布到 PyPI 不再需要长期 token** —— release workflow 新增 **Trusted Publishing（OIDC）** 通道，仓库不需要保存任何密钥。首次发布需要在 pypi.org 登记一次，见 [docs/publishing-to-pypi.md](docs/publishing-to-pypi.md)。
 
 **v0.2.0 加入了什么**：并行多候选竞争选优、对抗式交叉评审、多后端故障转移、HTTP/SSE 远程接入、闭环复盘报告与回放、交互式初始化向导、离线基准测试、真实闭环自检。
 

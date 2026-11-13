@@ -33,7 +33,8 @@
   backing up a skill folder silently failed and there was no backup at all;
 - **Publishing to PyPI no longer needs a long-lived token** - the release
   workflow gained a **Trusted Publishing (OIDC)** path, so the repository
-  stores no credential.
+  stores no credential. The first publish needs a one-time registration on
+  pypi.org, see [docs/publishing-to-pypi.md](docs/publishing-to-pypi.md).
 
 **What v0.2.0 adds**: parallel candidate competition, adversarial cross-review,
 multi-backend failover, HTTP/SSE remote access, closure reports and replay,

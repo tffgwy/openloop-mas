@@ -47,6 +47,183 @@ openloop-mas/
 
 ---
 
+## v0.7.1 追加验收（2026-11-13）
+
+### 触发原因
+
+上一轮交接时本机 `~/.codex/skills` / `~/.claude/skills` 里装的是 **0.6.0 时期的旧
+skill 副本**，与仓库真源 `mas/skills/` 的哈希不一致（DRIFT）。这件事**没有任何工具
+发现** —— `mas doctor` 只检查「skill 在不在」，从不检查「是不是这一版」。这暴露了
+三个真实缺陷，本轮全部修掉。
+
+### 修掉的三个真实缺陷
+
+| 缺陷 | 修前行为 | 修后 | 证据 |
+| --- | --- | --- | --- |
+| **skills 版本漂移没人发现** | `mas install` 只覆盖文件、从不比较内容 | 按**内容指纹**（sha256 遍历文件树）判断漂移；安装前备份旧副本、清掉新版已删除的残留文件 | `tests/test_installer.py::SkillSyncTest`（8 条） |
+| **失效的 MCP 注册被当成「已注册」** | 只要配置里有 `mas_loop` 这个键就算通过 | 判断标准改为「能不能真的启动」：解释器存在 **且** 包路径下确实有 `mas` 包；死注册会被刷新 | `tests/test_installer.py::StaleMcpRegistrationTest`（6 条） |
+| **目录级备份静默失败** | `_backup()` 只处理文件，skill 目录的备份调用直接返回 `None` | 文件与目录都能备份 | `tests/test_installer.py::test_sync_backs_up_the_replaced_copy` |
+
+另修一处**本轮自己引入的误报**：注册有效性若绑定「当前导入的模块路径」，那么从
+源码运行 `mas` 时会把 `~/.mas/app` 里的正常安装判为失效。改为判定「可用性」而非
+「是否等于当前构建」（`tests/test_installer.py::UsableRegistrationTest`，3 条）。
+
+### 新增能力
+
+- **`mas sync`** —— 把已安装的 skills 同步回包内版本；`--dry-run` 只报告不写入。
+- **`mas doctor` 新增 `skills_sync` 检查项** —— 直接点名是哪个 host 的哪个 skill
+  与包内版本不一致。
+- **`mas doctor` 的 `mcp_codex` / `mcp_claude` 改为校验可用性**，不再只看键是否存在。
+- **release workflow 新增 PyPI Trusted Publishing（OIDC）通道** —— 仓库不需要保存
+  任何长期 token；原 token 路径保留为回退，两条路径互斥。
+
+### 本轮实测证据
+
+**内容漂移修复（隔离 HOME，真实端到端）**
+
+```
+=== 3. inject drift ===          .codex/mas-loop 与 .claude/mas-review 被手改
+=== 4. doctor (after drift) ===
+[WARN] skills_sync    内容与包内版本不一致: skills/mas-loop, skills/mas-review（运行 mas install 同步）
+=== 5. sync --dry-run ===
+[!!] 发现 2 处漂移（已安装内容 != 包内版本）:
+       skills/mas-loop  .../_iso71/.codex/skills/mas-loop
+       skills/mas-review  .../_iso71/.claude/skills/mas-review
+[..] dry-run：未写入任何文件。运行 mas sync 修复。
+=== 6. sync ===
+[OK ] 已同步 6 处
+[..] 旧副本已备份: .../mas-loop.bak-20261113-093121
+=== 7. doctor (after sync) ===
+[OK  ] skills_sync    6 个已安装 skill 均与包内版本一致
+=== 8. content identity vs packaged source ===
+  .codex/mas-loop: MATCH     .claude/mas-loop: MATCH
+  .codex/mas-review: MATCH   .claude/mas-review: MATCH
+  .codex/mas-scaffold: MATCH .claude/mas-scaffold: MATCH
+```
+
+**本机真实 HOME 的漂移修复**
+
+修前（实测哈希）：
+
+```
+.codex     mas-loop     DRIFT 8b4733177708 75f587abfec3
+.codex     mas-review   DRIFT 7b19b3b1aaf3 430461a835be
+.codex     mas-scaffold DRIFT 056b85b686d9 a9abcedf7ba6
+.claude    同上
+```
+
+`mas install` 之后（实测）：
+
+```
+.codex  mas-loop: MATCH    .claude  mas-loop: MATCH
+.codex  mas-review: MATCH  .claude  mas-review: MATCH
+.codex  mas-scaffold: MATCH .claude mas-scaffold: MATCH
+```
+
+**本机 doctor（0.7.1，真实 HOME + 真实端点）**
+
+```
+[OK  ] package        mas 0.7.1 可导入
+[OK  ] skills_sync    9 个已安装 skill 均与包内版本一致
+[OK  ] mcp_codex      已在 ~/.codex/config.toml 注册 mcp_servers.mas_loop
+[OK  ] mcp_claude     已在 ~/.claude.json 注册 mas_loop
+[OK  ] endpoint       端点可用，协议方言 = openai-responses-events
+exit: 0
+```
+
+**真实模型闭环（`claude-opus-5-5` @ `http://127.0.0.1:16024/v1`，免鉴权）**
+
+```
+状态：closed（迭代 1 次，token 4138）
+  [PASS] c1 (model) 实现同时使用了 `def dedupe` 和 `set`，满足该验收标准。
+  [PASS] c2 (model) 交付物既在代码中按输入顺序遍历并追加元素，也在文字说明中明确解释了如何保持原有顺序。
+exit: 0
+```
+
+**离线场景与基准**
+
+```
+mas demo  -> closure / stagnation / budget 三场景全 [OK]
+mas bench -> 9/9 符合预期，闭环率 100%，平均 1.67 迭代 / 3.6ms / 1265.7 token，账本一致性 100%
+```
+
+**测试与 lint**
+
+```
+unittest discover -s tests  -> Ran 216 tests, OK (skipped=4), 17.5s
+ruff check mas tests tools  -> All checks passed!
+```
+
+**打包（警告已清零）**
+
+```
+$ python -m build
+WARNING `project.license` as a TOML table is deprecated      <- 已修
+WARNING Package 'mas.skills' is absent from the packages ...  <- 已修
+WARNING Package 'mas.teams' is absent from the packages ...   <- 已修
+Successfully built openloop_mas-0.7.1.tar.gz and openloop_mas-0.7.1-py3-none-any.whl
+```
+
+wheel 内容核验（33 个条目）：
+
+```
+mas/skills/mas-loop/SKILL.md
+mas/skills/mas-review/SKILL.md
+mas/skills/mas-scaffold/SKILL.md
+mas/teams/content.json  mas/teams/default.json  mas/teams/review.json
+```
+
+**全新 wheel 的一键安装验收**（全新 venv + 全新隔离 HOME + cwd 在仓库外，
+确保 `python -m mas` 导入的是 site-packages 而不是仓库副本）
+
+```
+resolved package: work/_venv71\Lib\site-packages\mas    0.7.1
+mas install    -> skills 6 个 / MCP codex+claude 双注册
+mas doctor     -> skills_source [OK]（指向 site-packages/mas/skills）
+                  skills_sync [OK] / mcp_codex [OK] / mcp_claude [OK]
+mas demo       -> 三场景全 [OK]
+mas sync --dry-run -> [OK] 已安装的 skills 与包内版本一致，无需同步
+6 个 skill 内容与包内版本：全部 MATCH
+```
+
+**CI**
+
+```
+release   completed success  v0.7.1  33s
+pages     completed success         30s
+install   completed success         22s
+ci        completed success         ~85s
+```
+
+**发布产物**
+
+```
+https://github.com/tffgwy/openloop-mas/releases/tag/v0.7.1
+  openloop_mas-0.7.1-py3-none-any.whl  98556 B
+  openloop_mas-0.7.1.tar.gz           132433 B
+```
+
+### 仍然阻塞的一项
+
+**PyPI 尚未发布。** `https://pypi.org/pypi/openloop-mas/json` 实测返回 404，
+`gh secret list` 为空。release workflow 的 Trusted Publishing 步骤已就位并
+真实执行过（`pypa/gh-action-pypi-publish@release/v1`），但它在 pypi.org 上还没有
+对应的 Trusted Publisher 登记，所以拿不到上传凭证。
+
+**需要用户做一次性登记**（步骤见 `docs/publishing-to-pypi.md`）：
+
+<https://pypi.org/manage/project/openloop-mas/settings/publishing/>
+
+Provider = GitHub Actions / Organization = tffgwy / Repository = openloop-mas /
+Workflow name = release.yml。登记后直接 `gh workflow run release.yml -f tag=v0.7.1`
+补发即可，无需改代码。
+
+替代路径：用户自行 `gh secret set PYPI_API_TOKEN` 写入一个 PyPI API token
+（**不要在对话里回显明文**），workflow 会自动走 token 路径。
+
+
+---
+
 ## 3. 本机安装验收（全部实跑）
 
 ### 3.1 安装器输出
