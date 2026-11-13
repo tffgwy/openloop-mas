@@ -1058,3 +1058,90 @@ MCP 已注册），真实端点闭环 `R-ea68a0b85b` / `closed` / 1 iter / 3905 
 常驻服务重启后 `/health` → `"version": "0.6.0"`，Tailscale HTTPS 鉴权矩阵 3 条探针符合预期。
 
 最终测试计数：**179 tests OK (skipped=4)**，`ruff check` → All checks passed。
+
+### v0.7.0 —— skills 单一真源 + 安装器单实现 + `mas uninstall`
+
+`e21a470` 修掉了安装路径分叉：**仓库根的 `skills/` 副本被删除**，
+`mas/skills/` 成为唯一真源（它随 wheel 分发，所以 pip 安装与源码安装
+装出的 skill 逐字节相同）。
+
+`install.sh` / `install.ps1` 不再各自维护一套 skills 复制 + MCP 注册逻辑，
+统一委托 `mas install`。`install.sh` 删掉 60 行 shell 实现，`install.ps1`
+同样收敛。`uninstall.ps1` 改为调用 `mas uninstall`。
+
+新增 `mas uninstall`：移除 skills 目录与两处 MCP 注册，**保留 `~/.mas`**
+（账本 = 每一个闭环的历史，不可再生）。重复执行安全（`absent` 而非报错），
+且保留 `~/.codex/config.toml` 里的其它设置与其它 MCP server。
+
+`mas doctor` 新增 `skills_source` 检查：包内 skills 缺失判为 `fail`
+（安装坏了，不是用户错）。
+
+#### 本机证据
+
+```
+unittest discover -s tests   -> Ran 191 tests, OK (skipped=4), 16.5s
+ruff check mas tests tools   -> All checks passed
+```
+
+`install.ps1` 全新隔离 HOME 端到端（`USERPROFILE` 指向临时目录）：
+
+```
+[*] Installing agent skills and registering the MCP server
+[OK ] skills installed: 6
+[OK ] MCP registered (codex): ...\.codex\config.toml
+[OK ] MCP registered (claude): ...\.claude.json
+[OK] skills installed and MCP server registered
+[OK  ] skills_source  ...\mas\skills（3 个 skill）
+[OK  ] skill_codex / skill_claude / mcp_codex / provider mock  全 [OK]
+[OK ] closure / stagnation / budget 三场景全 [OK]
+```
+
+> 隔离测试的一个副作用：`install.ps1` 的 PATH 步骤写的是 HKCU 注册表，
+> 不受隔离 HOME 影响，会把临时路径写进真实用户 PATH。测试后已清理并核对为 0 条。
+
+#### Release v0.7.0
+
+CI 四个 workflow：ci / pages / install / release **全部 success**。
+
+Release `v0.7.0`：`openloop_mas-0.7.0-py3-none-any.whl`（93,731 B）+
+`openloop_mas-0.7.0.tar.gz`。wheel 内实测含 3 个 SKILL.md。
+
+全新 venv + 全新隔离 HOME 装 wheel，**cwd 设在仓库之外**（否则
+`python -m mas` 会把 cwd 放进 sys.path，导入的其实是仓库副本而不是 wheel）：
+
+```
+resolved package:
+  ...\_venv70\Lib\site-packages\mas\__init__.py   0.7.0
+mas install
+  [OK ] skills installed: 6
+  [OK ] MCP registered (codex) / (claude)
+mas doctor --no-network
+  [OK  ] skills_source  ...\site-packages\mas\skills（3 个 skill）
+  [OK  ] skill_codex / skill_claude / mcp_codex
+mas demo       -> closure / stagnation / budget 三场景全 [OK]
+mas uninstall  -> skill folders removed: 6
+                  MCP registration removed (codex) / (claude)
+                  codex config after uninstall: '\n'
+```
+
+#### 真实端点复测（0.7.0）
+
+本机 `~/.mas/app` 升级到 0.7.0（备份 `~/.mas/app.bak-0.6.0`），常驻 HTTP 服务重启后
+`/health` → `"version": "0.7.0"`。
+
+- `mas run` 真实端点闭环：`closed` / 1 iter / 4040 tokens
+  （criteria：中文正则 + 含「循环工程」）
+- Tailscale HTTPS 鉴权矩阵：`/health` 200、无令牌 401、错令牌 401、
+  `Bearer` 200、`X-MAS-Token` 200、`/call` 无令牌 401、`/call` 正确令牌 200
+
+#### v0.7.0 的边界
+
+1. **PyPI 仍未发布**——`openloop-mas` 在 PyPI 上返回 404（名称尚未占用，
+   可以发布），但发布需要仓库 secret `PYPI_API_TOKEN`，本轮无法提供。
+   上面验证的是**从 GitHub Release 下载的正式 wheel**。
+2. `install.sh` 的新实现依赖 `mas install`，因此要求 shell 脚本与包一起分发
+   ——CI 的 install workflow 在 ubuntu / macos 上跑真实安装器，三平台全绿。
+3. `mas uninstall` **不删 `~/.mas`**，也不动 pip 包。删运行时要
+   `pip uninstall openloop-mas`；删账本要手动 `rm -rf ~/.mas`（不可恢复）。
+4. `mas install` **不写 PATH**（pip 安装时 `mas` 已可用；源码装仍需
+   `install.ps1` / `install.sh`）。
