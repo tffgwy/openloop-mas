@@ -216,6 +216,58 @@ class CheckSemanticsTest(unittest.TestCase):
         self.assertIn("invalid argument", result["note"])
 
 
+class ModelVerdictTruthinessTest(unittest.TestCase):
+    """A model's answer must be read, not coerced with ``bool()``.
+
+    ``bool("false")`` is ``True``. A verifier that answered
+    ``{"id": "c1", "pass": "false"}`` therefore closed a criterion that it
+    had just failed. The merge layer is the last line of defence, so it
+    has to read the meaning of the value instead of trusting its
+    truthiness.
+    """
+
+    def _merge(self, value):
+        from mas.engine import Criterion, LoopEngine, evaluate_check
+
+        criterion = Criterion(id="c1", desc="说清楚就好", check=None)
+        check = evaluate_check(criterion, "x")
+        verdict = {"scores": [{"id": "c1", "pass": value, "note": "t"}]}
+        return LoopEngine._merge_scores([criterion], [check], verdict)[0]
+
+    def test_the_string_false_is_read_as_false(self):
+        score = self._merge("false")
+        self.assertFalse(score["pass"])
+        self.assertEqual(score["source"], "model")
+
+    def test_the_string_true_is_read_as_true(self):
+        score = self._merge("true")
+        self.assertTrue(score["pass"])
+
+    def test_digit_strings_are_read(self):
+        self.assertFalse(self._merge("0")["pass"])
+        self.assertTrue(self._merge("1")["pass"])
+
+    def test_an_unreadable_answer_stays_unjudged(self):
+        for value in ("maybe", "", None):
+            with self.subTest(value=value):
+                score = self._merge(value)
+                self.assertFalse(score["pass"])
+                self.assertEqual(score["source"], "model-missing")
+
+    def test_real_booleans_are_untouched(self):
+        self.assertFalse(self._merge(False)["pass"])
+        self.assertTrue(self._merge(True)["pass"])
+
+    def test_the_multi_reviewer_path_agrees(self):
+        from mas.engine import Criterion, LoopEngine, evaluate_check
+
+        criterion = Criterion(id="c1", desc="说清楚就好", check=None)
+        check = evaluate_check(criterion, "x")
+        verdict = {"scores": [{"id": "c1", "pass": "false", "note": "t"}]}
+        score = LoopEngine._merge_review_scores([criterion], [check], verdict)[0]
+        self.assertFalse(score["pass"])
+
+
 class UnknownCheckTypeCannotFakeClosureTest(unittest.TestCase):
     """An unknown check type must never be closed by the model.
 
@@ -256,6 +308,19 @@ class UnknownCheckTypeCannotFakeClosureTest(unittest.TestCase):
         check = evaluate_check(criterion, "anything")
         verdict = {"scores": [{"id": "c1", "pass": True, "note": "模型说没问题"}]}
         scores = LoopEngine._merge_verdict_scores([criterion], [check], [verdict])
+        self.assertFalse(scores[0]["pass"])
+        self.assertEqual(scores[0]["source"], "invalid")
+
+    def test_the_multi_reviewer_path_cannot_close_it_either(self):
+        """The adversarial-review path shares the merge, so it must behave
+        the same way - otherwise a run with several reviewers would reopen
+        the fake closure that the single-reviewer path closes."""
+        from mas.engine import LoopEngine, evaluate_check
+
+        criterion = self._criterion()
+        check = evaluate_check(criterion, "anything")
+        verdict = {"scores": [{"id": "c1", "pass": True, "note": "评审说没问题"}]}
+        scores = LoopEngine._merge_review_scores([criterion], [check], verdict)
         self.assertFalse(scores[0]["pass"])
         self.assertEqual(scores[0]["source"], "invalid")
 

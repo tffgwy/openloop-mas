@@ -1084,3 +1084,45 @@ mas run --goal "随便写点东西" \
 
 **本机运行时升级**：备份 `~/.mas/backup/app_backup_076`，`mas install` 后
 `mas doctor` 全绿（`package mas 0.7.6 可导入`、`skills_sync 9 个已安装 skill 均与包内版本一致`）。
+
+## H. v0.7.7 — 模型的判定不再靠真值转换
+
+### H.1 问题
+
+合并层用 `bool(review.get("pass"))` 读取模型判定。Python 里 `bool("false")` 是 **True**：
+
+```
+merge 直接消费未归一化 verdict -> [{'pass': True, 'source': 'model'}]   # 模型说了 false
+merge 消费归一化后 verdict     -> [{'pass': False, 'source': 'model'}]
+```
+
+主路径靠 `normalize_verdict` 的 `_as_bool` 挡住了，但**合并层没有最后一道防线**——
+任何绕过归一化的调用方（MCP/HTTP 直传判定的扩展路径、未来新增的评审角色）都会踩到它。
+
+顺带发现 `_as_bool` 不认数字字符串：模型回 `"pass": "1"` 会被当成读不懂 →
+标准变成 `model-missing` → 白烧一轮迭代再追问。
+
+### H.2 修复
+
+- `mas/engine.py` / `_merge_verdict_scores`：改用 `_as_bool` 读取判定含义；
+  读不懂的值按 `model-missing`（未判定）处理，绝不猜。
+- `mas/util.py` / `_as_bool`：数字字符串 `"0"` / `"1"` 归入 false / true。
+
+### H.3 实测
+
+| 模型回的 `pass` | 修前 | 修后 | source |
+| --- | --- | --- | --- |
+| `"false"` | **True（假闭合）** | False | model |
+| `"true"` | True | True | model |
+| `"no"` / `"yes"` | — | False / True | model |
+| `"0"` / `"1"` | 未判定 | False / True | model |
+| `"maybe"` / `""` / `None` | 未判定 | 未判定 | model-missing |
+| `False` / `True` | — | False / True | model |
+
+### H.4 验证
+
+- `unittest discover -s tests` → **252 tests OK (skipped=4)**
+  （新增 `ModelVerdictTruthinessTest`，6 个方法；`UnknownCheckTypeCannotFakeClosureTest` 补多评审路径 1 个方法）
+- `ruff check mas tests tools` → All checks passed
+- `mas bench` → 9/9、闭环率 100%、账本一致性 100%
+- `mas demo` → 三场景全 OK

@@ -220,6 +220,12 @@ above - exit code 1, zero tokens. The same standard written as JSON or as a shor
 now behaves identically: a missing argument is a missing argument, never a quiet
 fallback to "the model decides".
 
+**A model's verdict is read, not coerced with ``bool()``.** If the reviewer answers
+`"pass": "false"`, `bool("false")` is `True` - a criterion the reviewer just failed would
+close the loop. The engine reads what the value *means*: `"false"` / `"0"` / `"no"` fail,
+`"true"` / `"1"` / `"yes"` pass, and anything unreadable (`"maybe"`, empty, missing) counts
+as **unjudged** rather than a guess.
+
 A **misspelled type name** is refused too. In the JSON form a type that does
 not exist (`{"check":{"type":"mystery"}}`) stops the run up front and lists the
 known types - a typo that slipped through would degrade into "the model decides",

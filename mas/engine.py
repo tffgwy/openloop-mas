@@ -44,6 +44,7 @@ from mas.providers import Provider, ProviderError, build_provider_chain
 from mas.roles import Roles
 from mas.tickets import TicketStore
 from mas.util import (
+    _as_bool,
     normalize_verdict,
     now_iso,
     parse_criterion_shorthand,
@@ -904,9 +905,26 @@ class LoopEngine:
                     }
                 )
             else:
+                # Never trust a bare bool() here. A model that answers
+                # ``"pass": "false"`` would make bool("false") True, and a
+                # criterion that was never satisfied would close the loop.
+                # _as_bool reads the actual meaning of the string; an
+                # unreadable answer stays unjudged instead of guessing.
+                decided = _as_bool(review.get("pass"))
+                if decided is None:
+                    merged.append(
+                        {
+                            "id": criterion.id,
+                            "pass": False,
+                            "note": "unjudged: 评审给的判定无法识别（"
+                                    + str(review.get("pass")) + "）",
+                            "source": "model-missing",
+                        }
+                    )
+                    continue
                 entry = {
                     "id": criterion.id,
-                    "pass": bool(review.get("pass")),
+                    "pass": decided,
                     "note": str(review.get("note", "")),
                     "source": review.get("source", "model"),
                 }

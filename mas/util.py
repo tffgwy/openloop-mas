@@ -161,6 +161,14 @@ def _as_bool(value: Any) -> Optional[bool]:
             return True
         if text in _FALSE_WORDS:
             return False
+        # A model that answers "1" / "0" means the same thing as True /
+        # False. Without this, such an answer looked unreadable and the
+        # criterion stayed unjudged - the loop then burned an iteration
+        # asking the same question again.
+        if text in ("1", "true", "yes"):
+            return True
+        if text in ("0", "false", "no"):
+            return False
     return None
 
 
