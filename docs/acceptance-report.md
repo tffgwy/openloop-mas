@@ -1027,3 +1027,60 @@ _merge_verdict_scores(模型说 pass=True) -> {'pass': True, 'source': 'model'}
 | JSON `{"check":{"type":"mystery"}}` | 1 | 0 行 |
 | 简写 `mystery:abc` | 0 | 2 行（**契约不变**：压根没打算写机检） |
 | JSON `{"check":{"type":"contains","arg":"循环"}}` | 0 | 4 行（正常闭环，rule 命中） |
+
+### G.5 发布产物与真实端点复验（v0.7.6）
+
+**Release 产物**（`gh release view v0.7.6`）：
+
+- `openloop_mas-0.7.6-py3-none-any.whl`（103673 B）
+- `openloop_mas-0.7.6.tar.gz`（154889 B）
+- CI 四个 workflow 全绿：`ci` / `pages` / `install` / `release`
+
+**全新 wheel 隔离安装 E2E**（新 venv + 新 HOME + 仓库外 cwd）：
+
+| 检查 | 结果 |
+| --- | --- |
+| `pip install --no-index <wheel>` | `Successfully installed openloop-mas-0.7.6` |
+| 解析到的包路径 | `_venv76\Lib\site-packages\mas`（不是仓库源码） |
+| `mas --version` | `0.7.6` |
+| `mas install` | exit 0，skills 装到 6 个，codex/claude 双端 MCP 注册成功 |
+| `mas doctor --no-network` | exit 0，全项 OK（含 `skills_sync 6 个已安装 skill 均与包内版本一致`） |
+| `mas demo` | exit 0，closure / stagnation / budget 三场景全 OK |
+| skill 指纹（6 组） | 全部 **MATCH** |
+| MCP 注册 | codex `True` / claude `True` |
+
+**契约在发布产物上复验**：
+
+| 输入 | exit | 账本行数 | 提示 |
+| --- | --- | --- | --- |
+| `regex:` | 1 | 0 | `missing argument: regex needs a regular expression` |
+| `contains:` | 1 | 0 | `missing argument: contains needs a string or a list of strings to look for` |
+| `min_chars:many` | 1 | 0 | `invalid argument: ... got 'many'` |
+| JSON `{"check":{"type":"mystery","arg":"x"}}` | 1 | 0 | `unknown check type: 'mystery' (known types: contains, json_keys, ...)` |
+
+**真实端点正例**（`claude-opus-5-5` @ `http://127.0.0.1:16024/v1`，免鉴权）：
+
+```
+mas run --goal "写一个 Python 去重函数 dedupe，保留首次出现顺序" \
+  --criteria "regex:def dedupe.*set" --criteria "min_chars:120"
+-> exit 0，closed，迭代 1 次，token 4711
+-> [PASS] c1 (rule) regex /def dedupe.*set/ matched
+-> [PASS] c2 (rule) length 645 >= 120
+```
+
+**真实端点负例**（同一端点，未知类型机检）：
+
+```
+mas run --goal "随便写点东西" \
+  --criteria '{"id":"c1","desc":"产物含关键词","check":{"type":"mystery","arg":"x"}}'
+-> exit 1，错误：验收标准里有无法执行的机检规则:
+     - c1: unknown check type: 'mystery' (known types: contains, json_keys, lines_min, max_chars, min_chars, not_contains, regex, section)
+-> 账本 delta = 0（零 token、零污染）
+```
+
+**常驻 HTTP 服务**（重启后）：`/health` → 200，`version: 0.7.6`
+
+**鉴权矩阵**（v0.7.6）：health 200 / 无令牌 401 / 错令牌 401 / Bearer 200 / X-MAS-Token 200
+
+**本机运行时升级**：备份 `~/.mas/backup/app_backup_076`，`mas install` 后
+`mas doctor` 全绿（`package mas 0.7.6 可导入`、`skills_sync 9 个已安装 skill 均与包内版本一致`）。
