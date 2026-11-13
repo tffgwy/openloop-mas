@@ -19,7 +19,7 @@ import unittest
 
 from mas.config import DEFAULT_CONFIG
 from mas.demo import StaticProvider
-from mas.engine import Criterion, LoopEngine, evaluate_check
+from mas.engine import Criterion, LoopEngine, evaluate_check, validate_criteria
 from mas.teams import load_team
 
 
@@ -208,10 +208,95 @@ class CheckSemanticsTest(unittest.TestCase):
         self.assertIsNone(result["pass"])
         self.assertIn("unknown check type", result["note"])
 
-    def test_invalid_argument_is_a_failed_check_not_an_exception(self):
+    def test_invalid_argument_is_reported_not_raised(self):
+        # A malformed argument is caught by the pre-check, so the checker
+        # reports it instead of raising or silently coercing it.
         result = self.check("min_chars", "not-a-number", "abc")
-        self.assertFalse(result["pass"])
-        self.assertIn("check error", result["note"])
+        self.assertIsNone(result["pass"])
+        self.assertIn("invalid argument", result["note"])
+
+
+class DegenerateArgumentTest(unittest.TestCase):
+    """A machine check with no usable argument must never look like a pass.
+
+    The old checker degraded a missing argument into a constant: an empty
+    regex matched everything, an empty ``contains`` list required nothing,
+    and a missing ``min_chars`` became "at least 0 characters". The loop
+    then reported a green light for a criterion nobody had specified.
+    """
+
+    def check(self, kind, arg, artifact="some artifact text"):
+        criterion = Criterion("c1", "d", {"type": kind, "arg": arg})
+        return evaluate_check(criterion, artifact)
+
+    def test_missing_argument_is_unjudged_for_every_type(self):
+        for kind in ("contains", "not_contains", "min_chars", "max_chars",
+                     "regex", "lines_min", "section", "json_keys"):
+            with self.subTest(kind=kind):
+                result = self.check(kind, None)
+                self.assertIsNone(result["pass"], kind)
+                self.assertIn("missing argument", result["note"])
+                self.assertEqual(result["source"], "invalid")
+
+    def test_empty_argument_is_unjudged_for_every_type(self):
+        for kind in ("contains", "not_contains", "min_chars", "max_chars",
+                     "regex", "lines_min", "section", "json_keys"):
+            with self.subTest(kind=kind):
+                result = self.check(kind, "")
+                self.assertIsNone(result["pass"], kind)
+                self.assertEqual(result["source"], "invalid")
+
+    def test_empty_list_argument_is_unjudged(self):
+        for kind in ("contains", "not_contains", "json_keys"):
+            with self.subTest(kind=kind):
+                result = self.check(kind, [])
+                self.assertIsNone(result["pass"], kind)
+
+    def test_empty_regex_never_matches_everything(self):
+        result = self.check("regex", "")
+        self.assertIsNone(result["pass"])
+        self.assertNotEqual(result["source"], "rule")
+
+    def test_negative_count_is_rejected(self):
+        for kind in ("min_chars", "max_chars", "lines_min"):
+            with self.subTest(kind=kind):
+                result = self.check(kind, -1)
+                self.assertIsNone(result["pass"], kind)
+                self.assertIn("non-negative", result["note"])
+
+    def test_uncompilable_regex_is_rejected_before_matching(self):
+        result = self.check("regex", "([unclosed")
+        self.assertIsNone(result["pass"])
+        self.assertIn("cannot compile", result["note"])
+
+    def test_zero_count_stays_legal(self):
+        # 0 is a degenerate but *well formed* bound; rejecting it would
+        # break configurations that were always valid.
+        self.assertTrue(self.check("min_chars", 0)["pass"])
+        self.assertTrue(self.check("lines_min", 0)["pass"])
+
+    def test_validate_criteria_reports_only_broken_checks(self):
+        crits = [
+            Criterion("c1", "d", {"type": "regex", "arg": ""}),
+            Criterion("c2", "d", {"type": "min_chars", "arg": None}),
+            Criterion("c3", "d", {"type": "contains", "arg": ["a"]}),
+            Criterion("c4", "d", None),
+        ]
+        problems = validate_criteria(crits)
+        self.assertEqual(len(problems), 2)
+        self.assertTrue(any(p.startswith("c1:") for p in problems))
+        self.assertTrue(any(p.startswith("c2:") for p in problems))
+
+    def test_run_fails_fast_on_a_broken_machine_check(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = make_config(tmp)
+            engine = LoopEngine(config, team=load_team("default"))
+            with self.assertRaises(ValueError) as ctx:
+                engine.run("任务", [{"id": "c1", "desc": "d",
+                                      "check": {"type": "regex", "arg": ""}}])
+            self.assertIn("无法执行", str(ctx.exception))
+            # A rejected standard must not leave a half-finished run behind.
+            self.assertEqual(len(engine.ledger.entries()), 0)
 
 
 

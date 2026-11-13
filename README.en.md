@@ -50,6 +50,17 @@
   of criteria that previously passed by accident now failing - which is the direction a
   closed loop should move in.
 
+**What v0.7.4 fixes** (a criterion with a missing argument used to look like a pass):
+
+- A machine check **missing its argument** used to degrade into a constant true verdict -
+  an empty regex matched everything, an empty `contains` list required nothing, a missing
+  `min_chars` became "at least 0 characters". The result: **the criterion was never
+  written, yet the loop reported a green light**;
+- such a check is now judged **unjudged** (never passed), and the engine refuses to start
+  at all (exit code 1, **zero tokens burned**) - a typo no longer drains the whole budget;
+- this is a **behaviour change**: if you relied on an empty argument to pass for free,
+  the run is now stopped up front and told exactly what is missing.
+
 **What v0.2.0 adds**: parallel candidate competition, adversarial cross-review,
 multi-backend failover, HTTP/SSE remote access, closure reports and replay,
 an interactive setup wizard, an offline benchmark and a real closure self-check.
@@ -190,6 +201,22 @@ Exact semantics (verified against the implementation - write criteria against th
 | `json_keys` | the artifact must be a JSON **object** holding every given key | invalid JSON fails immediately |
 
 An unknown type is judged `unjudged` (i.e. **not passed**) - it is never silently let through.
+
+**A missing argument invalidates the criterion - it does not pass it.** A check with no
+usable argument cannot decide anything, so the engine refuses to start (exit code 1,
+zero tokens burned) instead of letting it pass by default:
+
+| type | required argument | rejected example |
+| --- | --- | --- |
+| `contains` / `not_contains` | a non-empty string, or a non-empty list of strings | `""`, `[]` |
+| `min_chars` / `max_chars` / `lines_min` | a non-negative integer | missing, `-1`, `"many"` |
+| `regex` | a compilable pattern | `""`, `"([unclosed"` |
+| `section` | the heading text | `""` |
+| `json_keys` | a key name, or a non-empty list of key names | `[]`, missing |
+
+In the shorthand form an empty tail (`--criteria 'regex:'`) does not become a machine
+check - it stays a plain description, so that criterion carries **no** machine check and
+is decided by the model instead.
 
 ### Shorthand notation (since v0.4.2)
 

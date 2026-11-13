@@ -139,6 +139,100 @@ class RunResult:
         }
 
 
+# A machine check whose argument is missing or degenerate cannot decide
+# anything. The old code silently degraded such a check into a constant:
+# an empty regex matched everything, an empty ``contains`` list required
+# nothing, and a missing ``min_chars`` became "at least 0 characters". The
+# loop then reported a green light for a criterion nobody had actually
+# specified - a fake closure produced by a typo in the standard itself.
+#
+# These helpers describe, per type, what a *usable* argument looks like. A
+# check that does not meet the requirement is not a failing artifact, it is
+# a broken check: it is reported as unjudged (never passed) so the caller
+# can tell "the work did not meet the bar" apart from "the bar was never
+# written down".
+_ARG_REQUIRED = {
+    "contains": "a string or a list of strings to look for",
+    "not_contains": "a string or a list of strings to forbid",
+    "min_chars": "a minimum character count",
+    "max_chars": "a maximum character count",
+    "regex": "a regular expression",
+    "lines_min": "a minimum number of non-empty lines",
+    "section": "the heading text to require",
+    "json_keys": "a key name or a list of key names",
+}
+
+_INT_ARG_TYPES = {"min_chars", "max_chars", "lines_min"}
+
+
+def _check_arg_problem(kind: str, arg: Any) -> str:
+    """Return a human-readable reason why ``arg`` cannot be used, or "".
+
+    The empty string means the argument is usable.
+    """
+    requirement = _ARG_REQUIRED.get(kind)
+    if requirement is None:
+        return ""
+    if kind in _INT_ARG_TYPES:
+        if arg is None:
+            return f"missing argument: {kind} needs {requirement}"
+        try:
+            value = int(arg)
+        except (TypeError, ValueError):
+            return f"invalid argument: {kind} needs {requirement}, got {arg!r}"
+        if value < 0:
+            return f"invalid argument: {kind} needs a non-negative count, got {value}"
+        return ""
+    if kind == "regex":
+        if arg is None or not str(arg):
+            return f"missing argument: {kind} needs {requirement}"
+        try:
+            re.compile(str(arg))
+        except re.error as exc:
+            return f"invalid argument: {kind} cannot compile /{arg}/: {exc}"
+        return ""
+    if kind == "section":
+        if arg is None or not str(arg).strip():
+            return f"missing argument: {kind} needs {requirement}"
+        return ""
+    if kind == "json_keys":
+        keys = arg if isinstance(arg, list) else [arg]
+        keys = [str(k) for k in keys if k is not None]
+        if not keys or not all(k.strip() for k in keys):
+            return f"missing argument: {kind} needs {requirement}"
+        return ""
+    # contains / not_contains
+    items = arg if isinstance(arg, list) else [arg]
+    items = [str(x) for x in items if x is not None]
+    if not items or not all(x != "" for x in items):
+        return f"missing argument: {kind} needs {requirement}"
+    return ""
+
+
+def validate_criteria(crits: List[Criterion]) -> List[str]:
+    """Return a list of human-readable problems with the criteria.
+
+    A machine check with a missing or degenerate argument cannot decide
+    anything. Catching that *before* the loop starts turns a silent fake
+    closure into an immediate, actionable error - the run does not burn
+    its whole budget discovering that the standard was never specified.
+    """
+    problems: List[str] = []
+    for criterion in crits:
+        if not criterion.check:
+            continue
+        kind = str(criterion.check.get("type") or "").lower()
+        if kind not in _ARG_REQUIRED:
+            # An unknown type is reported as unjudged by the checker; it is
+            # still worth telling the author, but it is not a broken
+            # argument, so it is surfaced separately below.
+            continue
+        problem = _check_arg_problem(kind, criterion.check.get("arg"))
+        if problem:
+            problems.append(f"{criterion.id}: {problem}")
+    return problems
+
+
 def evaluate_check(criterion: Criterion, artifact: str) -> Dict[str, Any]:
     """Evaluate the machine check of a criterion against an artifact."""
     check = criterion.check
@@ -146,6 +240,10 @@ def evaluate_check(criterion: Criterion, artifact: str) -> Dict[str, Any]:
         return {"id": criterion.id, "pass": None, "note": "no machine check", "source": "none"}
     kind = str(check.get("type") or "").lower()
     arg = check.get("arg")
+    problem = _check_arg_problem(kind, arg)
+    if problem:
+        # A broken check is never a passing check.
+        return {"id": criterion.id, "pass": None, "note": problem, "source": "invalid"}
     try:
         if kind == "contains":
             items = arg if isinstance(arg, list) else [arg]
@@ -287,6 +385,13 @@ class LoopEngine:
         crits = [Criterion.from_raw(raw, index) for index, raw in enumerate(criteria or [])]
         if not crits:
             crits = [Criterion(id="c1", desc=goal, check=None)]
+        problems = validate_criteria(crits)
+        if problems:
+            # Fail fast and loudly. A standard whose machine check cannot
+            # decide anything must not be able to look like a closed loop.
+            raise ValueError(
+                "验收标准里有无法执行的机检规则:\n  - " + "\n  - ".join(problems)
+            )
 
         budget = dict(self.config.get("budget") or {})
         max_iterations = int(budget.get("max_iterations", 8))

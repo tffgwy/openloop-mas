@@ -408,6 +408,94 @@ README（中英）与 SKILL.md 都加了显式变更说明，不做静默语义�
 
 ---
 
+## v0.7.4 追加验收（2026-11-13）
+
+### 触发原因
+
+v0.7.3 的教训是：**实现比承诺宽松**。于是本轮把审计方法反过来做了一件事——
+不是看「实现对不对」，而是看「**标准写漏了会怎样**」。
+也就是去攻击机检规则的**参数边界**，而不是规则本身。
+
+### E.1 修掉的真实缺陷
+
+| # | 缺陷 | 严重度 | 发现方式 | 证据 |
+| --- | --- | --- | --- | --- |
+| 1 | **机检参数缺失时静默退化成恒真判断** —— 空 `regex` 匹配一切、空 `contains` 列表要求为零、缺失的 `min_chars` 退化成「至少 0 个字」 | **高**（标准根本没写，闭环却报绿灯） | 枚举 8 种类型 × 缺失/空/空列表/负数 四类边界参数实测 | 见 E.2 |
+| 2 | 同上，但方向相反：`max_chars` 缺失 → 0 → **恒 FAIL** | 中（假阴性，浪费预算反复撞墙） | 同上 | 见 E.2 |
+
+修复前后的实测对照（产物固定为 `'some artifact text'`，18 字符）：
+
+| 类型 | 参数 | 修前 | 修后 |
+| --- | --- | --- | --- |
+| `contains` | 缺失 / `[]` / `""` | **pass**（假阳性） | `unjudged`（不通过） |
+| `not_contains` | 缺失 / `[]` | **pass**（假阳性） | `unjudged` |
+| `min_chars` | 缺失 | **pass**（假阳性，退化成 ≥0） | `unjudged` |
+| `min_chars` | `-1` | **pass**（假阳性） | `unjudged`（提示需非负） |
+| `max_chars` | 缺失 | fail（假阴性，退化成 ≤0） | `unjudged` |
+| `lines_min` | 缺失 | **pass**（假阳性） | `unjudged` |
+| `regex` | 缺失 / `""` | **pass**（假阳性，空正则匹配一切） | `unjudged` |
+| `regex` | `"([未闭合"` | 抛 `re.error`（未捕获） | `unjudged`（提示无法编译） |
+| `section` | 缺失 / `""` | fail（假阴性） | `unjudged` |
+| `json_keys` | 缺失 / `[]` | fail（假阴性） | `unjudged` |
+
+### E.2 修复方式：两段式，而不是只堵一个洞
+
+1. **判定层**（`evaluate_check`）：参数不可用时返回 `pass=None`（`source: "invalid"`），
+   附一句人能看懂的说明（「regex needs a regular expression」）。**永远不会**返回通过。
+2. **入口层**（`LoopEngine.run` 开头）：新增 `validate_criteria()`，**在开跑前**把
+   不可执行的标准一次性列出来并抛错。CLI 退出码 1、**零 token 消耗**、账本零污染。
+
+只做第 1 步的话，配置错误仍会烧掉整个预算（v0.7.3 那个负例实测烧了 52967 token
+才退出 `budget_exhausted`）。只做第 2 步的话，绕过入口的调用路径（账本重放、
+内部构造的 criterion）仍会假通过。两段都做才封死。
+
+### E.3 本轮改动
+
+| 文件 | 改动 |
+| --- | --- |
+| `mas/engine.py` | 新增 `_ARG_REQUIRED` / `_check_arg_problem()` / `validate_criteria()`；`evaluate_check` 前置校验；`run()` 入口快速失败 |
+| `tests/test_engine.py` | 新增 `DegenerateArgumentTest`（8 个方法，覆盖 8 种类型 × 缺失/空/空列表/负数/非法正则）；修正 1 条与新语义冲突的旧断言 |
+| `mas/skills/mas-loop/SKILL.md` | 新增「参数写漏了 = 标准作废」表 |
+| `README.md` / `README.en.md` | 同表 + 变更说明段落（中英各一份） |
+
+### E.4 本轮实测证据
+
+| 验收项 | 结果 | 证据 |
+| --- | --- | --- |
+| 全量测试 | **235 tests OK (skipped=4)**，~19.4 秒 | `unittest discover -s tests`（较 0.7.3 的 226 增 9） |
+| engine 测试 | 30 全绿 | `unittest discover -s tests -p test_engine.py` → Ran 30, OK |
+| lint | All checks passed | `ruff check mas tests tools` |
+| 离线基准 | 9/9 符合预期，闭环率 100% | `mas bench` |
+| 离线演示 | closure/stagnation/budget 三场景全 OK | `mas demo` |
+| 参数边界实测 | E.1 表中 10 类边界逐条实测 | 直接调用 `evaluate_check` |
+| CLI 快速失败 | `错误：验收标准里有无法执行的机检规则: - c1: missing argument: regex needs a regular expression`，退出码 1 | `mas run --criteria '{"check":{"type":"regex","arg":""}}'` |
+| 账本不污染 | 快速失败后账本条目数 = 0 | `engine.ledger.entries()` 实测 |
+
+### E.5 v0.7.4 仍然成立的边界
+
+1. **PyPI 仍未发布**——验证的是 GitHub Release 的正式 wheel，不是 PyPI 包。
+2. 真实端点实测只覆盖 `claude-opus-5-5` @ `127.0.0.1:16024/v1`（免鉴权）；Kimi / DeepSeek / Qwen / 原生 OpenAI 本机无端点，**未实测**。
+3. 契约测试覆盖协议形状，不保证每厂商接受额外的 `input` 字段。
+4. 判定的是结构不是事实；对抗评审发现的 `return list(seen)` 恒空 bug 仍是模型判断。
+5. 真实端点下未做多轮崩溃恢复的账本重放校验。
+6. 手机接入是 **tailnet only**（`https://win-io6eufe3grh.tail4c219e.ts.net:8768`），非公网 Funnel。
+7. `install.ps1` 的 PATH 步骤写 HKCU 注册表，**不受隔离 HOME 影响**；后续隔离测试须加 `-SkipPath`。
+8. `mas install` **不写 PATH**（pip 装时 `mas` 已可用；源码装仍需 `install.ps1`/`install.sh`）。
+9. `mas uninstall` **不删 `~/.mas`**（账本保留），也不动 pip 包。
+10. 不承诺流量 / 签约 / 平台批准 / 检测结果。
+11. 星数说法无法核实：`gh search repos` 未找到「四个小 Skills 400+ 星」对应仓库；OpenMausBot 主仓库 `milind-soni/OpenMausBot` 实测 21,590 星。**「400+ 星」不要复述为事实**。
+12. `tffgwy/openloop-mas` 当前 stars=0 / forks=0 / open issues=0。
+13. OpenMausBot 端口 28799；Windows 无官方 service install，用 Startup 文件夹。
+14. 本机 OpenMausBot 配置各实例 `environment` 均为空 → 本机不存在明文 API key。
+15. `mas http` 的 `/health` 永远开放（只含版本号）。
+16. `mas http` 绑定非 loopback 且无令牌 → **拒绝启动，退出码 2**（fail-closed）。
+17. `RunResult` 字段是 `tokens_used`（不是 `tokens`）。
+18. `mas/util.py` 的 `parse_criterion_shorthand` 返回 `{"desc": ...}`（无 check）表示「不是简写」。
+19. **`section` 语义在 v0.7.3 变更过**：更严格（整行精确匹配），旧标准若依赖前缀匹配需改写。
+20. **机检参数校验在 v0.7.4 加入**：缺参数的标准会在开跑前报错，不再静默恒真通过。
+
+---
+
 ## 3. 本机安装验收（全部实跑）
 
 ### 3.1 安装器输出
