@@ -1187,3 +1187,65 @@ merge 消费归一化后 verdict     -> [{'pass': False, 'source': 'model'}]
   `mas_doctor` / `mas_config`）
 - 端到端闭环：`exit 0`，`status: closed`，iterations 1，tokens 3485，
   c1 regex `[一-龥]{4,}` 命中 → pass
+
+## I. v0.7.8 — 可选标准不再谎报通过
+
+### I.1 问题
+
+`required: false` 的标准在合并层被**硬编码**成通过：
+
+```python
+if not criterion.required:
+    merged.append({"id": criterion.id, "pass": True, "note": "optional criterion",
+                   "source": "skipped"})
+```
+
+文档承诺的是「只做记录」，实际做的是**丢弃**：一条带机检规则的可选标准，
+机检结果被完全扔掉，报告里显示 `PASS / optional criterion`。
+读者看到的是绿灯，而规则其实没通过——这与本项目一路修掉的
+「假闭合」是同一类缺陷，只是发生在可选标准上。
+
+更糟的是它本来就没法修：合并层一旦把机检的真实结果写进去
+（`pass: False`），闭合判定 `all(bool(s["pass"]) for s in scores)`
+根本不区分 optional 与 required，**一条可选标准失败就会让循环永远闭合不了**。
+
+### I.2 修复
+
+- `mas/engine.py` / `_merge_verdict_scores`：
+  - 可选标准有机检 → 保留机检真实结果（`source: rule`），不再谎报通过；
+  - 可选标准机检本身坏了（`source: invalid`）→ 记为 `invalid`，仍然不阻塞；
+  - 可选标准没有机检 → 采纳模型判定并记录（原来整条丢弃）；
+  - 模型判定读不懂 → 记为 `skipped`（可选标准**不触发**二次追问，
+    否则一条可有可无的标准会让循环反复回头问评审）；
+  - 所有 score 新增显式 `blocking` 字段：必选为 `True`，可选为 `False`。
+- `mas/engine.py` / `run()`：闭合判定只看 `blocking` 的标准——
+  `passed = bool(scores) and all(bool(s["pass"]) for s in blocking)`；
+  `issues` 也只收必选标准的失败（可选失败是信息，不是返工理由）。
+- `mas/report.py`：报告新增 `optional_failed` 字段；Markdown 里可选标准标注
+  「（可选，不阻塞闭合）」，失败的可见但不污染 `failed`。
+- `mas/cli.py` / `mas/report.py`：输出里给可选标准打上「，可选」标记。
+
+### I.3 实测
+
+| 场景 | 修前 | 修后 |
+| --- | --- | --- |
+| 可选标准 + 机检通过 | `PASS / optional criterion`（来源被抹掉） | `PASS / rule`，note 为机检原文 |
+| 可选标准 + 机检失败 | `PASS / optional criterion`（**谎报**） | `FAIL / rule`，note 为机检原文，**不阻塞闭合** |
+| 可选标准无机检 | `PASS / optional criterion`（模型判定被丢弃） | 记录模型判定结果；读不懂则 `skipped` |
+| 可选标准机检参数坏了 | `PASS / optional criterion` | `FAIL / invalid`，不阻塞闭合 |
+| 必选标准失败 | 不闭合 | 不闭合（`blocking: true`） |
+
+### I.4 验证
+
+- `unittest discover -s tests` → **257 tests OK (skipped=4)**
+  （新增 5 个用例：可选标准保留真实机检结果、记录模型判定、
+  必选标准 `blocking=true`、可选失败不阻塞闭合、必选失败仍阻塞闭合）
+- `ruff check mas tests tools` → All checks passed
+- `mas bench` → 9/9 符合预期、闭环率 100%、平均迭代 1.67、账本一致性 100%
+- `mas demo` → closure / stagnation / budget 三场景全 OK
+
+### I.5 边界说明
+
+- 可选标准的机检**照常执行**，只是不参与闭合判定；不因为可选就跳过检查。
+- `blocking` 字段是新增的公开字段，旧账本记录没有该字段时按 `True` 处理
+  （历史记录语义不变）。

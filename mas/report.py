@@ -59,7 +59,17 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     closure = closure or {}
     scores = closure.get("scores") or []
-    failed = [s for s in scores if not s.get("pass")]
+    # A criterion is blocking unless it explicitly says otherwise. Optional
+    # criteria may fail without keeping the loop open, so they are reported
+    # separately instead of being mixed into the failure list.
+    failed = [
+        s for s in scores
+        if not s.get("pass") and s.get("blocking", True)
+    ]
+    optional_failed = [
+        s for s in scores
+        if not s.get("pass") and not s.get("blocking", True)
+    ]
     artifacts = [str(r.get("artifact_sha") or "") for r in rows if r.get("artifact_sha")]
 
     # The closure entry records the verdict of the *last* iteration and the
@@ -86,6 +96,7 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "artifact_sha": str(closure.get("artifact_sha") or ""),
         "scores": scores,
         "failed": failed,
+        "optional_failed": optional_failed,
         "issues": list(closure.get("issues") or []),
         "roles": roles,
         "plan": (planner or {}).get("plan") or {},
@@ -183,7 +194,11 @@ def render_markdown(report: Dict[str, Any]) -> str:
             lines.append("- 验收判定：")
             for score in scores:
                 flag = "PASS" if score.get("pass") else "FAIL"
-                lines.append(f"  - [{flag}] `{score.get('id')}` {score.get('note', '')}")
+                optional = not score.get("blocking", True)
+                mark = "（可选，不阻塞闭合）" if optional else ""
+                lines.append(
+                    f"  - [{flag}] `{score.get('id')}` {score.get('note', '')}{mark}"
+                )
         if run.get("issues"):
             lines.append("- 未通过原因：")
             for issue in run["issues"]:

@@ -256,7 +256,10 @@ description too - a criterion may never claim a check it cannot perform.
 
 Criteria without a machine check fall back to the model verifier - but **if the
 model gives no verdict, the default is fail** (`unjudged`). A criterion marked
-`"required": false` is recorded but never blocks closure.
+`"required": false` is **recorded but never blocks closure**: if it carries a
+machine check the rule still runs and its real result lands in the report
+(`PASS` or `FAIL`), it just never keeps the loop open; without a machine
+check the reviewer's verdict is recorded the same way.
 
 ---
 

@@ -148,6 +148,91 @@ class TestLoopClosure(unittest.TestCase):
                 {"scores": []},
             )
             self.assertTrue(merged[0]["pass"])
+            self.assertFalse(merged[0]["blocking"])
+
+    def test_optional_criterion_keeps_the_real_rule_result(self):
+        # An optional criterion used to be reported as "pass" no matter
+        # what the rule said. The rule result is now recorded truthfully -
+        # it just does not block the closure.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = make_config(tmp)
+            engine = LoopEngine(config, team=load_team("default"))
+            merged = LoopEngine._merge_scores(
+                [Criterion("c1", "optional", {"type": "min_chars", "arg": 10},
+                           required=False)],
+                [{"id": "c1", "pass": False, "note": "length 3 < 10", "source": "rule"}],
+                {"scores": []},
+            )
+            self.assertFalse(merged[0]["pass"])
+            self.assertEqual(merged[0]["source"], "rule")
+            self.assertTrue(merged[0]["optional"])
+            self.assertFalse(merged[0]["blocking"])
+
+    def test_optional_criterion_records_the_reviewers_verdict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = make_config(tmp)
+            engine = LoopEngine(config, team=load_team("default"))
+            merged = LoopEngine._merge_scores(
+                [Criterion("c1", "optional", None, required=False)],
+                [{"id": "c1", "pass": None, "note": "no machine check"}],
+                {"scores": [{"id": "c1", "pass": False, "note": "太单薄"}]},
+            )
+            self.assertFalse(merged[0]["pass"])
+            self.assertFalse(merged[0]["blocking"])
+            self.assertIn("太单薄", merged[0]["note"])
+
+    def test_required_criterion_is_blocking(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = make_config(tmp)
+            engine = LoopEngine(config, team=load_team("default"))
+            merged = LoopEngine._merge_scores(
+                [Criterion("c1", "required", {"type": "contains", "arg": "x"})],
+                [{"id": "c1", "pass": True, "note": "ok", "source": "rule"}],
+                {"scores": []},
+            )
+            self.assertTrue(merged[0]["blocking"])
+
+    def test_failing_optional_criterion_does_not_block_closure(self):
+        # The regression guard: once the optional rule result became real,
+        # a failing optional standard must still not keep the loop open.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = make_config(tmp)
+            engine = LoopEngine(config, team=load_team("default"))
+            result = engine.run(
+                "带可选标准的任务",
+                [
+                    {"id": "c1", "desc": "必选", "check": {"type": "contains", "arg": "关键结论"}},
+                    {"id": "c2", "desc": "可选", "required": False,
+                     "check": {"type": "min_chars", "arg": 999999}},
+                ],
+            )
+            self.assertEqual(result.status, "closed")
+            self.assertTrue(result.closed)
+            by_id = {s["id"]: s for s in result.scores}
+            self.assertTrue(by_id["c1"]["pass"])
+            self.assertFalse(by_id["c2"]["pass"])
+            self.assertFalse(by_id["c2"]["blocking"])
+            # The optional failure is visible, but it is not a reason to
+            # revise: the loop closed without a second attempt.
+            self.assertEqual(result.issues, [])
+            self.assertEqual(result.iterations, 1)
+
+    def test_failing_required_criterion_still_blocks_closure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = make_config(tmp)
+            engine = LoopEngine(config, team=load_team("default"))
+            result = engine.run(
+                "必选不达标的任务",
+                [
+                    {"id": "c1", "desc": "必选", "check": {"type": "min_chars", "arg": 999999}},
+                    {"id": "c2", "desc": "可选", "required": False,
+                     "check": {"type": "contains", "arg": "关键结论"}},
+                ],
+            )
+            self.assertNotEqual(result.status, "closed")
+            by_id = {s["id"]: s for s in result.scores}
+            self.assertFalse(by_id["c1"]["pass"])
+            self.assertTrue(by_id["c1"]["blocking"])
 
 
 

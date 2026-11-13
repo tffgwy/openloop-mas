@@ -490,11 +490,17 @@ class LoopEngine:
                         else:
                             scores = self._merge_scores(crits, checks, extra)
 
-                passed = bool(scores) and all(bool(s["pass"]) for s in scores)
+                # Only the required criteria decide whether the loop closes.
+                # An optional criterion may fail - it is recorded, it is
+                # reported, but it never keeps the loop open forever.
+                blocking = [s for s in scores if s.get("blocking", True)]
+                passed = bool(scores) and all(bool(s["pass"]) for s in blocking)
 
                 reflection: Dict[str, Any] = {}
                 if not passed:
-                    failed = [s for s in scores if not s["pass"]]
+                    # Only blocking failures become issues: an optional
+                    # failure is information, not a reason to revise.
+                    failed = [s for s in blocking if not s["pass"]]
                     issues = [f"{s['id']}: {s['note']}" for s in failed]
                     reflect_state = dict(state)
                     reflect_state["issues"] = issues
@@ -866,9 +872,66 @@ class LoopEngine:
         # silently dropping the trailing criteria.
         for criterion, check in zip(crits, checks, strict=True):
             if not criterion.required:
-                merged.append(
-                    {"id": criterion.id, "pass": True, "note": "optional criterion", "source": "skipped"}
-                )
+                # An optional criterion never blocks the closure, but its
+                # result is still worth recording. Discarding it and
+                # reporting "pass" would mean the report shows a green
+                # light for a rule that actually failed.
+                if check.get("pass") is not None:
+                    merged.append(
+                        {
+                            "id": criterion.id,
+                            "pass": bool(check["pass"]),
+                            "note": str(check.get("note", "")),
+                            "source": "rule",
+                            "optional": True,
+                            "blocking": False,
+                        }
+                    )
+                    continue
+                if check.get("source") == "invalid":
+                    # A broken rule on an optional criterion is still a
+                    # broken rule - it is recorded as such and stays
+                    # non-blocking.
+                    merged.append(
+                        {
+                            "id": criterion.id,
+                            "pass": False,
+                            "note": str(check.get("note", "")),
+                            "source": "invalid",
+                            "optional": True,
+                            "blocking": False,
+                        }
+                    )
+                    continue
+                # No machine rule: the reviewer's judgement is recorded so
+                # the report shows what the optional standard actually
+                # looked like. An unreadable answer stays "skipped" rather
+                # than "unjudged" - an optional criterion must never send
+                # the loop back to the verifier for a second opinion.
+                review = model_scores.get(criterion.id)
+                decided = _as_bool(review.get("pass")) if review else None
+                if decided is None:
+                    merged.append(
+                        {
+                            "id": criterion.id,
+                            "pass": True,
+                            "note": "optional criterion",
+                            "source": "skipped",
+                            "optional": True,
+                            "blocking": False,
+                        }
+                    )
+                else:
+                    merged.append(
+                        {
+                            "id": criterion.id,
+                            "pass": decided,
+                            "note": str(review.get("note", "")),
+                            "source": review.get("source", "model"),
+                            "optional": True,
+                            "blocking": False,
+                        }
+                    )
                 continue
             if check.get("pass") is not None:
                 merged.append(
@@ -877,6 +940,7 @@ class LoopEngine:
                         "pass": bool(check["pass"]),
                         "note": str(check.get("note", "")),
                         "source": "rule",
+                        "blocking": True,
                     }
                 )
                 continue
@@ -891,6 +955,7 @@ class LoopEngine:
                         "pass": False,
                         "note": str(check.get("note", "")),
                         "source": "invalid",
+                        "blocking": True,
                     }
                 )
                 continue
@@ -902,6 +967,7 @@ class LoopEngine:
                         "pass": False,
                         "note": "unjudged: 评审没有给出该标准的判定",
                         "source": "model-missing",
+                        "blocking": True,
                     }
                 )
             else:
@@ -919,6 +985,7 @@ class LoopEngine:
                             "note": "unjudged: 评审给的判定无法识别（"
                                     + str(review.get("pass")) + "）",
                             "source": "model-missing",
+                            "blocking": True,
                         }
                     )
                     continue
@@ -927,6 +994,7 @@ class LoopEngine:
                     "pass": decided,
                     "note": str(review.get("note", "")),
                     "source": review.get("source", "model"),
+                    "blocking": True,
                 }
                 if with_votes:
                     entry["votes"] = review.get("votes", "")

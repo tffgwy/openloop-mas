@@ -193,7 +193,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"账本：{result.ledger_path}")
     for score in result.scores:
         flag = "PASS" if score["pass"] else "FAIL"
-        print(f"  [{flag}] {score['id']} ({score['source']}) {score['note']}")
+        optional = "" if score.get("blocking", True) else "，可选"
+        print(f"  [{flag}] {score['id']} ({score['source']}){optional} {score['note']}")
     if result.ticket_id:
         print(f"已升级为人工工单：{result.ticket_id}")
         print(f"  继续：mas resume {result.ticket_id} --note \"你的意见\"")
@@ -285,7 +286,8 @@ def cmd_resume(args: argparse.Namespace) -> int:
         print(f"状态：{result.status}（迭代 {result.iterations} 次）")
         for score in result.scores:
             flag = "PASS" if score["pass"] else "FAIL"
-            print(f"  [{flag}] {score['id']} {score['note']}")
+            optional = "" if score.get("blocking", True) else "，可选"
+            print(f"  [{flag}] {score['id']}{optional} {score['note']}")
     return 0 if result.closed else 2
 
 
