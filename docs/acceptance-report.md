@@ -1126,3 +1126,55 @@ merge 消费归一化后 verdict     -> [{'pass': False, 'source': 'model'}]
 - `ruff check mas tests tools` → All checks passed
 - `mas bench` → 9/9、闭环率 100%、账本一致性 100%
 - `mas demo` → 三场景全 OK
+
+### H.5 发布产物与真实端点复验（v0.7.7）
+
+**Release 产物**（`gh release view v0.7.7`）：
+
+- `openloop_mas-0.7.7-py3-none-any.whl`（104317 B）
+- `openloop_mas-0.7.7.tar.gz`（156453 B）
+- CI 四个 workflow 全绿：`ci` / `pages` / `install` / `release`
+
+**全新 wheel 隔离安装 E2E**（新 venv + 新 HOME + 仓库外 cwd）：
+
+| 检查 | 结果 |
+| --- | --- |
+| `pip install --no-index <wheel>` | `Successfully installed openloop-mas-0.7.7` |
+| 解析到的包路径 | `_venv77\Lib\site-packages\mas`（不是仓库源码） |
+| `mas --version` | `0.7.7` |
+| `mas install` | exit 0，双端 MCP 注册成功 |
+| `mas doctor --no-network` | exit 0，全项 OK（含 `skills_sync 6 个已安装 skill 均与包内版本一致`） |
+| `mas demo` | exit 0，closure / stagnation / budget 三场景全 OK |
+| skill 指纹（6 组） | 全部 **MATCH** |
+| MCP 注册 | codex `True` / claude `True` |
+
+**契约在发布产物上复验**：
+
+| 输入 | exit | 账本行数 |
+| --- | --- | --- |
+| `regex:` | 1 | 0 |
+| `min_chars:many` | 1 | 0 |
+| JSON `{"check":{"type":"mystery","arg":"x"}}` | 1 | 0 |
+
+**真实端点正例**（`claude-opus-5-5` @ `http://127.0.0.1:16024/v1`，免鉴权）：
+
+```
+-> exit 0，closed，迭代 1 次，token 4978
+-> [PASS] c1 (rule) regex /def dedupe.*set/ matched
+-> [PASS] c2 (rule) length 427 >= 120
+```
+
+**真实端点负例**（同一端点，JSON 未知类型机检）：
+
+```
+-> exit 1，错误：验收标准里有无法执行的机检规则:
+     - c1: unknown check type: 'mystery' (known types: contains, json_keys, ...)
+-> 账本 delta = 0
+```
+
+**常驻 HTTP 服务**（重启后）：`/health` → 200，`version: 0.7.7`
+
+**鉴权矩阵**（v0.7.7）：health 200 / 无令牌 401 / 错令牌 401 / Bearer 200 / X-MAS-Token 200
+
+**本机运行时升级**：备份 `~/.mas/backup/app_backup_077`，`mas install` 后
+`mas doctor` 全绿（`package mas 0.7.7 可导入`、`skills_sync 9 个已安装 skill 均与包内版本一致`）。
