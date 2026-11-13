@@ -1443,3 +1443,78 @@ exit: 2
 - `ruff check mas tests tools` → All checks passed
 - `mas bench` → 9/9 符合预期、闭环率 100%、平均迭代 1.67、账本一致性 100%
 - `mas demo` → closure / stagnation / budget 三场景全 OK
+
+### J.5 发布产物与真实端点复验（v0.7.9）
+
+**Release 产物**（`gh release view v0.7.9`）：
+
+- `openloop_mas-0.7.9-py3-none-any.whl`（106059 B）
+- `openloop_mas-0.7.9.tar.gz`（161080 B）
+- CI 四个 workflow 全绿：`ci` / `pages` / `install` / `release`
+
+**全新 wheel 隔离安装 E2E**（新 venv + 新 HOME + 仓库外 cwd）：
+
+| 检查 | 结果 |
+| --- | --- |
+| `pip install --no-index <wheel>` | `Successfully installed openloop-mas-0.7.9` |
+| 解析到的包路径 | `_venv79\Lib\site-packages\mas`（不是仓库源码） |
+| `mas --version` | `0.7.9` |
+| `mas install` | exit 0，双端 MCP 注册成功 |
+| `mas doctor --no-network` | exit 0，全项 OK（含 `skills_sync 6 个已安装 skill 均与包内版本一致`） |
+| `mas demo` | exit 0，closure / stagnation / budget 三场景全 OK |
+| skill 指纹（6 组） | 全部 **MATCH** |
+| MCP 注册 | codex `True` / claude `True` |
+
+**契约在发布产物上复验**（账本零污染）：
+
+| 输入 | exit | 账本行数 |
+| --- | --- | --- |
+| `regex:` | 1 | 0 |
+| `min_chars:many` | 1 | 0 |
+| JSON `{"check":{"type":"mystery","arg":"x"}}` | 1 | 0 |
+
+**两个新修复在发布产物上复验**：
+
+```
+== JSON 数组 + "required":"false" ==
+  exit 0，closed，迭代 1
+  [PASS] c1 (rule) all required strings present        ← 机检真的跑了（修前是 model）
+  [FAIL] c2 (rule)，可选 length 71 < 999999            ← 字符串 "false" 读成可选
+== 数组里的必选标准失败 ==
+  exit 2，escalated，迭代 7
+  [FAIL] c1 (rule) length 1108 < 999999
+  已升级为人工工单：T-20261113-132500-7182
+```
+
+**本机运行时升级**：备份 `~/.mas/backup/app_backup_079`，`mas install` 后
+`mas doctor` 全绿（`package mas 0.7.9 可导入`、`skills_sync 9 个已安装 skill 均与包内版本一致`）。
+
+**常驻 HTTP 服务**（重启后）：`/health` → 200，`version: 0.7.9`
+
+**鉴权矩阵**（v0.7.9）：health 200 / 无令牌 401 / 错令牌 401 / Bearer 200 / X-MAS-Token 200
+
+**OpenMausBot 集成**（v0.7.9，端口 28799）：
+
+- MCP 握手：`ok: True`，**12 个工具**
+- 端到端闭环：`exit 0`，`status: closed`，iterations 1，tokens 3456，
+  c1 regex `[一-龥]{4,}` 命中 → pass
+
+### J.6 PyPI 发布状态（仍未完成）
+
+与 v0.7.8 相同：Trusted Publishing 步骤真实执行过，但 PyPI 返回
+`invalid-publisher: valid token, but no corresponding publisher`，
+即 pypi.org 上还没有为 `openloop-mas` 登记 Trusted Publisher。
+`https://pypi.org/pypi/openloop-mas/json` 仍为 404（名称未被占用，可注册）。
+
+一次性登记后补发：
+
+```bash
+gh workflow run release.yml -f tag=v0.7.9
+```
+
+### J.7 边界说明
+
+- `required` 读不懂的值一律按**必选**处理；这是刻意的保守选择——
+  读不懂的标志绝不能悄悄放宽标准。
+- JSON 数组形式只影响 `--criteria`；`--criteria-file` 的数组形式本就一直有效。
+- 本轮真实端点实测仍只覆盖 `claude-opus-5-5` @ `http://127.0.0.1:16024/v1`（免鉴权）。
