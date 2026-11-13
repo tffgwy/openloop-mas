@@ -256,8 +256,8 @@ v0.7.2 的主题是：**把 8 种 check 类型的精确语义公开成契约，�
 另外两条边界：
 
 - **未知类型 → `unjudged`（不通过）**，不会静默放过。
-- **参数非法（如 `min_chars:很多`）→ 退回纯描述**，即该标准**没有机检**，由模型判定。
-  标准宁可没有机检，也不能声称自己能检查却做不到。
+- **参数非法（如 `min_chars:很多`）→ 直接拒绝**（v0.7.5 起）：开跑前退出码 1、零 token。
+  标准宁可不开跑，也不能声称自己能检查却做不到。
 
 ### C.3 本轮改动
 
@@ -858,3 +858,43 @@ CLI 新增子命令：`report` `replay` `export` `verify` `bench` `http`；
 7. `install.ps1` 只在本机 Windows 跑过。
 8. ~~`Ledger.append` 每次全量重读账本 → O(n²) 写入路径，已定位未修。~~ **已更正：该缺陷早已在 `62d04a4` 修好**（按文件身份缓存条目数，2000 条从 46.5s 降到 1.38s），本条为过时记录，现保留原样并标注更正。
 9. 不承诺流量 / 签约 / 平台批准 / 检测结果。
+
+## F. v0.7.5 — 简写形式的坏参数不再静默降级
+
+### F.1 问题
+
+v0.7.4 让 **JSON 形式**的坏参数在开跑前快速失败，但**简写形式**（`--criteria 'regex:'`）
+仍然静默降级成纯描述。于是同一份标准有两种待遇：
+
+- `--criteria '{"desc":"x","check":{"type":"regex"}}'` → 退出码 1、零 token、账本零污染
+- `--criteria 'regex:'` → 退回纯描述 → **没有机检** → 交给模型判定 → 烧满 5 轮迭代 → 升级人工工单
+
+实测（v0.7.4 wheel，隔离环境，mock provider）：
+
+| 简写 | v0.7.4 行为 | v0.7.5 行为 |
+| --- | --- | --- |
+| `regex:` | escalated（5 迭代 / 2884 token） | **exit 1 / 0 token / 账本 0 行** |
+| `contains:` | escalated（5 迭代 / 2925 token） | **exit 1 / 0 token / 账本 0 行** |
+| `min_chars:` | escalated（5 迭代 / 2943 token） | **exit 1 / 0 token / 账本 0 行** |
+| `min_chars:many` | 退回纯描述 | **exit 1（invalid argument: ... got 'many'）** |
+| `min_chars:-1` | 退回纯描述 | **exit 1（non-negative count, got -1）** |
+| `regex:([unclosed` | 退回纯描述 | **exit 1（cannot compile /([unclosed/）** |
+| `unknown_type:abc` | 退回纯描述 | 退回纯描述（**行为不变**，见下） |
+
+### F.2 修复
+
+- `mas/util.py`：**已知类型**的简写，即使参数不可用也保留 `check`（不再退回纯描述）；
+  只有**类型名本身未知**才退回纯描述——那不是参数写漏，而是压根没打算写机检。
+- `mas/engine.py`：`_check_arg_problem` 把「空字符串参数」判为 *missing* 而非 *invalid*，
+  人话提示更准。
+
+### F.3 契约
+
+简写与 JSON 两种写法**待遇一致**：参数写漏或写错 → 开跑前退出码 1、零 token、账本零污染。
+未知类型仍退回纯描述（该标准没有机检，由模型判定）。
+
+### F.4 验证
+
+- `unittest discover -s tests` → **241 tests OK (skipped=4)**
+- `ruff check mas tests tools` → All checks passed
+- 隔离环境 CLI 实测：上表 6 类坏简写全部 exit=1、`runs.jsonl` 0 行

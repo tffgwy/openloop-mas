@@ -214,9 +214,14 @@ zero tokens burned) instead of letting it pass by default:
 | `section` | the heading text | `""` |
 | `json_keys` | a key name, or a non-empty list of key names | `[]`, missing |
 
-In the shorthand form an empty tail (`--criteria 'regex:'`) does not become a machine
-check - it stays a plain description, so that criterion carries **no** machine check and
-is decided by the model instead.
+A broken argument in the **shorthand** form fails just as fast. `--criteria 'regex:'`
+and `--criteria 'min_chars:many'` keep their check type and are caught by the table
+above - exit code 1, zero tokens. The same standard written as JSON or as a shorthand
+now behaves identically: a missing argument is a missing argument, never a quiet
+fallback to "the model decides".
+
+Only an **unknown type name** (e.g. `unknown_type:abc`) falls back to a plain
+description - that is not a broken argument, it is the absence of a machine check.
 
 ### Shorthand notation (since v0.4.2)
 

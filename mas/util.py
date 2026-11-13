@@ -40,9 +40,15 @@ def parse_criterion_shorthand(text: str) -> Dict[str, Any]:
     """Parse ``<type>:<arg>`` into a criterion carrying a machine check.
 
     The argument keeps everything after the first colon, so a regular
-    expression may contain colons (``regex:https?://``). Unknown types and
-    unparsable arguments stay plain descriptions - a criterion must never
-    claim a check it cannot perform.
+    expression may contain colons (``regex:https?://``). An *unknown* type
+    stays a plain description - it is not a check at all.
+
+    A *known* type with an unusable argument (an empty tail, a
+    non-numeric count) keeps its check on purpose: dropping it would
+    silently turn "regex:" into a plain description, hand the criterion to
+    the model, and burn the whole budget on a standard that was never
+    written. The engine validates the argument instead and refuses to
+    start.
     """
     head, sep, tail = str(text).partition(":")
     if not sep:
@@ -51,13 +57,14 @@ def parse_criterion_shorthand(text: str) -> Dict[str, Any]:
     if kind not in CHECK_SHORTHANDS:
         return {"desc": str(text)}
     arg = tail.strip()
-    if not arg:
-        return {"desc": str(text)}
     if kind in _INT_CHECKS:
-        try:
+        # An unusable numeric argument is *not* downgraded to a plain
+        # description. That would silently drop the machine check and
+        # leave the criterion to the model - exactly the failure the
+        # validation layer exists to stop. Keep the raw value so the
+        # engine can refuse the run before it burns any token.
+        with contextlib.suppress(ValueError):
             arg = int(arg)
-        except ValueError:
-            return {"desc": str(text)}
     return {"desc": str(text), "check": {"type": kind, "arg": arg}}
 
 

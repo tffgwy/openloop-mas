@@ -174,7 +174,7 @@ def _check_arg_problem(kind: str, arg: Any) -> str:
     if requirement is None:
         return ""
     if kind in _INT_ARG_TYPES:
-        if arg is None:
+        if arg is None or (isinstance(arg, str) and not arg.strip()):
             return f"missing argument: {kind} needs {requirement}"
         try:
             value = int(arg)

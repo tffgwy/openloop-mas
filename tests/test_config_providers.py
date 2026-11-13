@@ -555,15 +555,77 @@ class CriterionShorthandTest(unittest.TestCase):
         self.assertEqual(_parse_criterion("写清楚就好"), "写清楚就好")
         self.assertEqual(_parse_criterion("unknown_type:abc"), "unknown_type:abc")
 
-    def test_a_non_numeric_numeric_shorthand_stays_a_description(self):
+    def test_a_non_numeric_numeric_shorthand_keeps_its_check(self):
+        """A broken argument must not silently become a description.
+
+        Downgrading "min_chars:many" to a plain description handed the
+        criterion to the model, so the standard was never machine-checked
+        and the loop still burned its whole budget. The check has to
+        survive parsing so the engine can refuse the run up front.
+        """
         from mas.cli import _parse_criterion
 
-        self.assertEqual(_parse_criterion("min_chars:many"), "min_chars:many")
+        parsed = _parse_criterion("min_chars:many")
+        self.assertEqual(parsed["check"]["type"], "min_chars")
+        self.assertEqual(parsed["check"]["arg"], "many")
 
-    def test_an_empty_argument_stays_a_description(self):
+    def test_an_empty_argument_keeps_its_check(self):
         from mas.cli import _parse_criterion
 
-        self.assertEqual(_parse_criterion("regex:"), "regex:")
+        parsed = _parse_criterion("regex:")
+        self.assertEqual(parsed["check"]["type"], "regex")
+        self.assertEqual(parsed["check"]["arg"], "")
+
+
+class DegenerateShorthandTest(unittest.TestCase):
+    """A broken shorthand must be refused before the loop spends tokens.
+
+    v0.7.4 made a *JSON* criterion with a missing argument fail fast, but
+    the shorthand form still degraded to a plain description. The same
+    standard written two ways therefore behaved two ways: the JSON form
+    exited immediately, the shorthand form ran the whole budget and then
+    escalated to a human ticket.
+    """
+
+    def _criterion(self, text):
+        from mas.engine import Criterion
+
+        return Criterion.from_raw(text, 0)
+
+    def test_an_empty_tail_keeps_its_check_type(self):
+        for text in ("regex:", "contains:", "section:", "json_keys:",
+                     "min_chars:", "max_chars:", "lines_min:", "not_contains:"):
+            with self.subTest(text=text):
+                criterion = self._criterion(text)
+                self.assertIsNotNone(criterion.check)
+                self.assertEqual(criterion.check["type"], text.split(":")[0])
+
+    def test_a_non_numeric_count_keeps_its_check(self):
+        criterion = self._criterion("min_chars:many")
+        self.assertIsNotNone(criterion.check)
+        self.assertEqual(criterion.check["type"], "min_chars")
+
+    def test_the_engine_refuses_the_run(self):
+        from mas.engine import validate_criteria
+
+        problems = validate_criteria([self._criterion("regex:")])
+        self.assertTrue(problems)
+        self.assertIn("c1", problems[0])
+
+    def test_a_broken_shorthand_never_passes_a_check(self):
+        from mas.engine import evaluate_check
+
+        outcome = evaluate_check(self._criterion("regex:"), "anything")
+        self.assertIsNone(outcome["pass"])
+        self.assertEqual(outcome["source"], "invalid")
+
+    def test_an_unknown_type_is_still_only_a_description(self):
+        criterion = self._criterion("unknown_type:abc")
+        self.assertIsNone(criterion.check)
+
+    def test_a_valid_shorthand_is_unaffected(self):
+        criterion = self._criterion("regex:def dedupe")
+        self.assertEqual(criterion.check, {"type": "regex", "arg": "def dedupe"})
 
 
 class MissingVerdictRecoveryTest(unittest.TestCase):
