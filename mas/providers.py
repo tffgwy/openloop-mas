@@ -356,6 +356,13 @@ class MockProvider(Provider):
             checks = state.get("checks") or []
             scores = []
             for check in checks:
+                # Only a criterion with a real machine check is reported
+                # with its check result. A criterion without a check is
+                # handled by the block below - reporting it twice gave
+                # the same id two scores, and the first one won, so the
+                # useful "mock cannot judge this" note was lost.
+                if check.get("pass") is None:
+                    continue
                 scores.append(
                     {
                         "id": check.get("id"),

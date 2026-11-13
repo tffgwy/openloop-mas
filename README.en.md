@@ -12,6 +12,13 @@
 [![python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![deps](https://img.shields.io/badge/dependencies-0-orange.svg)]()
 
+**What v0.7.11 fixes** (a verdict is read by its meaning - the last class of fake closure):
+
+- **Two reviewers both said "no", and the aggregate said "yes"** - the aggregation layer used `bool(vote)` to read a verdict, and `bool("false")` is `True`. A reviewer answering `"pass": "false"` (a string instead of a boolean) was therefore counted as **one passing vote**: two reviewers said "no", the engine aggregated `pass: true, votes: 2/2`, and the loop closed on it. This is the most dangerous class of fake closure this project exists to kill - **the machine was saying no while the ledger said it passed**. A verdict is now read by its **meaning** (`"false"` / `"0"` / `"no"` means not passing), an **unreadable vote never counts as a passing vote** (the conservative side), and the result carries an `unreadable_votes` count. `mode="any"` is no longer fooled by string fake votes either;
+- **The mock backend reported one criterion twice** - a criterion without a machine-check rule was appended once from the criteria list (`pass: False`, `no machine check`) and again from the unjudged list; `setdefault` kept only the first, so **the genuinely useful note was overwritten**. "No machine check" is now reported once, by the unjudged branch only - every criterion appears exactly once;
+- **`normalize_verdict` pushed an unreadable verdict into `pass`** - the canonical path (`{"verdict": "", "scores": [...]}`) used to keep the original string, and `all(s.get("pass"))` truthified it, so `"maybe"` counted as a pass. An unreadable answer is now `pass: False` + `unreadable: True`, and the verdict is `all(s.get("pass") is True)` - aligned with the `criteria` path;
+- **"Undecided" was displayed to the reviewer as FAIL** - the machine-check block had only PASS / FAIL, so `pass: None` (no rule, a broken rule, an unknown rule type) rendered as `FAIL` and the reviewer model read "the machine check failed" instead of "this criterion was never judged". It is now three-state: `UNDECIDED` / `PASS` / `FAIL`.
+
 **What v0.7.10 fixes** (a failed resume no longer pretends to be solved):
 
 - **A failing resume used to mark the ticket as resolved** - an escalation

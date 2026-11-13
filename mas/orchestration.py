@@ -27,6 +27,8 @@ import concurrent.futures
 import threading
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from mas.util import _as_bool
+
 # Angles used to diversify parallel workers. The worker prompt gets one of
 # these as an extra instruction so the candidates are genuinely different
 # attempts instead of N samples of the same attempt.
@@ -179,7 +181,17 @@ def aggregate_reviews(
 
     merged: List[Dict[str, Any]] = []
     for criterion_id, votes in by_id.items():
-        passed_votes = [v for v in votes if v.get("pass")]
+        # A vote is read by its *meaning*, never by a bare truth test.
+        # ``bool("false")`` is True, so a reviewer that answered the
+        # string ``"false"`` was counted as a passing vote - two reviewers
+        # both saying "no" produced ``pass: True`` and ``votes: 2/2``.
+        # An unreadable answer is not a passing vote either: it is
+        # counted as a non-pass, which keeps the aggregate on the
+        # conservative side instead of letting a garbled reply close a
+        # criterion nobody actually accepted.
+        decisions = [_as_bool(v.get("pass")) for v in votes]
+        passed_votes = [v for v, d in zip(votes, decisions, strict=True) if d is True]
+        unreadable = [v for v, d in zip(votes, decisions, strict=True) if d is None]
         if mode == "any":
             passed = bool(passed_votes)
         elif mode == "majority":
@@ -190,8 +202,16 @@ def aggregate_reviews(
         if passed:
             note = "; ".join(notes) if notes else f"{len(passed_votes)}/{len(votes)} reviewers passed"
         else:
-            dissent = [str(v.get("note", "")).strip() for v in votes if not v.get("pass")]
+            dissent = [
+                str(v.get("note", "")).strip()
+                for v, d in zip(votes, decisions, strict=True)
+                if d is not True and v.get("note")
+            ]
             note = "; ".join(dissent) if dissent else f"only {len(passed_votes)}/{len(votes)} reviewers passed"
+        if unreadable:
+            note = (note + "; " if note else "") + (
+                f"{len(unreadable)} reviewer(s) gave an unreadable verdict"
+            )
         merged.append(
             {
                 "id": criterion_id,
@@ -199,6 +219,7 @@ def aggregate_reviews(
                 "note": note,
                 "source": "review",
                 "votes": f"{len(passed_votes)}/{len(votes)}",
+                "unreadable_votes": len(unreadable),
             }
         )
 

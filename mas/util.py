@@ -205,14 +205,24 @@ def normalize_verdict(payload: Dict[str, Any]) -> Dict[str, Any]:
                 passed = _as_bool(item.get("status"))
             score = dict(item)
             score["id"] = str(item.get("id") or item.get("criterion") or item.get("name") or "")
-            if passed is not None:
+            if passed is None:
+                # An unreadable verdict is not a passing verdict. Leaving
+                # the raw string in place made the aggregate read it as
+                # truthy - a score of "maybe" produced verdict: pass.
+                # The alternative shape below already treats it as False;
+                # both paths now agree.
+                score["pass"] = False
+                score["unreadable"] = True
+            else:
                 score["pass"] = passed
             score.setdefault("note", str(item.get("note") or item.get("reason") or item.get("explanation") or ""))
             scores.append(score)
         result = dict(payload)
         result["scores"] = scores
         if not result.get("verdict"):
-            result["verdict"] = "pass" if scores and all(s.get("pass") for s in scores) else "fail"
+            result["verdict"] = (
+                "pass" if scores and all(s.get("pass") is True for s in scores) else "fail"
+            )
         return result
 
     # Alternative shape: {"criteria": [...]} or {"results": [...]}.

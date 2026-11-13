@@ -1670,3 +1670,146 @@ X-MAS-Token 200
 - 触发升级在真实端点上依赖 token 预算（`max_tokens`）而非停滞判定：
   真实模型每轮都会改写产物，哈希不变几乎不会发生。
 - PyPI 发布状态见下节（仍未完成）。
+
+## L. v0.7.11 — 判定读含义：假闭合的最后一类
+
+### L.1 问题（本轮代码审计 + 复现，非推演）
+
+v0.7.9 修好了「标志读含义」（`"required": "false"` 被当成必选），
+但**判定值本身**还有同类的漏洞没被覆盖。这一类漏洞的方向恰恰相反——
+它们**把否决变成通过**，是本项目最危险的一类假闭合。
+
+复现证据（修前）：
+
+1. **多评审聚合把字符串 `"false"` 算成通过票** ——
+   `mas/orchestration.py::aggregate_reviews` 用 `bool(票)` 读判定值，
+   而 `bool("false")` 是 `True`。两位评审都回 `{"pass": "false"}` 时，
+   聚合结果是 `pass: True, votes: "2/2", verdict: "pass"`。
+   `mode="any"` 下更严重：只要**有一张字符串假票**，整条标准就通过。
+2. **`normalize_verdict` 的 canonical 路径把读不懂的判定推成 `pass`** ——
+   `{"verdict": "", "scores": [{"id": "c1", "pass": "maybe"}]}` 修前得到
+   `verdict: pass`。原因是原字符串留在 `score["pass"]` 里，
+   `all(s.get("pass"))` 直接真值化，`"maybe"` 也算通过。
+3. **mock 后端把同一条标准报两次** —— 没有机检规则的标准，
+   mock 评审先从 checks 列表追加一条（`pass: False, note: "no machine check"`），
+   又从 unjudged 列表追加一条；`setdefault` 取第一条，
+   于是**真正有用的「mock 无法判定」说明被覆盖掉了**。
+4. **「未判定」在评审提示里显示成 FAIL** ——
+   `mas/roles.py` 的机检结果区用 `check.get("pass")` 二值化，
+   `None` → `FAIL`。评审模型于是读成「机检失败了」，
+   而不是「这条根本没有被判定过」。
+
+### L.2 修复
+
+- `mas/orchestration.py::aggregate_reviews`：判定统一走 `mas.util._as_bool()`。
+  **读不懂的票一律不算通过票**（保守侧），并新增 `unreadable_votes` 计数字段。
+- `mas/util.py::normalize_verdict`：canonical 路径下读不懂 → `pass: False` +
+  `unreadable: True`；verdict 判定改为 `all(s.get("pass") is True)`，
+  与 `criteria` 路径语义对齐。
+- `mas/providers.py::MockProvider`：`check["pass"] is None` 时不再从
+  checks 分支追加，只由 unjudged 分支报告一次。
+- `mas/roles.py`：机检结果区改为三态显示 `UNDECIDED` / `PASS` / `FAIL`。
+
+### L.3 判定语义实测（`_as_bool` 矩阵）
+
+```json
+{"true(bool)": true, "false(bool)": false, "'false'": false, "'FALSE'": false,
+ "'no'": false, "'0'": false, "'true'": true, "'yes'": true, "'1'": true,
+ "'maybe'": null, "None": null, "''": null, "0(int)": false, "1(int)": true}
+```
+
+### L.4 聚合层实测（两位评审都回 `{"pass": "false"}`）
+
+| mode | 修前 | 修后 |
+| --- | --- | --- |
+| `all` | `pass: true, votes: 2/2, verdict: pass` | `pass: false, votes: 0/2, verdict: fail` |
+| `any` | `pass: true, votes: 2/2, verdict: pass` | `pass: false, votes: 0/2, verdict: fail` |
+| `majority` | `pass: true, votes: 2/2, verdict: pass` | `pass: false, votes: 0/2, verdict: fail` |
+
+**混合票**（一张布尔 `false` + 一张布尔 `true`）：
+
+| mode | 修后结果 |
+| --- | --- |
+| `all` | `pass: false, votes: 1/2`（一票否决，符合严格语义） |
+| `any` | `pass: true, votes: 1/2` |
+| `majority` | `pass: false, votes: 1/2` |
+
+**只有一张读不懂的票**（`"maybe"`）：
+
+```json
+{"verdict": "fail", "scores": [{"id": "c1", "pass": false,
+  "note": "?; 1 reviewer(s) gave an unreadable verdict",
+  "source": "review", "votes": "0/1", "unreadable_votes": 1}]}
+```
+
+### L.5 `normalize_verdict` canonical 路径实测
+
+| 输入 | 修后输出 |
+| --- | --- |
+| `{"verdict": "", "scores": [{"id": "c1", "pass": "maybe"}]}` | `verdict: fail`，`pass: false`，`unreadable: true` |
+| `{"verdict": "", "scores": [{"id": "c1", "pass": "false"}]}` | `verdict: fail`，`pass: false` |
+| `{"verdict": "", "scores": [{"id": "c1", "pass": true}]}` | `verdict: pass`，`pass: true` |
+
+### L.6 mock 评审「每条标准恰好报一次」实测
+
+输入：c1 带机检（`pass: true`）、c2 无机检（`pass: null`）。
+
+```json
+{"scores": [
+  {"id": "c1", "pass": true,  "note": "all required strings present"},
+  {"id": "c2", "pass": false, "note": "unjudged: 该验收标准没有机检规则，mock 模式无法判定"}
+]}
+```
+
+修前 c2 会出现两条（一条 `no machine check`、一条 `unjudged: ...`），
+且 `setdefault` 让前者胜出——有用的说明被覆盖。
+
+### L.7 真实端点复验（`claude-opus-5-5` @ `http://127.0.0.1:16024/v1`，免鉴权）
+
+**完整闭环无回归**（标准 c1 `section:"结论"` + c2 `min_chars:120`）：
+
+```
+EXIT: 0
+状态：closed（迭代 1 次，token 3936）
+  [PASS] c1 (model) 虽然机检结果为"UNDECIDED - no machine check"，但该标准明确要求产物包含标题行"## 结论"，候选产物原文已满足。
+  [PASS] c2 (rule) length 210 >= 120
+```
+
+真实评审模型**原话**把未判定的机检读成了「UNDECIDED - no machine check」，
+而不是「FAIL」——修复 4 的三态语义在真实模型上确实生效，
+模型没有把「没判定」误读成「机检失败」。
+
+**真实端点的判定形状**：模型返回标准布尔 `pass: false`，
+`normalize_verdict` 读出 `verdict: fail`。
+
+### L.8 回归门禁
+
+| 项 | 结果 |
+| --- | --- |
+| `python -m unittest discover -s tests` | **283 tests OK (skipped=4)**（v0.7.10 为 271，新增 12） |
+| `ruff check mas tests tools` | All checks passed! |
+| `mas bench` | 9/9 符合预期，闭环率 **100%**，账本一致性 **100%** |
+| `mas demo` | closure / stagnation / budget 三场景全 OK |
+
+**新增测试**（12 个）：
+
+- `tests/test_orchestration.py`：`test_a_string_false_vote_is_not_a_passing_vote`、
+  `test_an_unreadable_vote_is_not_a_passing_vote`、
+  `test_an_unreadable_vote_alone_never_passes`
+- `tests/test_config_providers.py`：`test_mock_verifier_reports_each_criterion_once`
+- `tests/test_config_providers.py`（同一文件内新增）：
+  `test_an_unreadable_verdict_never_produces_a_pass`、
+  `test_both_verdict_shapes_agree_on_an_unreadable_answer`
+- `tests/test_roles.py`（**新增文件**）：三态显示的 6 个测试
+  （PASS / FAIL / UNDECIDED / 无效规则 / 三态共存 / 缺 `pass` 键）
+
+### L.9 边界说明
+
+- 本轮真实端点实测仍只覆盖 `claude-opus-5-5` @ `http://127.0.0.1:16024/v1`（免鉴权）。
+- 修前行为是**代码审计 + 离线复现**得到的，不是真实端点现场发现的：
+  真实模型目前都返回标准布尔 `pass`。字符串假票路径需要人工构造的输入才会触发。
+- `_as_bool` 把 `1` / `0` 视为 `true` / `false`（模型偶尔这么写）；
+  这与 v0.7.9 的标志读法一致。
+- 判定读的是**结构**，不是事实：模型说「不通过」不等于产物真的不合格，
+  只是引擎不再把「说不通过」误读成「通过」。
+- PyPI 发布状态见下节（仍未完成）。

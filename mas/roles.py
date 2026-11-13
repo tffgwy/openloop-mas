@@ -232,7 +232,18 @@ class Roles:
                 for check in checks:
                     if not isinstance(check, dict):
                         continue
-                    mark = "PASS" if check.get("pass") else "FAIL"
+                    # Three states, not two. A check that could not decide
+                    # anything (no rule, a broken rule) is neither a pass
+                    # nor a fail - showing it as FAIL made the reviewer
+                    # read "the machine check failed" for a criterion that
+                    # was simply never checked.
+                    raw = check.get("pass")
+                    if raw is None:
+                        mark = "UNDECIDED"
+                    elif raw:
+                        mark = "PASS"
+                    else:
+                        mark = "FAIL"
                     out.append(
                         f"- [{check.get('id')}] {mark} - {check.get('note', '')}"
                     )

@@ -97,6 +97,37 @@ class TestProviders(unittest.TestCase):
         self.assertEqual(state["attempt"], 2)
         self.assertEqual(state["goal"], "g")
 
+    def test_mock_verifier_reports_each_criterion_once(self):
+        # The mock verifier used to report a criterion without a machine
+        # check twice: once from the check list (pass: False, note "no
+        # machine check") and once from the unjudged list. The first entry
+        # won, so the useful "mock cannot judge this" note was lost.
+        provider = MockProvider()
+        state = {
+            "attempt": 1,
+            "goal": "g",
+            "criteria": [
+                {"id": "c1", "desc": "d", "check": {"type": "min_chars", "arg": 1}},
+                {"id": "c2", "desc": "d2", "check": None},
+            ],
+            "checks": [
+                {"id": "c1", "pass": True, "note": "length 5 >= 1"},
+                {"id": "c2", "pass": None, "note": "no machine check"},
+            ],
+        }
+        prompt = (
+            "<<MAS_STATE>>\n"
+            + json.dumps(state, ensure_ascii=False)
+            + "\n<<END>>"
+        )
+        result = provider.complete(system="s", prompt=prompt, role="verifier")
+        payload = json.loads(result["text"])
+        ids = [sc["id"] for sc in payload["scores"]]
+        self.assertEqual(sorted(ids), ["c1", "c2"])
+        self.assertEqual(len(ids), len(set(ids)))
+        c2 = [sc for sc in payload["scores"] if sc["id"] == "c2"][0]
+        self.assertIn("mock", c2["note"])
+
     def test_openai_compat_payload(self):
         provider = OpenAICompatProvider(model="kimi-k2", base_url="http://127.0.0.1:1/v1", api_key="k")
         captured = {}
@@ -453,6 +484,29 @@ class VerdictNormalizationTest(unittest.TestCase):
         self.assertEqual(out["scores"][0]["id"], "c1")
         self.assertTrue(out["scores"][0]["pass"])
         self.assertEqual(out["verdict"], "pass")
+
+    def test_an_unreadable_verdict_never_produces_a_pass(self):
+        # The canonical path left the raw string in place, so the
+        # aggregate read "maybe" as truthy and derived verdict: pass.
+        from mas.util import normalize_verdict
+
+        payload = {"verdict": "", "scores": [{"id": "c1", "pass": "maybe", "note": "x"}]}
+        out = normalize_verdict(payload)
+        self.assertIs(out["scores"][0]["pass"], False)
+        self.assertTrue(out["scores"][0].get("unreadable"))
+        self.assertEqual(out["verdict"], "fail")
+
+    def test_both_verdict_shapes_agree_on_an_unreadable_answer(self):
+        from mas.util import normalize_verdict
+
+        canonical = normalize_verdict(
+            {"verdict": "", "scores": [{"id": "c1", "pass": "maybe"}]}
+        )
+        alternative = normalize_verdict(
+            {"criteria": [{"id": "c1", "pass": "maybe"}]}
+        )
+        self.assertEqual(canonical["verdict"], alternative["verdict"])
+        self.assertEqual(canonical["scores"][0]["pass"], alternative["scores"][0]["pass"])
 
     def test_unrelated_payload_is_left_alone(self):
         from mas.util import normalize_verdict

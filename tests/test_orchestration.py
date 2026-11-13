@@ -167,6 +167,37 @@ class TestAggregateReviews(unittest.TestCase):
         merged = aggregate_reviews(reviews, mode="any")
         self.assertTrue(merged["scores"][0]["pass"])
 
+    def test_a_string_false_vote_is_not_a_passing_vote(self):
+        # bool("false") is True. A reviewer that answered the string
+        # "false" was counted as a passing vote, so two reviewers both
+        # saying "no" produced pass: True and votes: 2/2.
+        reviews = [
+            self._review([{"id": "c1", "pass": "false", "note": "n1"}]),
+            self._review([{"id": "c1", "pass": "false", "note": "n2"}]),
+        ]
+        for mode in ("all", "majority", "any"):
+            merged = aggregate_reviews(reviews, mode=mode)
+            self.assertFalse(merged["scores"][0]["pass"], mode)
+            self.assertEqual(merged["scores"][0]["votes"], "0/2", mode)
+            self.assertEqual(merged["verdict"], "fail", mode)
+
+    def test_an_unreadable_vote_is_not_a_passing_vote(self):
+        # An answer nobody can read must never count as an approval.
+        reviews = [
+            self._review([{"id": "c1", "pass": "maybe", "note": "a"}]),
+            self._review([{"id": "c1", "pass": True, "note": "b"}]),
+        ]
+        merged = aggregate_reviews(reviews, mode="any")
+        self.assertTrue(merged["scores"][0]["pass"])
+        self.assertEqual(merged["scores"][0]["votes"], "1/2")
+        self.assertEqual(merged["scores"][0]["unreadable_votes"], 1)
+
+    def test_an_unreadable_vote_alone_never_passes(self):
+        reviews = [self._review([{"id": "c1", "pass": "maybe", "note": "a"}])]
+        for mode in ("all", "majority", "any"):
+            merged = aggregate_reviews(reviews, mode=mode)
+            self.assertFalse(merged["scores"][0]["pass"], mode)
+
     def test_unusable_reviews_are_reported_not_hidden(self):
         merged = aggregate_reviews([{"oops": True}, {"nothing": 1}], mode="all")
         self.assertEqual(merged["usable"], 0)
