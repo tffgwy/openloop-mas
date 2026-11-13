@@ -12,35 +12,30 @@ param(
 $ErrorActionPreference = "Stop"
 if (-not $InstallDir) { $InstallDir = Join-Path $env:USERPROFILE ".mas" }
 
-Write-Host "Removing agent skills..."
-foreach ($root in @(".codex\skills", ".claude\skills", ".agents\skills", ".gemini\skills")) {
-    foreach ($skill in @("mas-loop", "mas-review", "mas-scaffold")) {
-        $path = Join-Path $env:USERPROFILE "$root\$skill"
-        if (Test-Path $path) {
-            Remove-Item -Recurse -Force $path
-            Write-Host "[OK] removed $path"
-        }
+# One implementation, one behaviour: the python installer owns both the
+# skills and the MCP registration, so removing them is also one call.
+Write-Host "Removing agent skills and the MCP registration..."
+$pythonExe = ""
+foreach ($name in @("python3", "python", "py")) {
+    $cmd = Get-Command $name -ErrorAction SilentlyContinue
+    if (-not $cmd) { continue }
+    try {
+        & $cmd.Source -c "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)" 2>$null
+        if ($LASTEXITCODE -eq 0) { $pythonExe = $cmd.Source; break }
+    } catch { }
+}
+if ($pythonExe) {
+    $appDir = Join-Path $InstallDir "app"
+    if (Test-Path (Join-Path $appDir "mas\installer.py")) {
+        $env:PYTHONPATH = $appDir
+        & $pythonExe -m mas uninstall
+    } else {
+        Write-Host "[!!] MAS runtime not found under $appDir - remove the skills and the MCP entry by hand."
     }
+} else {
+    Write-Host "[!!] Python 3.10+ not found - remove the skills and the MCP entry by hand."
 }
 
-Write-Host "Removing MCP registration..."
-$codexConfig = Join-Path $env:USERPROFILE ".codex\config.toml"
-if (Test-Path $codexConfig) {
-    $lines = Get-Content -Encoding UTF8 $codexConfig
-    $out = New-Object System.Collections.Generic.List[string]
-    $skipping = $false
-    foreach ($line in $lines) {
-        if ($line -match '^\[mcp_servers\.mas_loop\]') { $skipping = $true; continue }
-        if ($skipping) {
-            if ($line -match '^\[') { $skipping = $false } else { continue }
-        }
-        $out.Add($line)
-    }
-    Copy-Item $codexConfig "$codexConfig.bak-uninstall-$(Get-Date -Format yyyyMMdd-HHmmss)"
-    $utf8 = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($codexConfig, (($out -join "`n") + "`n"), $utf8)
-    Write-Host "[OK] cleaned ~/.codex/config.toml"
-}
 
 if ($KeepData) {
     Write-Host "[OK] kept $InstallDir (use -KeepData:$false to delete it)"

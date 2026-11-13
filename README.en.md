@@ -409,11 +409,24 @@ The protocol is a pure-standard-library JSON-RPC 2.0 over stdio -
 The installer places them in every skill directory it finds (`~/.codex/skills`,
 `~/.claude/skills`, `~/.agents/skills`, `~/.gemini/skills`).
 
+> The **single source of truth is `mas/skills/`**. It ships inside the wheel,
+> so the skill a `pip install` gives you is byte-identical to the one a source
+> checkout gives you - there are no two copies that can drift apart.
+
+To remove it again:
+
+```bash
+mas uninstall       # remove the skills and the MCP registration (keeps ~/.mas)
+pip uninstall openloop-mas
+```
+
 ---
 
 ## Command cheat sheet
 
 ```bash
+mas install       # install skills + register the MCP server
+mas uninstall     # remove the skills + MCP registration (keeps the ledger)
 mas init          # write/update config
 mas init --wizard # interactive setup
 mas run           # run a closure task

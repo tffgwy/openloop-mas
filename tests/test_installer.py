@@ -110,5 +110,78 @@ class InstallerTest(unittest.TestCase):
         self.assertIn("MCP registered (claude)", text)
 
 
+class UninstallerTest(unittest.TestCase):
+    """``mas uninstall`` must remove exactly what ``mas install`` added."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory(prefix="mas-uninstall-test-")
+        self.addCleanup(self._tmp.cleanup)
+        self.home = pathlib.Path(self._tmp.name)
+        self._orig_home = installer._home
+        installer._home = lambda: self.home
+        self.addCleanup(lambda: setattr(installer, "_home", self._orig_home))
+
+    def test_the_skills_are_removed_again(self):
+        installer.install_skills()
+        report = installer.run_uninstall()
+        self.assertTrue(report["skills"]["removed"])
+        for name in installer.PACKAGED_SKILLS:
+            self.assertFalse(
+                (self.home / ".codex" / "skills" / name).exists(),
+                f"{name} was not removed",
+            )
+
+    def test_the_codex_registration_is_removed(self):
+        installer._register_codex(sys.executable)
+        report = installer.run_uninstall()
+        self.assertEqual(report["mcp"]["codex"]["state"], "removed")
+        text = (self.home / ".codex" / "config.toml").read_text(encoding="utf-8")
+        self.assertNotIn("[mcp_servers.mas_loop]", text)
+
+    def test_the_claude_registration_is_removed(self):
+        installer._register_claude(sys.executable)
+        report = installer.run_uninstall()
+        self.assertEqual(report["mcp"]["claude"]["state"], "removed")
+        data = json.loads((self.home / ".claude.json").read_text(encoding="utf-8"))
+        self.assertNotIn("mas_loop", data.get("mcpServers") or {})
+
+    def test_the_other_codex_settings_are_kept(self):
+        config = self.home / ".codex" / "config.toml"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(
+            'model = "gpt-5"\n\n[mcp_servers.other]\ncommand = "x"\n',
+            encoding="utf-8",
+        )
+        installer._register_codex(sys.executable)
+        installer.run_uninstall()
+        text = config.read_text(encoding="utf-8")
+        self.assertIn('model = "gpt-5"', text)
+        self.assertIn("[mcp_servers.other]", text)
+        self.assertNotIn("[mcp_servers.mas_loop]", text)
+
+    def test_uninstalling_twice_is_harmless(self):
+        installer.run_install()
+        installer.run_uninstall()
+        report = installer.run_uninstall()
+        self.assertEqual(report["mcp"]["codex"]["state"], "absent")
+        self.assertEqual(report["mcp"]["claude"]["state"], "absent")
+
+    def test_the_ledger_is_never_touched(self):
+        # The ledger is the history of every closed loop; it is the one
+        # thing that cannot be regenerated, so uninstall keeps it.
+        state = self.home / ".mas"
+        ledger = state / "ledgers" / "runs.jsonl"
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        ledger.write_text('{"run_id": "R-1"}\n', encoding="utf-8")
+        installer.run_uninstall()
+        self.assertTrue(ledger.exists())
+        self.assertIn("R-1", ledger.read_text(encoding="utf-8"))
+
+    def test_the_report_mentions_that_the_state_is_kept(self):
+        report = installer.run_uninstall()
+        text = installer.format_uninstall_report(report)
+        self.assertIn("kept", text)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

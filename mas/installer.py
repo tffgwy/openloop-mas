@@ -38,17 +38,17 @@ def package_root() -> pathlib.Path:
 
 
 def skills_source() -> pathlib.Path | None:
-    """Directory holding the bundled skill folders, if it is present.
+    """The single source of truth for the bundled skills.
 
-    Two layouts are supported: the wheel layout (``mas/skills/...``) and
-    the source checkout (``<repo>/skills/...``).
+    ``mas/skills/`` is the *only* copy in the repository. It is the copy
+    that travels inside the wheel, so ``pip install openloop-mas`` and a
+    source checkout install byte-identical skills. A second copy used to
+    live at the repository root, and the two could silently drift - the
+    installed skill was then not the skill the repository documented.
     """
     candidate = package_root() / "skills"
     if candidate.is_dir():
         return candidate
-    repo = package_root().parent / "skills"
-    if repo.is_dir():
-        return repo
     return None
 
 
@@ -97,9 +97,17 @@ def install_skills() -> Dict[str, Any]:
     if source is None:
         result["errors"].append("未找到内置 skills 目录")
         return result
-    for skill_dir in sorted(source.iterdir()):
-        if not skill_dir.is_dir():
-            continue
+    # The known skills go first, in a stable order, so the report is
+    # reproducible; anything else found in the source directory is added
+    # afterwards (a third-party skill folder dropped into the package).
+    names = [name for name in PACKAGED_SKILLS if (source / name).is_dir()]
+    names.extend(
+        sorted(
+            p.name for p in source.iterdir() if p.is_dir() and p.name not in names
+        )
+    )
+    for name in names:
+        skill_dir = source / name
         for target_root in skill_targets():
             dest = target_root / skill_dir.name
             try:
@@ -222,6 +230,132 @@ def format_report(report: Dict[str, Any]) -> str:
                 lines.append(f"[OK ] MCP registered ({host}): {detail}")
             else:
                 lines.append(f"[!!] MCP registration failed ({host}): {detail}")
+    return "\n".join(lines)
+
+
+def uninstall_skills() -> Dict[str, Any]:
+    """Remove the MAS skill folders from every target skill directory."""
+    result: Dict[str, Any] = {"removed": [], "errors": []}
+    for target_root in skill_targets():
+        for name in PACKAGED_SKILLS:
+            dest = target_root / name
+            if not dest.is_dir():
+                continue
+            try:
+                shutil.rmtree(dest)
+                result["removed"].append(str(dest))
+            except OSError as exc:
+                result["errors"].append(f"{dest}: {exc}")
+    return result
+
+
+def _unregister_codex() -> Tuple[str, str]:
+    """Remove the MCP server block from ``~/.codex/config.toml``."""
+    config = _home() / ".codex" / "config.toml"
+    if not config.exists():
+        return "absent", str(config)
+    text = config.read_text(encoding="utf-8", errors="ignore")
+    header = f"[mcp_servers.{MCP_SERVER_NAME}]"
+    if header not in text:
+        return "absent", str(config)
+    kept: List[str] = []
+    skipping = False
+    for line in text.splitlines():
+        if line.strip() == header:
+            skipping = True
+            continue
+        if skipping:
+            if line.strip().startswith("["):
+                skipping = False
+            else:
+                continue
+        kept.append(line)
+    try:
+        _backup(config)
+        config.write_text(
+            ("\n".join(kept).rstrip("\n") + "\n") if kept else "",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        return "error", f"{config}: {exc}"
+    return "removed", str(config)
+
+
+def _unregister_claude() -> Tuple[str, str]:
+    """Remove the MCP server entry from ``~/.claude.json``."""
+    config = _home() / ".claude.json"
+    if not config.exists():
+        return "absent", str(config)
+    try:
+        data = json.loads(config.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return "error", f"{config}: {exc}"
+    if not isinstance(data, dict):
+        return "absent", str(config)
+    servers = data.get("mcpServers")
+    if not isinstance(servers, dict) or MCP_SERVER_NAME not in servers:
+        return "absent", str(config)
+    servers.pop(MCP_SERVER_NAME, None)
+    try:
+        _backup(config)
+        config.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+    except OSError as exc:
+        return "error", f"{config}: {exc}"
+    return "removed", str(config)
+
+
+def unregister_mcp() -> Dict[str, Any]:
+    """Remove the MCP server registration from every supported host."""
+    codex_state, codex_detail = _unregister_codex()
+    claude_state, claude_detail = _unregister_claude()
+    return {
+        "codex": {"state": codex_state, "detail": codex_detail},
+        "claude": {"state": claude_state, "detail": claude_detail},
+    }
+
+
+def run_uninstall(skip_skills: bool = False, skip_mcp: bool = False) -> Dict[str, Any]:
+    """Remove the skills and the MCP registration.
+
+    The runtime itself (the pip package, the ``~/.mas`` state directory) is
+    left alone on purpose: ``pip uninstall openloop-mas`` handles the
+    package, and ``~/.mas`` holds the ledger - the history of every closed
+    loop - which is the one thing that cannot be regenerated.
+    """
+    report: Dict[str, Any] = {"skills": {}, "mcp": {}}
+    if not skip_skills:
+        report["skills"] = uninstall_skills()
+    if not skip_mcp:
+        report["mcp"] = unregister_mcp()
+    return report
+
+
+def format_uninstall_report(report: Dict[str, Any]) -> str:
+    """Render the uninstall report for the terminal."""
+    lines: List[str] = []
+    skills = report.get("skills") or {}
+    if skills:
+        removed = skills.get("removed") or []
+        lines.append(f"[OK ] skill folders removed: {len(removed)}")
+        for path in removed:
+            lines.append(f"       {path}")
+        for error in skills.get("errors") or []:
+            lines.append(f"[!!] {error}")
+    mcp = report.get("mcp") or {}
+    if mcp:
+        for host in ("codex", "claude"):
+            entry = mcp.get(host) or {}
+            state = entry.get("state")
+            detail = entry.get("detail")
+            if state == "removed":
+                lines.append(f"[OK ] MCP registration removed ({host}): {detail}")
+            elif state == "absent":
+                lines.append(f"[OK ] no MCP registration to remove ({host}): {detail}")
+            else:
+                lines.append(f"[!!] MCP removal failed ({host}): {detail}")
+    lines.append("[..] the runtime and ~/.mas (ledger, tickets, config) were kept")
     return "\n".join(lines)
 
 

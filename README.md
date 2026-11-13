@@ -499,6 +499,16 @@ python tools/install_openmausbot_mcp.py         # 把 MAS 注册成它的 MCP se
 
 安装器会把它们装进本机能找到的所有 skill 目录（`~/.codex/skills`、`~/.claude/skills`、`~/.agents/skills`、`~/.gemini/skills`）。
 
+> Skill 的**唯一真源是 `mas/skills/`**——它随 wheel 一起分发，所以 `pip install` 装出来的 skill
+> 和从源码装出来的 skill 逐字节相同，不存在两份副本各自漂移的问题。
+
+卸载：
+
+```bash
+mas uninstall       # 移除 skills 与 MCP 注册（保留 ~/.mas 里的账本与配置）
+pip uninstall openloop-mas
+```
+
 ---
 
 ## 目录结构
@@ -520,8 +530,8 @@ openloop-mas/
 │  ├─ doctor.py         安装自检
 │  ├─ demo.py           三个离线场景
 │  └─ teams/            团队模板（default / review / content）
-├─ skills/              Agent Skill 包
-├─ tests/               76 个离线测试
+│  └─ skills/           Agent Skill 包（唯一真源，随 wheel 一起分发）
+├─ tests/               离线测试
 ├─ install.ps1          Windows 一键安装
 ├─ install.sh           macOS / Linux 一键安装
 └─ docs/                架构、方法论、MCP、定位说明
@@ -532,6 +542,8 @@ openloop-mas/
 ## 命令速查
 
 ```bash
+mas install       # 装 skills + 注册 MCP 服务器
+mas uninstall     # 移除 skills + MCP 注册（保留账本）
 mas init          # 生成/更新配置
 mas init --wizard # 交互式向导，一步步配好
 mas run           # 跑一个闭环任务

@@ -1,12 +1,13 @@
-"""The packaged skills must stay identical to the repository skills.
+"""The packaged skills must be the only copy of the skills.
 
-``mas/skills/`` is a copy of ``skills/`` that travels inside the wheel, so
-that ``pip install openloop-mas`` can install the skills without the
-repository being present. A copy is a duplication risk: if somebody edits
-``skills/mas-loop/SKILL.md`` and forgets the copy, the installed skill
-silently differs from the documented one.
+``mas/skills/`` is the single source of truth: it is the copy that travels
+inside the wheel, so ``pip install openloop-mas`` and a source checkout
+install byte-identical skills. A second copy used to live at the repository
+root, and the two could silently drift - the installed skill was then not
+the skill the repository documented.
 
-This test fails loudly when the two drift apart.
+These tests fail loudly when a duplicate reappears or when the packaging
+declaration stops covering the skill files.
 """
 
 try:  # pragma: no cover - the two import styles cover two runners
@@ -19,46 +20,59 @@ except ImportError:  # loaded as a top-level module (unittest -s tests)
 
 
 import pathlib
+import re
 import unittest
 
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
-_SOURCE = _ROOT / "skills"
 _PACKAGED = _ROOT / "mas" / "skills"
 
 
-def _normalise(text: str) -> str:
-    # The repository stores CRLF, the wheel stores LF. Compare the content,
-    # not the line endings.
-    return text.replace("\r\n", "\n")
-
-
 class PackagedSkillsTest(unittest.TestCase):
-    def test_the_same_skill_folders_exist_in_both_places(self):
-        self.assertTrue(_SOURCE.is_dir(), "skills/ is missing")
+    def test_the_packaged_skills_exist(self):
         self.assertTrue(_PACKAGED.is_dir(), "mas/skills/ is missing")
-        source_names = {p.name for p in _SOURCE.iterdir() if p.is_dir()}
-        packaged_names = {p.name for p in _PACKAGED.iterdir() if p.is_dir()}
-        self.assertEqual(source_names, packaged_names)
 
-    def test_every_skill_file_is_identical(self):
-        for skill_dir in sorted(p for p in _SOURCE.iterdir() if p.is_dir()):
-            for source_file in sorted(skill_dir.rglob("*")):
-                if not source_file.is_file():
-                    continue
-                relative = source_file.relative_to(_SOURCE)
-                packaged_file = _PACKAGED / relative
-                self.assertTrue(
-                    packaged_file.exists(),
-                    f"mas/skills/{relative} is missing - re-run the packaging step",
-                )
-                self.assertEqual(
-                    _normalise(source_file.read_text(encoding="utf-8")),
-                    _normalise(packaged_file.read_text(encoding="utf-8")),
-                    f"mas/skills/{relative} differs from skills/{relative}",
-                )
+    def test_the_three_known_skills_are_present(self):
+        names = {p.name for p in _PACKAGED.iterdir() if p.is_dir()}
+        for expected in ("mas-loop", "mas-review", "mas-scaffold"):
+            self.assertIn(expected, names)
+
+    def test_every_skill_has_a_manifest(self):
+        for skill_dir in sorted(p for p in _PACKAGED.iterdir() if p.is_dir()):
+            manifest = skill_dir / "SKILL.md"
+            self.assertTrue(
+                manifest.exists(),
+                f"mas/skills/{skill_dir.name}/SKILL.md is missing",
+            )
+            self.assertIn("---", manifest.read_text(encoding="utf-8"))
+
+    def test_there_is_no_duplicate_copy_at_the_repository_root(self):
+        # The duplicate used to live at <repo>/skills. If it comes back, the
+        # two copies can drift again, so this test has to keep failing.
+        self.assertFalse(
+            (_ROOT / "skills").exists(),
+            "the repository root must not hold a second copy of the skills",
+        )
+
+    def test_the_installers_delegate_to_the_single_implementation(self):
+        # Both installers must call `mas install` instead of implementing
+        # their own copy loop. Two implementations are two behaviours, and
+        # they drift - which is exactly the bug this layout removes.
+        delegate = re.compile(r'"-m",\s*"mas",\s*"install"|-m mas install')
+        second_source = re.compile(r'skills/\*|/skills"|"skills"')
+        for script in ("install.sh", "install.ps1"):
+            text = (_ROOT / script).read_text(encoding="utf-8")
+            self.assertRegex(
+                text,
+                delegate,
+                f"{script} must delegate the skills+MCP work to `mas install`",
+            )
+            self.assertIsNone(
+                second_source.search(text),
+                f"{script} must not install from a second skills directory",
+            )
 
     def test_the_packaged_skills_are_declared_in_the_wheel(self):
-        pp = ( _ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        pp = (_ROOT / "pyproject.toml").read_text(encoding="utf-8")
         self.assertIn("skills/*/SKILL.md", pp)
 
 

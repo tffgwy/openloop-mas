@@ -80,6 +80,27 @@ def run_doctor(config: Dict[str, Any] | None = None, allow_network: bool = True)
     except OSError as exc:
         results.append(_check("ledger", "fail", f"不可写: {exc}"))
 
+    # The skills travel inside the package. If they are missing from the
+    # installed runtime, `mas install` cannot do its job - and that is a
+    # broken installation, not a user mistake.
+    from mas.installer import PACKAGED_SKILLS, skills_source
+
+    source = skills_source()
+    if source is None:
+        results.append(_check("skills_source", "fail", "包内找不到 mas/skills 目录"))
+    else:
+        missing = [
+            name for name in PACKAGED_SKILLS if not (source / name / "SKILL.md").exists()
+        ]
+        if missing:
+            results.append(
+                _check("skills_source", "fail", f"{source} 缺少: {', '.join(missing)}")
+            )
+        else:
+            results.append(
+                _check("skills_source", "ok", f"{source}（{len(PACKAGED_SKILLS)} 个 skill）")
+            )
+
     home = pathlib.Path(os.path.expanduser("~"))
     for label, target in (
         ("skill_codex", home / ".codex" / "skills" / "mas-loop" / "SKILL.md"),
@@ -88,7 +109,7 @@ def run_doctor(config: Dict[str, Any] | None = None, allow_network: bool = True)
         if target.exists():
             results.append(_check(label, "ok", str(target)))
         else:
-            results.append(_check(label, "warn", f"未安装: {target}"))
+            results.append(_check(label, "warn", f"未安装: {target}（运行 mas install）"))
 
     codex_cfg = home / ".codex" / "config.toml"
     if codex_cfg.exists():

@@ -67,5 +67,32 @@ class DoctorCleanInstallTest(unittest.TestCase):
         self.assertTrue(statuses <= {"ok", "warn", "fail"})
 
 
+class DoctorSkillsSourceTest(unittest.TestCase):
+    """The packaged skills must be present in the installed runtime.
+
+    If they are not, ``mas install`` cannot do its job - the user gets a
+    successful-looking install with no skills at all.
+    """
+
+    def test_the_packaged_skills_are_reported_as_present(self):
+        checks = run_doctor()
+        by_name = {c["check"]: c for c in checks}
+        self.assertIn("skills_source", by_name)
+        self.assertEqual(by_name["skills_source"]["status"], "ok")
+
+    def test_a_missing_skill_is_a_failure_not_a_warning(self):
+        from mas import installer
+
+        original = installer.PACKAGED_SKILLS
+        try:
+            installer.PACKAGED_SKILLS = ("mas-loop", "not-a-real-skill")
+            checks = run_doctor()
+        finally:
+            installer.PACKAGED_SKILLS = original
+        by_name = {c["check"]: c for c in checks}
+        self.assertEqual(by_name["skills_source"]["status"], "fail")
+        self.assertIn("not-a-real-skill", by_name["skills_source"]["detail"])
+
+
 if __name__ == "__main__":
     unittest.main()

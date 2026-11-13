@@ -14,7 +14,7 @@ from mas.config import load_config, load_persisted_config, save_config
 from mas.demo import run_scenarios
 from mas.doctor import run_doctor, summarize
 from mas.engine import LoopEngine
-from mas.installer import format_report, run_install
+from mas.installer import format_report, format_uninstall_report, run_install, run_uninstall
 from mas.orchestration import CANDIDATE_ANGLES
 from mas.report import build_report, ledger_markdown, render_markdown, replay_trace
 from mas.setup import format_verify, run_verify, run_wizard
@@ -99,6 +99,28 @@ def cmd_install(args: argparse.Namespace) -> int:
         print("next:")
         print("  mas doctor        # 自检")
         print("  mas demo          # 离线跑通三个闭环场景")
+    return 0
+
+
+def cmd_uninstall(args: argparse.Namespace) -> int:
+    """Remove the agent skills and the MCP server registration.
+
+    The runtime package and the ``~/.mas`` state directory are kept: the
+    ledger in there is the history of every closed loop and cannot be
+    regenerated. ``pip uninstall openloop-mas`` removes the package.
+    """
+    report = run_uninstall(
+        skip_skills=args.skip_skills,
+        skip_mcp=args.skip_mcp,
+    )
+    if getattr(args, "json", False):
+        _print(report, as_json=True)
+    else:
+        print(format_uninstall_report(report))
+        print("")
+        print("next:")
+        print("  pip uninstall openloop-mas   # 移除运行时")
+        print("  rm -rf ~/.mas                # 移除配置与账本（不可恢复）")
     return 0
 
 
@@ -382,6 +404,12 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--skip-mcp", action="store_true", help="不注册 MCP 服务器")
     add_json(install)
     install.set_defaults(func=cmd_install)
+
+    uninstall = sub.add_parser("uninstall", help="移除 skills 与 MCP 注册（保留账本）")
+    uninstall.add_argument("--skip-skills", action="store_true", help="不移除 agent skills")
+    uninstall.add_argument("--skip-mcp", action="store_true", help="不移除 MCP 注册")
+    add_json(uninstall)
+    uninstall.set_defaults(func=cmd_uninstall)
 
     init = sub.add_parser("init", help="生成/更新本地配置")
     init.add_argument("--wizard", action="store_true", help="交互式向导，一步步生成配置")
