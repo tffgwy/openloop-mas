@@ -950,3 +950,19 @@ call(good token) POST    -> 200  {"tool": "mas_status", "result": {"config": {"p
 
 - 只改 `mas/ledger.py` 的 `append` 路径，不改变账本格式、不改变任何一条已写记录。
 - 本机真实账本 `C:\Users\Administrator\.mas\ledgers\runs.jsonl` 不受影响（新代码只影响新写入的条目序号计算方式，且序号值与旧实现一致）。
+
+### v0.5.0 发布与最终验证
+
+`62d04a4`（账本性能修复）触发 4 个 workflow：ci / pages / install 全部 success，release success。Release `v0.5.0`：`openloop_mas-0.5.0-py3-none-any.whl`（81,507 B）+ `openloop_mas-0.5.0.tar.gz`（110,199 B）。
+
+全新 venv 装 v0.5.0 wheel：
+
+```
+openloop-mas 0.5.0
+```
+
+`mas run`（真实端点）：`R-44fa0ee13b` / `status=closed` / 迭代 1 次 / 4085 tokens，两条机检标准均 `pass`。
+
+本机安装同步到 0.5.0（`install.ps1 -SkipDemo` 全部 `[OK]`），常驻服务重启后 `/health` → `"version": "0.5.0"`；Tailscale HTTPS 鉴权矩阵 7 条探针全部符合预期。
+
+最终测试计数：**166 tests OK (skipped=4)**，`pytest tests -q` → 162 passed / 4 skipped / 8 subtests，`ruff check` → All checks passed。
