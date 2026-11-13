@@ -106,6 +106,10 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             "personas": (review or {}).get("personas") or [],
             "usable": (review or {}).get("usable"),
             "skipped": (review or {}).get("skipped"),
+            # A reviewer that never answered is not an abstention. The
+            # number is shown so the report cannot claim a unanimous pass
+            # that the panel never reached.
+            "missing": (review or {}).get("missing"),
         },
         "errors": errors,
         "started_at": str(rows[0].get("ts")) if rows else "",
@@ -186,6 +190,11 @@ def render_markdown(report: Dict[str, Any]) -> str:
                 f"- 对抗评审：模式 {review.get('mode')}，可用评审 {review.get('usable')}，"
                 f"跳过 {review.get('skipped')}"
             )
+            missing = review.get("missing")
+            if missing:
+                lines.append(
+                    f"  - ⚠ 有 {missing} 位评审没有给出判定（缺席不等于弃权通过）"
+                )
             personas = review.get("personas") or []
             if personas:
                 lines.append(f"  - 评审视角：{', '.join(personas)}")
@@ -265,7 +274,10 @@ def _short_detail(row: Dict[str, Any]) -> str:
             f"{c.get('angle')}:{'选中' if c.get('selected') else '淘汰'}" for c in candidates
         )[:300]
     if role == "review":
-        return f"模式={row.get('mode')} 可用={row.get('usable')} 跳过={row.get('skipped')}"
+        return (
+            f"模式={row.get('mode')} 可用={row.get('usable')} "
+            f"跳过={row.get('skipped')} 缺席={row.get('missing')}"
+        )
     if role == "error":
         return str(row.get("error", ""))[:300]
     if role == "planner":

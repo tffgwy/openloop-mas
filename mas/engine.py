@@ -514,6 +514,16 @@ class LoopEngine:
                             scores = self._merge_review_scores(crits, checks, extra)
                         else:
                             scores = self._merge_scores(crits, checks, extra)
+                        # The re-ask answered only the missing criteria.
+                        # The other criteria still carry the panel's own
+                        # verdicts, so the aggregate is rebuilt from the
+                        # merged panel - not from the re-ask alone.
+                        if self.reviewers > 1:
+                            verdict = extra
+
+                # The ledger entry describes the panel the engine finally
+                # decided on - including everything the re-ask added.
+                self._log_review(verify_state, verdict)
 
                 # Only the required criteria decide whether the loop closes.
                 # An optional criterion may fail - it is recorded, it is
@@ -732,32 +742,50 @@ class LoopEngine:
         results = run_parallel(
             [self._make_reviewer_task(verify_state, persona) for persona in personas]
         )
-        reviews: List[Dict[str, Any]] = []
+        # ``panel`` keeps one slot per persona, including the failures.
+        # Dropping a failed reviewer would shrink the panel silently and
+        # the aggregate would then report "2/2" for a panel of three.
+        panel: List[Optional[Dict[str, Any]]] = []
         errors: List[str] = []
         tokens = 0
         for index, item in enumerate(results):
             if isinstance(item, ParallelFailure):
                 errors.append(f"{personas[index]}: {item.message}")
+                panel.append(None)
                 continue
-            reviews.append(item["verdict"])
+            panel.append(item["verdict"])
             tokens += int(item["verdict"].get("_usage", {}).get("total_tokens", 0))
-        aggregate = aggregate_reviews(reviews, mode=self.review_mode)
+        reviews = [verdict for verdict in panel if verdict]
+        aggregate = aggregate_reviews(
+            reviews, mode=self.review_mode, expected=len(personas)
+        )
         aggregate["_usage"] = {"total_tokens": tokens}
         aggregate["errors"] = errors
         aggregate["personas"] = personas
+        # Kept so a targeted re-ask can merge into the same panel instead
+        # of replacing it with a single reviewer.
+        aggregate["_panel"] = panel
+        return aggregate
+
+    def _log_review(self, verify_state: Dict[str, Any], aggregate: Dict[str, Any]) -> None:
+        """Write the *final* panel state to the ledger.
+
+        This runs after the targeted re-ask, so the entry shows the
+        aggregate the engine actually decided on - not the first one.
+        """
         self._log(
             verify_state["run_id"], verify_state["task_id"], verify_state["attempt"],
             "review",
             {
                 "mode": self.review_mode,
-                "personas": personas,
+                "personas": aggregate.get("personas") or [],
                 "usable": aggregate.get("usable"),
                 "skipped": aggregate.get("skipped"),
-                "errors": errors,
+                "missing": aggregate.get("missing"),
+                "errors": aggregate.get("errors") or [],
                 "scores": aggregate.get("scores"),
             },
         )
-        return aggregate
 
     @staticmethod
     def _all_judged(scores: List[Dict[str, Any]]) -> bool:
@@ -794,9 +822,71 @@ class LoopEngine:
             }
             for cid in missing
         ]
-        extra = self._call_json(
-            "verifier", follow_state, extra=self._missing_criteria_instruction(missing)
-        )
+        instruction = self._missing_criteria_instruction(missing)
+
+        if self.reviewers > 1:
+            # The panel is asked again - all of it, with the same
+            # personas. Asking one plain reviewer and calling that the
+            # review turned "3/3" into "1/1" and handed the closing
+            # decision to a single opinion.
+            personas = pick_personas(self.reviewers)
+            results = run_parallel(
+                [
+                    self._make_reviewer_task(follow_state, persona, extra=instruction)
+                    for persona in personas
+                ]
+            )
+            reask: List[Optional[Dict[str, Any]]] = []
+            tokens = 0
+            for item in results:
+                if isinstance(item, ParallelFailure):
+                    reask.append(None)
+                    continue
+                reask.append(item["verdict"])
+                tokens += int(item["verdict"].get("_usage", {}).get("total_tokens", 0))
+
+            # Every member keeps its own answers. The re-ask only fills
+            # the criteria that member left open - a single reviewer's
+            # opinion is never broadcast to the whole panel.
+            panel = verdict.get("_panel")
+            if not isinstance(panel, list) or not panel:
+                panel = [None] * len(personas)
+            merged_panel: List[Optional[Dict[str, Any]]] = []
+            for index, member in enumerate(panel):
+                if member is None:
+                    merged_panel.append(None)
+                    continue
+                member = dict(member)
+                scores = [
+                    dict(s) for s in (member.get("scores") or []) if isinstance(s, dict)
+                ]
+                have = {str(s.get("id")) for s in scores}
+                answer = reask[index] if index < len(reask) else None
+                if answer:
+                    for item in answer.get("scores") or []:
+                        if (
+                            isinstance(item, dict)
+                            and item.get("id")
+                            and str(item["id"]) not in have
+                            and str(item["id"]) in set(missing)
+                        ):
+                            scores.append(dict(item))
+                            have.add(str(item["id"]))
+                member["scores"] = scores
+                merged_panel.append(member)
+
+            rebuilt = aggregate_reviews(
+                [m for m in merged_panel if m],
+                mode=self.review_mode,
+                expected=len(merged_panel),
+            )
+            rebuilt["_usage"] = {"total_tokens": tokens}
+            rebuilt["errors"] = verdict.get("errors", [])
+            rebuilt["personas"] = verdict.get("personas", personas)
+            rebuilt["_panel"] = merged_panel
+            return rebuilt
+
+        extra = self._call_json("verifier", follow_state, extra=instruction)
         # Keep the verdicts that already arrived; only the new ones count.
         merged_scores = list(verdict.get("scores") or [])
         known = {str(item.get("id")) for item in merged_scores if isinstance(item, dict)}
@@ -819,12 +909,21 @@ class LoopEngine:
             "criteria you already judged."
         )
 
-    def _make_reviewer_task(self, verify_state: Dict[str, Any], persona: str) -> Any:
+    def _make_reviewer_task(
+        self,
+        verify_state: Dict[str, Any],
+        persona: str,
+        extra: str = "",
+    ) -> Any:
         def task(index: int) -> Dict[str, Any]:
             state = dict(verify_state)
             state["persona"] = persona
             state["persona_instruction"] = persona_instruction(persona)
-            verdict = self._call_json("verifier", state, extra=persona_instruction(persona))
+            verdict = self._call_json(
+                "verifier",
+                state,
+                extra=(extra + " " + persona_instruction(persona)).strip(),
+            )
             return {"verdict": verdict}
 
         return task
@@ -842,6 +941,7 @@ class LoopEngine:
         reviewer consensus.
         """
         return LoopEngine._merge_verdict_scores(crits, checks, [verdict], with_votes=True)
+
 
 
     # --------------------------------------------------------------- helpers

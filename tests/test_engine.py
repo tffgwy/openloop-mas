@@ -637,3 +637,154 @@ class DegenerateArgumentTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAdversarialPanelIntegrity(unittest.TestCase):
+    """The panel must not shrink silently.
+
+    Found on the real endpoint: a panel of three reviewers answered
+    twice. The absent reviewer was dropped from the review list, so the
+    aggregate saw two verdicts and reported "2/2, all passed" - the
+    report claimed a unanimous pass that never happened.
+    """
+
+    class _PanelProvider:
+        """Answers as a panel, but one member always stays silent."""
+
+        name = "panel"
+
+        def __init__(self, silent_personas=(), answer_ids=("c1",), pass_value=True):
+            self.model = "panel-1"
+            self.options = {}
+            self.calls = 0
+            self.silent_personas = set(silent_personas)
+            self.answer_ids = tuple(answer_ids)
+            self.pass_value = pass_value
+            self.verifier_calls = 0
+
+        def complete(self, *, system, prompt, role="worker", expect_json=False, max_tokens=4000):
+            self.calls += 1
+            if role == "worker":
+                return {
+                    "text": "# 交付物\n\n" + ("内容" * 200),
+                    "usage": {"total_tokens": 20},
+                    "raw": {},
+                }
+            if role == "planner":
+                return {
+                    "text": json.dumps({"summary": "s", "plan": ["p"], "risks": []}),
+                    "usage": {"total_tokens": 10},
+                    "raw": {},
+                }
+            if role == "reflector":
+                return {
+                    "text": json.dumps({"summary": "r", "issues": [], "next_action": "revise"}),
+                    "usage": {"total_tokens": 10},
+                    "raw": {},
+                }
+            if role == "verifier":
+                self.verifier_calls += 1
+                persona = ""
+                for candidate in ("strict", "skeptic", "completeness", "reader"):
+                    if candidate in prompt:
+                        persona = candidate
+                        break
+                if persona in self.silent_personas:
+                    # A reviewer that answers nothing at all.
+                    return {
+                        "text": "I am not able to produce a verdict.",
+                        "usage": {"total_tokens": 5},
+                        "raw": {},
+                    }
+                # On a re-ask the panel is asked about the criteria it
+                # missed, so the provider answers those as well.
+                ids = list(self.answer_ids)
+                if "missing_criteria" in prompt or "did not return a verdict" in prompt:
+                    for cid in ("c1", "c2", "c3"):
+                        if cid not in ids:
+                            ids.append(cid)
+                scores = [
+                    {"id": cid, "pass": self.pass_value, "note": f"{persona} said ok"}
+                    for cid in ids
+                ]
+                return {
+                    "text": json.dumps({"verdict": "pass", "scores": scores, "issues": []}),
+                    "usage": {"total_tokens": 15},
+                    "raw": {},
+                }
+            return {
+                "text": json.dumps({"decision": "revise", "reason": "r"}),
+                "usage": {"total_tokens": 5},
+                "raw": {},
+            }
+
+    def _engine(self, tmp, provider, reviewers=3, mode="all"):
+        config = make_config(tmp)
+        config["orchestration"] = {"parallel_workers": 1, "reviewers": reviewers, "review_mode": mode}
+        return LoopEngine(config, provider=provider, team=load_team("default"))
+
+    def test_a_silent_reviewer_does_not_shrink_the_panel(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = self._PanelProvider(silent_personas=("skeptic",))
+            engine = self._engine(tmp, provider)
+            result = engine.run(
+                "写一段短文",
+                [{"id": "c1", "desc": "有结论"}],
+                reviewers=3,
+                review_mode="all",
+            )
+            self.assertFalse(result.closed, "an incomplete panel must not close the loop")
+            review_rows = [r for r in engine.ledger.entries() if r.get("role") == "review"]
+            self.assertTrue(review_rows)
+            row = review_rows[-1]
+            self.assertEqual(row["personas"], ["strict", "skeptic", "completeness"])
+            self.assertEqual(row["usable"], 2)
+            self.assertEqual(row["missing"], 1)
+            score = row["scores"][0]
+            self.assertFalse(score["pass"])
+            self.assertEqual(score["votes"], "2/3")
+            self.assertEqual(score["absent_votes"], 1)
+
+    def test_a_complete_panel_still_closes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = self._PanelProvider()
+            engine = self._engine(tmp, provider)
+            result = engine.run(
+                "写一段短文",
+                [{"id": "c1", "desc": "有结论"}],
+                reviewers=3,
+                review_mode="all",
+            )
+            self.assertTrue(result.closed)
+            row = [r for r in engine.ledger.entries() if r.get("role") == "review"][-1]
+            self.assertEqual(row["usable"], 3)
+            self.assertEqual(row["missing"], 0)
+            self.assertEqual(row["scores"][0]["votes"], "3/3")
+
+    def test_the_reask_keeps_the_panel_size(self):
+        # One reviewer judges c1 but forgets c2. The re-ask must go to the
+        # whole panel - asking a single plain reviewer collapsed the
+        # reported votes from "3/3" to "1/1".
+        with tempfile.TemporaryDirectory() as tmp:
+            provider = self._PanelProvider(answer_ids=("c1",))
+            engine = self._engine(tmp, provider)
+            result = engine.run(
+                "写一段短文",
+                [
+                    {"id": "c1", "desc": "有结论"},
+                    {"id": "c2", "desc": "也要有结论"},
+                ],
+                reviewers=3,
+                review_mode="all",
+            )
+            review_rows = [r for r in engine.ledger.entries() if r.get("role") == "review"]
+            self.assertTrue(review_rows)
+            row = review_rows[-1]
+            self.assertEqual(row["personas"], ["strict", "skeptic", "completeness"])
+            score_ids = {s["id"] for s in row["scores"]}
+            self.assertIn("c2", score_ids)
+            for score in row["scores"]:
+                self.assertNotEqual(
+                    score.get("votes"), "1/1",
+                    "a single reviewer must never speak for the whole panel",
+                )

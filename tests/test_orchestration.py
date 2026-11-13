@@ -204,7 +204,12 @@ class TestAggregateReviews(unittest.TestCase):
         self.assertEqual(merged["skipped"], 2)
         self.assertEqual(merged["verdict"], "fail")
 
-    def test_missing_reviewer_does_not_block_the_others(self):
+    def test_missing_reviewer_is_reported_not_hidden(self):
+        # Before v0.7.13 this test asserted that a missing reviewer let
+        # the others pass - which is exactly how a panel of three that
+        # answered twice reported "2/2, all passed". The missing
+        # reviewer is now visible in ``missing`` and, in the strict
+        # reading, blocks the criterion.
         reviews = [
             self._review([{"id": "c1", "pass": True, "note": "a"}]),
             {"scores": []},
@@ -212,7 +217,77 @@ class TestAggregateReviews(unittest.TestCase):
         merged = aggregate_reviews(reviews, mode="all")
         self.assertEqual(merged["usable"], 1)
         self.assertEqual(merged["skipped"], 1)
+        self.assertEqual(merged["missing"], 1)
+        self.assertFalse(merged["scores"][0]["pass"])
+        self.assertEqual(merged["scores"][0]["votes"], "1/2")
+
+    def test_a_weaker_mode_still_lets_the_others_through(self):
+        reviews = [
+            self._review([{"id": "c1", "pass": True, "note": "a"}]),
+            {"scores": []},
+        ]
+        merged = aggregate_reviews(reviews, mode="majority")
         self.assertTrue(merged["scores"][0]["pass"])
+
+    def test_an_absent_reviewer_cannot_masquerade_as_unanimous(self):
+        # Found on the real endpoint: a panel of three answered twice.
+        # The absent third reviewer was counted as neither pass nor fail,
+        # so the aggregate reported "2/2, all passed" - a unanimous pass
+        # that never happened.
+        reviews = [
+            self._review([{"id": "c1", "pass": True, "note": "a"}]),
+            self._review([{"id": "c1", "pass": True, "note": "b"}]),
+        ]
+        merged = aggregate_reviews(reviews, mode="all", expected=3)
+        self.assertEqual(merged["usable"], 2)
+        self.assertEqual(merged["missing"], 1)
+        self.assertFalse(merged["scores"][0]["pass"])
+        self.assertEqual(merged["verdict"], "fail")
+        # The vote string must not hide the missing reviewer.
+        self.assertEqual(merged["scores"][0]["votes"], "2/3")
+        self.assertEqual(merged["scores"][0]["absent_votes"], 1)
+
+    def test_a_weaker_mode_tolerates_an_absent_reviewer(self):
+        reviews = [
+            self._review([{"id": "c1", "pass": True, "note": "a"}]),
+            self._review([{"id": "c1", "pass": True, "note": "b"}]),
+        ]
+        merged = aggregate_reviews(reviews, mode="majority", expected=3)
+        self.assertTrue(merged["scores"][0]["pass"])
+        self.assertEqual(merged["scores"][0]["votes"], "2/3")
+        self.assertEqual(merged["missing"], 1)
+
+    def test_an_absent_reviewer_is_reported_in_the_issues(self):
+        merged = aggregate_reviews(
+            [self._review([{"id": "c1", "pass": True, "note": "a"}])],
+            mode="all",
+            expected=3,
+        )
+        self.assertTrue(any("no usable verdict" in issue for issue in merged["issues"]))
+
+    def test_a_complete_panel_keeps_the_plain_vote_count(self):
+        reviews = [
+            self._review([{"id": "c1", "pass": True, "note": "a"}]),
+            self._review([{"id": "c1", "pass": True, "note": "b"}]),
+            self._review([{"id": "c1", "pass": True, "note": "c"}]),
+        ]
+        merged = aggregate_reviews(reviews, mode="all", expected=3)
+        self.assertTrue(merged["scores"][0]["pass"])
+        self.assertEqual(merged["scores"][0]["votes"], "3/3")
+        self.assertEqual(merged["scores"][0]["absent_votes"], 0)
+        self.assertEqual(merged["missing"], 0)
+
+    def test_a_criterion_nobody_judged_is_not_silently_passed(self):
+        # One reviewer judged c1 but not c2. The aggregate knows the panel
+        # was three, so c2 has absent votes and cannot pass.
+        reviews = [
+            self._review([{"id": "c1", "pass": True, "note": "a"}]),
+            self._review([{"id": "c1", "pass": True, "note": "b"}]),
+        ]
+        merged = aggregate_reviews(reviews, mode="all", expected=3)
+        ids = {s["id"] for s in merged["scores"]}
+        self.assertEqual(ids, {"c1"})
+        self.assertFalse(merged["scores"][0]["pass"])
 
 
 class TestProviderChain(unittest.TestCase):

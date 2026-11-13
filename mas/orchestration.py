@@ -142,6 +142,7 @@ def _guard(task: Callable[[int], Any], index: int) -> Any:
 def aggregate_reviews(
     reviews: List[Dict[str, Any]],
     mode: str = "all",
+    expected: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Aggregate several verifier verdicts into one.
 
@@ -162,6 +163,15 @@ def aggregate_reviews(
     """
     usable = [r for r in reviews if isinstance(r, dict) and r.get("scores")]
     skipped = [r for r in reviews if not (isinstance(r, dict) and r.get("scores"))]
+    # ``expected`` is how many reviewers were *asked*. A reviewer that
+    # never answered is not an abstention: it is a missing vote. Counting
+    # it as neither pass nor fail made the aggregate look unanimous
+    # ("2/2, all passed") while a third reviewer had simply failed to
+    # produce a verdict.
+    if expected is None:
+        expected = len(reviews)
+    expected = max(expected, len(reviews))
+    missing = max(0, expected - len(usable))
     if not usable:
         return {
             "scores": [],
@@ -170,6 +180,7 @@ def aggregate_reviews(
             "reviewers": len(reviews),
             "usable": 0,
             "skipped": len(skipped),
+            "missing": missing,
             "mode": mode,
         }
 
@@ -192,12 +203,23 @@ def aggregate_reviews(
         decisions = [_as_bool(v.get("pass")) for v in votes]
         passed_votes = [v for v, d in zip(votes, decisions, strict=True) if d is True]
         unreadable = [v for v, d in zip(votes, decisions, strict=True) if d is None]
+        # A criterion that some reviewer never judged at all is missing
+        # votes, not failed votes. The panel did not reach a verdict on it.
+        judged = len(votes)
+        absent = max(0, expected - judged)
         if mode == "any":
             passed = bool(passed_votes)
         elif mode == "majority":
-            passed = len(passed_votes) * 2 > len(votes)
+            passed = len(passed_votes) * 2 > judged
         else:
-            passed = len(passed_votes) == len(votes)
+            passed = len(passed_votes) == judged
+        # In the strict reading an incomplete panel cannot close a
+        # criterion: the whole point of running several reviewers is that
+        # the criterion was checked by all of them. The weaker readings
+        # (majority / any) tolerate an absent reviewer - the user asked
+        # for a weaker guarantee there.
+        if absent and mode == "all":
+            passed = False
         notes = [str(v.get("note", "")).strip() for v in votes if v.get("note")]
         if passed:
             note = "; ".join(notes) if notes else f"{len(passed_votes)}/{len(votes)} reviewers passed"
@@ -212,19 +234,34 @@ def aggregate_reviews(
             note = (note + "; " if note else "") + (
                 f"{len(unreadable)} reviewer(s) gave an unreadable verdict"
             )
+        if absent:
+            note = (note + "; " if note else "") + (
+                f"{absent} reviewer(s) gave no verdict for this criterion"
+            )
         merged.append(
             {
                 "id": criterion_id,
                 "pass": passed,
                 "note": note,
                 "source": "review",
-                "votes": f"{len(passed_votes)}/{len(votes)}",
+                # The vote string states how many reviewers *answered*
+                # and how many of them said yes. A panel of three that
+                # only got two answers reads "2/2" and hides the fact
+                # that one reviewer never showed up, so the denominator
+                # is the panel size whenever the panel was incomplete.
+                "votes": f"{len(passed_votes)}/{judged}" if not absent else f"{len(passed_votes)}/{expected}",
                 "unreadable_votes": len(unreadable),
+                "absent_votes": absent,
+                "judged_by": judged,
             }
         )
 
     verdict = "pass" if merged and all(m["pass"] for m in merged) else "fail"
     issues: List[str] = []
+    if missing:
+        issues.append(
+            f"{missing} of {expected} reviewer(s) produced no usable verdict"
+        )
     for review in usable:
         for issue in review.get("issues") or []:
             text = str(issue)
@@ -237,6 +274,7 @@ def aggregate_reviews(
         "reviewers": len(reviews),
         "usable": len(usable),
         "skipped": len(skipped),
+        "missing": missing,
         "mode": mode,
     }
 

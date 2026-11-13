@@ -1991,3 +1991,52 @@ X-MAS-Token 200
 - 真实模型目前很少自相矛盾；这个场景需要人工构造的输入才会触发，
   属于**代码审计 + 离线复现**得到的缺陷，不是真实端点现场发现的。
 - PyPI 发布状态见下节（仍未完成）。
+
+### N. v0.7.13 — 缺席的评审不能再冒充弃权票（真实端点现场发现）
+
+**缺陷来源与前两版的区别**：v0.7.11 / v0.7.12 的假闭合缺陷是**代码审计 + 离线复现**发现的；
+这一版的缺陷是在**真实端点**上跑对抗评审时**现场发现**的——评审面板间歇性地少答：
+某位评审调用失败或超时后，那次评审结果里就没有他。
+
+**缺陷现象（修复前）**：3 位评审只答了 2 位，账本却写 `votes: "2/2"`、`pass: true`，
+报告宣称「全票通过」。缺席者被算作「既非通过也非失败」，于是**一票缺席等于一致通过**。
+
+**修复落点**：
+
+| 文件 | 修复内容 |
+| --- | --- |
+| `mas/orchestration.py` | `aggregate_reviews(reviews, mode, expected=None)`；缺席票在 `all` 模式判不通过；票数显示 `passed/expected`；新增 `absent_votes` / `judged_by`；聚合 issues 列出缺席人数 |
+| `mas/engine.py` | `_review()` 保留每个 persona 的槽位（失败者存 `None`）；重问走**完整面板**、每人只补自己漏掉的标准且只保留自己的答案；新增 `_log_review()` 在重问后落盘**最终**聚合 |
+| `mas/report.py` | `run_summary` 增 `missing`；Markdown 报告在有缺席时输出告警；账本摘要行增「缺席」 |
+
+**测试**（299 OK, skipped=4；v0.7.12 为 287）：
+
+- `tests/test_orchestration.py` 新增 6 个，含 `test_an_absent_reviewer_cannot_masquerade_as_unanimous`、
+  `test_a_weaker_mode_tolerates_an_absent_reviewer`、`test_an_absent_reviewer_is_reported_in_the_issues`；
+- `tests/test_engine.py` 新增 `class TestAdversarialPanelIntegrity`（含 `_PanelProvider`，可让指定 persona 沉默 / 只答部分 criterion）；
+- `tests/test_http_report.py` 新增 `class TestPanelShortfallIsVisible`；
+- 旧测试 `test_missing_reviewer_does_not_block_the_others` **编码的正是这个 bug**，已改写为
+  `test_missing_reviewer_is_reported_not_hidden` + `test_a_weaker_mode_still_lets_the_others_through`。
+
+**本轮实测证据**：
+
+| 项 | 结果 |
+| --- | --- |
+| `unittest discover` | **299 OK (skipped=4)** |
+| `ruff check` | All checks passed! |
+| `mas bench` | 9/9，闭环率 100%，账本一致性 100% |
+| `mas demo` | closure / stagnation / budget 三场景全 OK |
+| 真实端点 `claude-opus-5-5` @ `127.0.0.1:16024/v1`，`--reviewers 3 --review-mode all --parallel 2` | exit 0，`closed`，迭代 1，token 10791，`votes=3/3`、`absent_votes=0`、`judged_by=3`、`missing=0` |
+| 确定性缺陷复现（`work/_prove713.py`，强制 1 位 persona 沉默） | `closed=False` / `status=escalated` / `usable=2, skipped=1, missing=1` / `votes=2/3` / `absent_votes=1` → **VERDICT: PASS - an incomplete panel cannot close the loop** |
+
+**边界说明（v0.7.13）**：
+
+- 本轮真实端点实测**仍只覆盖** `claude-opus-5-5` @ `http://127.0.0.1:16024/v1`（免鉴权）；
+  Kimi / DeepSeek / Qwen / 原生 OpenAI 本机无端点，**未实测**。
+- 「3 位只答 2 位」是**间歇性**现象，本轮真实端点复跑一次即得到 `3/3`；
+  该缺陷的复现依赖**构造性输入**（`_PanelProvider` / `_prove713.py`），
+  不是「每次都发生」。
+- `majority` / `any` 模式**按设计容忍缺席**——那是用户主动选择的弱保证；
+  本次修复只保证缺席**被记录和展示**，不被伪装成一致通过。
+- 契约测试覆盖协议形状，不保证每厂商接受额外的 `input` 字段。
+- PyPI 仍未发布（Trusted Publisher 未在 pypi.org 登记），详见 `docs/publishing-to-pypi.md`。

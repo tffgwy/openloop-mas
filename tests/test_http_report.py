@@ -173,3 +173,76 @@ class TestReportLayer(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPanelShortfallIsVisible(unittest.TestCase):
+    """A reviewer that never answered must not vanish from the report.
+
+    The report used to say "可用评审 2 / 跳过 1" and stop there. A reader
+    had no way to tell that the panel was asked three times and only two
+    answered - which is exactly how a "unanimous" pass was claimed for a
+    panel that never reached agreement.
+    """
+
+    def _rows(self):
+        return [
+            {
+                "run_id": "R-1",
+                "role": "closure",
+                "ts": "2026-11-14T00:00:00Z",
+                "verdict": "fail",
+                "decision": "revise",
+                "closed": False,
+                "iteration": 1,
+                "artifact_sha": "abc123",
+                "scores": [
+                    {
+                        "id": "c1",
+                        "pass": False,
+                        "note": "2/3 缺席一位评审",
+                        "source": "review",
+                        "blocking": True,
+                        "votes": "2/3",
+                    }
+                ],
+                "issues": ["c1: 2/3"],
+            },
+            {
+                "run_id": "R-1",
+                "role": "review",
+                "ts": "2026-11-14T00:00:01Z",
+                "mode": "all",
+                "personas": ["strict", "skeptic", "completeness"],
+                "usable": 2,
+                "skipped": 1,
+                "missing": 1,
+                "errors": [],
+                "scores": [
+                    {
+                        "id": "c1",
+                        "pass": False,
+                        "note": "n",
+                        "source": "review",
+                        "votes": "2/3",
+                        "absent_votes": 1,
+                    }
+                ],
+            },
+        ]
+
+    def test_the_summary_carries_the_missing_count(self):
+        report = build_report(self._rows())
+        run = report["runs"][0]
+        self.assertEqual(run["review"]["missing"], 1)
+        self.assertEqual(run["review"]["usable"], 2)
+        self.assertEqual(run["review"]["personas"], ["strict", "skeptic", "completeness"])
+
+    def test_the_markdown_warns_about_the_absent_reviewer(self):
+        report = build_report(self._rows())
+        text = render_markdown(report)
+        self.assertIn("缺席", text)
+        self.assertIn("1", text)
+
+    def test_the_ledger_markdown_carries_it_too(self):
+        text = ledger_markdown(self._rows())
+        self.assertIn("缺席", text)
