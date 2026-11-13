@@ -177,8 +177,20 @@ def evaluate_check(criterion: Criterion, artifact: str) -> Dict[str, Any]:
             passed = count >= limit
             note = f"{count} non-empty lines >= {limit}" if passed else f"{count} non-empty lines < {limit}"
         elif kind == "section":
+            # A section is a *heading line*, not a substring anywhere in the
+            # artifact. Matching the bare substring was wrong in three ways:
+            # a body sentence mentioning "## 结论" counted as a section,
+            # "## 结论分析" satisfied a check for "## 结论", and "### 结论"
+            # passed even though it is a third-level heading. Now the line
+            # must be exactly the second-level heading, with optional
+            # trailing whitespace.
             marker = f"## {arg}"
-            passed = marker in artifact
+            wanted = marker.strip()
+            found = any(
+                line.strip() == wanted
+                for line in artifact.splitlines()
+            )
+            passed = found
             note = f"section '{marker}' found" if passed else f"section '{marker}' missing"
         elif kind == "json_keys":
             try:

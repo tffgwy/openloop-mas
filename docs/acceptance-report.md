@@ -312,6 +312,86 @@ v0.7.2 的主题是：**把 8 种 check 类型的精确语义公开成契约，�
 17. `RunResult` 字段是 `tokens_used`（不是 `tokens`）。
 18. `mas/util.py` 的 `parse_criterion_shorthand` 返回 `{"desc": ...}`（无 check）表示「不是简写」。
 
+---
+
+## v0.7.3 追加验收（2026-11-13）
+
+### 触发原因
+
+v0.7.2 把 8 种机检类型的语义公开成了契约。**契约写完就该用契约反过来审实现**——
+本轮就是这么做的：拿 v0.7.2 写下的口径逐条对照 `evaluate_check` 的源码，
+立刻发现 `section` 的实际行为和它自己在文档里声明的口径对不上。
+
+### D.1 修掉的真实缺陷
+
+| # | 缺陷 | 严重度 | 发现方式 | 证据 |
+| --- | --- | --- | --- | --- |
+| 1 | **`section` 是子串匹配，会假阳性通过** —— 判据是 `"## 结论" in artifact`，于是三件事都被误判为「有这一节」：正文里随口提到 `## 结论`、`## 结论分析` 满足了检查 `## 结论`、`### 结论`（三级标题）也算数 | 高（机检是闭环仲裁器，假阳性 = 假闭合） | 拿 v0.7.2 文档口径逐条反查实现 | 见 D.2 前后对照 |
+
+这不是「文档写得不准」，而是**实现比承诺宽松**。机检一旦假阳性，
+闭环就会在产物根本不满足标准时宣告 `closed` —— 恰好是这个项目要消灭的那种假成功。
+
+### D.2 语义修正前后对照（本轮实测）
+
+| 产物 | 修前 | 修后 | 说明 |
+| --- | --- | --- | --- |
+| `## 结论` | pass | **pass** | 本来就正确 |
+| `# 结论` | fail | fail | 一级标题不算 |
+| `### 结论` | **pass**（错） | **fail** | 三级标题不算 |
+| `#### 结论` | **pass**（错） | **fail** | 四级标题不算 |
+| `正文里提到 ## 结论这个词` | **pass**（错） | **fail** | 正文提及不算一节 |
+| `## 结论分析` | **pass**（错） | **fail** | 更长标题不满足更短要求 |
+| `## 结论   `（行尾空格） | pass | **pass** | 允许行尾空白 |
+
+修后实现：判定的是**整行恰好等于 `## <标题>`**（`line.strip() == "## " + arg`）。
+
+### D.3 这是行为变更，已在文档里明说
+
+`section` 此前可以当「标题前缀匹配」用。现在必须写完整标题。
+判定更严 → 假阳性减少；代价是**以前靠巧合通过的标准会开始失败**。
+README（中英）与 SKILL.md 都加了显式变更说明，不做静默语义漂移。
+
+### D.4 本轮改动
+
+| 文件 | 改动 |
+| --- | --- |
+| `mas/engine.py` | `section` 判定改为整行精确匹配 |
+| `tests/test_engine.py` | 新增 `test_section_matches_a_heading_line_not_any_substring`（3 个断言） |
+| `mas/skills/mas-loop/SKILL.md` | 语义表更新为新口径 |
+| `README.md` / `README.en.md` | 语义表更新 + 变更说明段落（中英各一份） |
+
+### D.5 本轮实测证据
+
+| 验收项 | 结果 | 证据 |
+| --- | --- | --- |
+| 全量测试 | **226 tests OK (skipped=4)**，~20.0 秒 | `unittest discover -s tests`（较 0.7.2 的 225 增 1） |
+| engine 测试 | `CheckSemanticsTest` 21 全绿 | `unittest discover -s tests -p test_engine.py` → Ran 21, OK |
+| lint | All checks passed | `ruff check mas tests tools` |
+| 离线基准 | 9/9 符合预期，闭环率 100%，1.67 迭代 / 4.2 ms / 1265.7 token | `mas bench`（structured 场景用的正是 `section`，未回归） |
+| 离线演示 | closure/stagnation/budget 三场景全 OK | `mas demo` |
+| 语义对照 | D.2 表中 7 个用例逐条实测 | 直接调用 `evaluate_check` |
+
+### D.6 v0.7.3 仍然成立的边界
+
+1. **PyPI 仍未发布**——验证的是 GitHub Release 的正式 wheel，不是 PyPI 包。
+2. 真实端点实测只覆盖 `claude-opus-5-5` @ `127.0.0.1:16024/v1`（免鉴权）；Kimi / DeepSeek / Qwen / 原生 OpenAI 本机无端点，**未实测**。
+3. 契约测试覆盖协议形状，不保证每厂商接受额外的 `input` 字段。
+4. 判定的是结构不是事实；对抗评审发现的 `return list(seen)` 恒空 bug 仍是模型判断。
+5. 真实端点下未做多轮崩溃恢复的账本重放校验。
+6. 手机接入是 **tailnet only**（`https://win-io6eufe3grh.tail4c219e.ts.net:8768`），非公网 Funnel。
+7. `install.ps1` 的 PATH 步骤写 HKCU 注册表，**不受隔离 HOME 影响**；后续隔离测试须加 `-SkipPath`。
+8. `mas install` **不写 PATH**（pip 装时 `mas` 已可用；源码装仍需 `install.ps1`/`install.sh`）。
+9. `mas uninstall` **不删 `~/.mas`**（账本保留），也不动 pip 包。
+10. 不承诺流量 / 签约 / 平台批准 / 检测结果。
+11. 星数说法无法核实：`gh search repos` 未找到「四个小 Skills 400+ 星」对应仓库；OpenMausBot 主仓库 `milind-soni/OpenMausBot` 实测 21,590 星。**「400+ 星」不要复述为事实**。
+12. `tffgwy/openloop-mas` 当前 stars=0 / forks=0 / open issues=0。
+13. OpenMausBot 端口 28799；Windows 无官方 service install，用 Startup 文件夹。
+14. 本机 OpenMausBot 配置各实例 `environment` 均为空 → 本机不存在明文 API key。
+15. `mas http` 的 `/health` 永远开放（只含版本号）。
+16. `mas http` 绑定非 loopback 且无令牌 → **拒绝启动，退出码 2**（fail-closed）。
+17. `RunResult` 字段是 `tokens_used`（不是 `tokens`）。
+18. `mas/util.py` 的 `parse_criterion_shorthand` 返回 `{"desc": ...}`（无 check）表示「不是简写」。
+19. **`section` 语义在 v0.7.3 变更过**：更严格（整行精确匹配），旧标准若依赖前缀匹配需改写。
 
 ---
 
@@ -675,5 +755,5 @@ CLI 新增子命令：`report` `replay` `export` `verify` `bench` `http`；
 5. **PyPI 仍未发布**（缺 `PYPI_API_TOKEN`）。
 6. 手机接入是 tailnet only，非公网 Funnel。
 7. `install.ps1` 只在本机 Windows 跑过。
-8. `Ledger.append` 每次全量重读账本 → O(n²) 写入路径，已定位未修。
+8. ~~`Ledger.append` 每次全量重读账本 → O(n²) 写入路径，已定位未修。~~ **已更正：该缺陷早已在 `62d04a4` 修好**（按文件身份缓存条目数，2000 条从 46.5s 降到 1.38s），本条为过时记录，现保留原样并标注更正。
 9. 不承诺流量 / 签约 / 平台批准 / 检测结果。

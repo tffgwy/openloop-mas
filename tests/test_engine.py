@@ -186,6 +186,15 @@ class CheckSemanticsTest(unittest.TestCase):
     def test_section_requires_second_level_heading(self):
         self.assertTrue(self.check("section", "结论", "## 结论\n内容")["pass"])
         self.assertFalse(self.check("section", "结论", "# 结论\n内容")["pass"])
+        self.assertFalse(self.check("section", "结论", "### 结论\n内容")["pass"])
+
+    def test_section_matches_a_heading_line_not_any_substring(self):
+        # A body sentence that merely mentions the heading is not a section.
+        self.assertFalse(self.check("section", "结论", "正文里提到 ## 结论这个词")["pass"])
+        # A longer heading must not satisfy a shorter one.
+        self.assertFalse(self.check("section", "结论", "## 结论分析\n内容")["pass"])
+        # Trailing whitespace on the heading line is tolerated.
+        self.assertTrue(self.check("section", "结论", "## 结论   \n内容")["pass"])
 
     def test_json_keys_requires_json_object(self):
         payload = json.dumps({"a": 1, "b": 2}, ensure_ascii=False)

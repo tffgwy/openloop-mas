@@ -36,6 +36,20 @@
   stores no credential. The first publish needs a one-time registration on
   pypi.org, see [docs/publishing-to-pypi.md](docs/publishing-to-pypi.md).
 
+**What v0.7.3 fixes** (the `section` machine check used to pass falsely):
+
+- `section` used to be a plain substring test (`"## conclusion" in artifact`), so three
+  different things were wrongly accepted as a section: a body sentence that merely
+  mentions `## conclusion`, a `## conclusion analysis` heading satisfying a check for
+  `## conclusion`, and a third-level heading `### conclusion`;
+- the check now requires a **line that is exactly `## <heading>`** (trailing whitespace
+  allowed), so `#` / `###` / `####` no longer count, a mention in prose no longer counts,
+  and a longer heading no longer satisfies a shorter one;
+- this is a **behaviour change**: if you relied on `section` matching a heading *prefix*,
+  write the full heading now. A stricter verdict means fewer false positives, at the cost
+  of criteria that previously passed by accident now failing - which is the direction a
+  closed loop should move in.
+
 **What v0.2.0 adds**: parallel candidate competition, adversarial cross-review,
 multi-backend failover, HTTP/SSE remote access, closure reports and replay,
 an interactive setup wizard, an offline benchmark and a real closure self-check.
@@ -172,7 +186,7 @@ Exact semantics (verified against the implementation - write criteria against th
 | `min_chars` / `max_chars` | **character** count of the artifact, whitespace and newlines included | not a word count, not a byte count |
 | `regex` | `re.search`, **DOTALL is always on** (`.` spans lines) | no `(?s)` needed; it matches a substring, not the whole artifact |
 | `lines_min` | count of **non-empty** lines (blank lines do not count) | blank lines between paragraphs do not help |
-| `section` | the artifact contains the line `## <arg>` | it must be a **second-level** heading - `#` and `###` do not count |
+| `section` | the artifact contains a line that is exactly `## <arg>` (trailing whitespace allowed) | it must be a **second-level** heading - `#` and `###` do not count; merely mentioning `## conclusion` in a sentence does **not** count, and `## conclusion analysis` does **not** satisfy `## conclusion` |
 | `json_keys` | the artifact must be a JSON **object** holding every given key | invalid JSON fails immediately |
 
 An unknown type is judged `unjudged` (i.e. **not passed**) - it is never silently let through.
