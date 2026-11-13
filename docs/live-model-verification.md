@@ -909,3 +909,44 @@ call(good token) POST    -> 200  {"tool": "mas_status", "result": {"config": {"p
 6. 手机接入是 **tailnet only**，非公网 Funnel。
 7. `install.ps1` 只在本机 Windows 跑过；`install.sh` 依赖 install CI（三平台全绿）。
 8. 不承诺流量 / 签约 / 平台批准 / 检测结果。
+
+---
+
+## v0.5.0：账本写入路径去 O(n²)
+
+### 缺陷
+
+`Ledger.append()` 每写一条都调用 `self.entries()` **全量重读整个账本文件**再取长度作为 `seq`。一次运行写 N 条 → 总读取量 O(N²)。账本越长，**每一次运行都更慢**，而且是持续劣化而非一次性成本。
+
+### 修法
+
+给 `Ledger` 加一个带失效检测的计数缓存：
+
+- 缓存键是 `(st_size, st_mtime_ns)`——文件身份。
+- `append` 前比对键；键没变就直接用缓存计数，**不再重读文件**。
+- 自己的写入会改变文件，因此写完后更新缓存计数与新键，让下一次追加仍然免扫描。
+- 文件在背后被改写（另一个进程追加、轮转、截断）时键会变化，缓存自动失效并重新扫描——**序号语义与修复前完全一致**。
+
+### 量化证据（本轮实测，同一台机器同一进程内对比）
+
+| 实现 | 2000 条追加耗时 | 平均每条 |
+| --- | --- | --- |
+| 修复前（全量重读） | **46.533 s** | 23.266 ms |
+| 修复后（缓存计数） | **1.380 s** | 0.690 ms |
+
+**33.7 倍提速。** 序号仍为 1..2000 无空洞。
+
+### 新增测试（`tests/test_ledger.py`，5 条）
+
+| 测试 | 锁定的不变量 |
+| --- | --- |
+| `test_seq_is_gapless_and_starts_at_one` | 序号从 1 起、无空洞 |
+| `test_cache_does_not_break_when_the_file_is_truncated` | 文件被外部截断后缓存失效，序号重新从 1 开始 |
+| `test_two_writers_on_the_same_file_get_distinct_sequences` | 两个 `Ledger` 实例共享同一文件时序号不重复 |
+| `test_entries_are_still_appended_never_rewritten` | 账本仍是只追加语义，旧条目不被改写 |
+| `test_ts_is_filled_in` | 时间戳仍自动补齐 |
+
+### 影响面
+
+- 只改 `mas/ledger.py` 的 `append` 路径，不改变账本格式、不改变任何一条已写记录。
+- 本机真实账本 `C:\Users\Administrator\.mas\ledgers\runs.jsonl` 不受影响（新代码只影响新写入的条目序号计算方式，且序号值与旧实现一致）。

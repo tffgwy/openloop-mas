@@ -18,14 +18,43 @@ class Ledger:
     def __init__(self, path: str | pathlib.Path) -> None:
         self.path = pathlib.Path(path)
         ensure_dir(self.path.parent)
+        # Cache of the entry count, keyed by the file identity we last saw.
+        # Appending used to re-read the whole ledger for every single entry,
+        # which turns a run that writes N entries into O(N^2) of I/O - a
+        # long ledger makes every run progressively slower. The cache is
+        # invalidated whenever the file changed underneath us (another
+        # process appended, or the file was rotated), so the sequence
+        # numbers stay exactly as before.
+        self._count: int | None = None
+        self._stat_key: tuple[int, int] | None = None
+
+    def _stat_key_now(self) -> tuple[int, int]:
+        try:
+            info = self.path.stat()
+        except OSError:
+            return (-1, -1)
+        return (info.st_size, info.st_mtime_ns)
+
+    def _entry_count(self) -> int:
+        """Number of ledger entries, cached until the file changes."""
+        key = self._stat_key_now()
+        if self._count is not None and key == self._stat_key:
+            return self._count
+        count = len(self.entries())
+        self._count = count
+        self._stat_key = key
+        return count
 
     def append(self, entry: Dict[str, Any]) -> Dict[str, Any]:
         payload = dict(entry)
         payload.setdefault("ts", now_iso())
-        existing = self.entries()
-        payload["seq"] = len(existing) + 1
+        payload["seq"] = self._entry_count() + 1
         with self.path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        # Our own write changed the file: keep the cached count but record
+        # the new identity so a later append does not re-scan.
+        self._count = payload["seq"]
+        self._stat_key = self._stat_key_now()
         return payload
 
     def entries(self) -> List[Dict[str, Any]]:
