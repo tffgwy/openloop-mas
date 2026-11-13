@@ -182,6 +182,9 @@ def cmd_init(args: argparse.Namespace) -> int:
 def cmd_run(args: argparse.Namespace) -> int:
     config = load_config()
     criteria = _load_criteria(args)
+    workspace = str(getattr(args, "workspace", "") or "").strip()
+    if workspace:
+        config["workspace"] = workspace
     engine = _engine(config, args.team)
     result = engine.run(
         goal=args.goal,
@@ -468,6 +471,11 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--criteria", action="append", help="验收标准（可重复）")
     run.add_argument("--criteria-file", help="JSON 形式的验收标准文件")
     run.add_argument("--team")
+    run.add_argument(
+        "--workspace",
+        default="",
+        help="文件级机检（file_exists/file_contains 等）解析路径的工作区目录，默认当前目录",
+    )
     run.add_argument(
         "--parallel",
         type=int,

@@ -40,7 +40,15 @@ TOOLS: List[Dict[str, Any]] = [
                 "goal": {"type": "string", "description": "任务目标"},
                 "criteria": {
                     "type": "array",
-                    "description": "验收标准列表；可用 check 字段写机检规则",
+                    "description": (
+                        "验收标准列表；可用 check 字段写机检规则。"
+                        "文本机检：contains/not_contains/min_chars/max_chars/"
+                        "regex/lines_min/section/json_keys；"
+                        "文件机检（读真实磁盘）：file_exists/file_missing/"
+                        "file_contains/file_not_contains/file_regex/"
+                        "file_lines_min/file_min_bytes/file_max_bytes/"
+                        "file_sha256/file_mtime_newer"
+                    ),
                     "items": {
                         "type": "object",
                         "properties": {
@@ -53,6 +61,10 @@ TOOLS: List[Dict[str, Any]] = [
                 },
                 "title": {"type": "string"},
                 "team": {"type": "string"},
+                "workspace": {
+                    "type": "string",
+                    "description": "文件级机检（file_exists/file_contains 等）解析路径的工作区目录",
+                },
                 "parallel": {
                     "type": "integer",
                     "description": "并行候选的 worker 数量（>1 时并发产出多个视角）",
@@ -183,6 +195,12 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     arguments = arguments or {}
 
     if name == "mas_run":
+        workspace = str(arguments.get("workspace") or "").strip()
+        if workspace:
+            # File-level checks resolve their paths against this
+            # workspace. It is applied here - not inside the engine - so
+            # the MCP caller and the CLI behave the same way.
+            config["workspace"] = workspace
         engine = _engine(config, arguments.get("team"))
         parallel = arguments.get("parallel")
         reviewers = arguments.get("reviewers")

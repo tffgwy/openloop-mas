@@ -19,6 +19,7 @@ installs without any third-party dependency.
 from __future__ import annotations
 
 import json
+import re
 import time
 import urllib.error
 import urllib.request
@@ -54,6 +55,35 @@ class Provider:
 
     def describe(self) -> Dict[str, Any]:
         return {"provider": self.name, "model": self.model, "calls": self.calls}
+
+
+# Some gateways stream provider *control markers* into the text channel
+# next to the real answer. They look like ``]<]`` pairs wrapped around a
+# provider name, or an empty ``tool_call`` envelope. They are not the
+# deliverable, and once they reach the artifact they poison every
+# acceptance check that looks for exact strings, the artifact preview and
+# the ledger entry.
+#
+# The patterns are deliberately narrow: they only remove a marker that is
+# *balanced* (an opening ``]<]`` with its closing ``[>``), so ordinary
+# prose containing brackets survives untouched.
+_CONTROL_MARKER_RE = re.compile(r"\]<\]\s*[^\[\]\n]{0,40}?\[>")
+_EMPTY_TOOL_CALL_RE = re.compile(r"<\s*tool_call\s*>.*?<\s*/\s*tool_call\s*>", re.DOTALL)
+_EMPTY_TOOL_CALL_OPEN_RE = re.compile(r"<\s*tool_call\s*/?\s*>")
+
+
+def sanitize_gateway_text(text: str) -> str:
+    """Remove gateway control markers from a model answer.
+
+    Returns the cleaned text. An empty result is returned unchanged -
+    the caller decides what an empty answer means.
+    """
+    if not text:
+        return text
+    cleaned = _CONTROL_MARKER_RE.sub("", text)
+    cleaned = _EMPTY_TOOL_CALL_RE.sub("", cleaned)
+    cleaned = _EMPTY_TOOL_CALL_OPEN_RE.sub("", cleaned)
+    return cleaned.strip()
 
 
 class _HttpProvider(Provider):
@@ -274,7 +304,7 @@ class OpenAICompatProvider(_HttpProvider):
             raw_text = data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
             raise ProviderError(f"unexpected response shape: {str(data)[:200]}") from exc
-        text = self._flatten_content(raw_text)
+        text = sanitize_gateway_text(self._flatten_content(raw_text))
         usage = self._normalize_usage(data.get("usage") or {})
         self.calls += 1
         return {
@@ -315,7 +345,7 @@ class AnthropicProvider(_HttpProvider):
         usage = data.get("usage") or {}
         self.calls += 1
         return {
-            "text": "".join(chunks),
+            "text": sanitize_gateway_text("".join(chunks)),
             "usage": self._normalize_usage(usage),
             "raw": data,
         }

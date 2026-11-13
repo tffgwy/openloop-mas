@@ -33,6 +33,26 @@ CHECK_SHORTHANDS = {
     "json_keys",
 }
 
+# File-level checks read the real filesystem instead of the artifact text.
+# Their argument is a *path* plus a *value*, so the shorthand form is
+# ``<type>:<path>::<value>`` - the path keeps everything up to the first
+# ``::`` and the value is the rest.
+#
+# ``file_exists`` / ``file_missing`` take no value:
+#   file_exists:out/report.md
+FILE_CHECK_SHORTHANDS = {
+    "file_exists",
+    "file_missing",
+    "file_contains",
+    "file_not_contains",
+    "file_regex",
+    "file_lines_min",
+    "file_min_bytes",
+    "file_max_bytes",
+    "file_sha256",
+    "file_mtime_newer",
+}
+
 _INT_CHECKS = {"min_chars", "max_chars", "lines_min"}
 
 
@@ -54,6 +74,18 @@ def parse_criterion_shorthand(text: str) -> Dict[str, Any]:
     if not sep:
         return {"desc": str(text)}
     kind = head.strip().lower()
+    if kind in FILE_CHECK_SHORTHANDS:
+        # The path may itself contain a colon (a Windows drive letter, a
+        # URL), so the split happens on the first ``::`` only - and only
+        # after the type prefix has been removed.
+        path, value_sep, value = tail.partition("::")
+        arg: Any = {"path": path.strip()}
+        if value_sep:
+            arg["value"] = value
+        if kind in {"file_lines_min", "file_min_bytes", "file_max_bytes"} and value_sep:
+            with contextlib.suppress(ValueError):
+                arg["value"] = int(value.strip())
+        return {"desc": str(text), "check": {"type": kind, "arg": arg}}
     if kind not in CHECK_SHORTHANDS:
         return {"desc": str(text)}
     arg = tail.strip()

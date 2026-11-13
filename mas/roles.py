@@ -134,6 +134,13 @@ class Roles:
                 "Here is the deliverable you must produce. Output the "
                 "deliverable itself - no plan, no meta-commentary."
             )
+            # The write protocol is part of the worker's instructions, not
+            # an afterthought: without it the worker describes the file it
+            # *would* write, and the file check - which reads the disk -
+            # fails on every iteration.
+            write_note = str(state.get("write_instruction") or "")
+            if write_note:
+                out.append(write_note.strip())
         elif role == "verifier":
             out.append(
                 "下面是一份待评审的交付物和对应的验收标准。逐条判断并引用原文证据。"

@@ -2115,3 +2115,123 @@ integrations/dsh-openloop-mas/
   本仓库只做了 OpenLoop MAS 自身的 DSH 插件，**没有**把 MOKI 打包进来；
   两者的分工见 `docs/dsh-integration.md` 第 6 节；
 - PyPI 仍未发布（Trusted Publisher 未在 pypi.org 登记）。
+
+
+## P. v0.7.15 — 文件级机检与写文件协议：闭环跟的是磁盘，不是文案
+
+**目标**：把 MAS 的判定权从「模型输出的文本」再往下一层推进到**真实文件系统**，
+堵死本项目一直在打的那类假闭合——**承诺被当成事实**。
+
+### P.1 问题（本轮代码审计 + 离线复现 + 真实端点现场发现）
+
+v0.7.14 为止，`mas/engine.py` 里的**全部**机检都只搜 artifact 字符串。
+判定权名义上在引擎手里，但**被判定的东西本身还是模型写的**。于是：
+
+> worker 输出「已完成：报告已写入 out/report.md，结论如下……」，
+> 若期望字符串也出现在这段说明里 → 机检判**通过** → 循环闭合 →
+> **而磁盘上根本没有 out/report.md**。
+
+这不是理论推演。v0.7.15 第一轮真实端点实测**当场复现**了这个场景：
+判定如实报 `pass=false`、`note="file not found: out/report.md"`、
+`status=budget_exhausted`、`closed=false`——**引擎抓对了，但循环也永远闭合不了**，
+因为 worker 根本没有写文件的途径。
+
+第二个缺口紧随其后：即使补上读侧，worker 也只能「说」它写了。
+MAS 的 worker 输出是**纯文本**，没有任何写文件的接口。
+
+### P.2 修复
+
+**读侧** —— 新增 `mas/filechecks.py`，十种检查：
+
+```
+file_exists  file_missing  file_contains  file_not_contains  file_regex
+file_lines_min  file_min_bytes  file_max_bytes  file_sha256  file_mtime_newer
+```
+
+判定纪律与文本机检一致，并额外保证：
+
+- **文件缺失 = `pass: false`**（不是 `unjudged`）；
+- 路径越界（`../` 或工作区外绝对路径）→ **开跑前拒绝**；
+- 参数缺失 / 类型不认识 → **开跑前拒绝**（退出码 1，零 token）；
+- 路径合法但读不出结论 → `pass: null`（unjudged），**绝不猜**；
+- 单文件读取上限 8 MiB；
+- 路径相对 **workspace** 解析（`mas run --workspace <dir>`）。
+
+**写侧** —— 新增 `mas/filewrite.py`，写文件协议：
+
+```
+<<<MAS:FILE path="notes/finding.txt">>>
+...内容...
+<<<MAS:END FILE>>>
+```
+
+引擎解析 → 落盘 → 把块从产物里剥掉 → 记入账本（`role="write"`）。
+安全：越出 workspace 拒绝（`refusing to write outside the workspace`）、
+单文件上限 4 MiB、内容**原样写入**（无模板替换）、未闭合块**保留原文**不吞请求。
+
+**引擎接线** —— `mas/engine.py`：
+
+- `evaluate_check(criterion, artifact, config=None)` 接受可选 config，向后兼容；
+- `_required_write_paths(crits)` 从标准推导**文件义务**（`file_missing` 不产生义务）；
+- 文件义务写进 worker 的任务说明（`mas/roles.py` 注入 `write_instruction`）；
+- 单 worker 路径产出后落盘；**并行路径只写胜出的候选**（否则工作区里会有多个版本，
+  检查变成「谁最后写谁算数」）。
+
+**顺带修复**：
+
+- 合并层两处硬编码的 `"source": "rule"` 改为透传 `check.get("source")`，
+  报告现在能显示 `source: "file"`；
+- gateway 控制标记污染（`]<]…[>[`、空 `<tool_call>` 块）混入产物文本 →
+  新增 `sanitize_gateway_text()`，在 openai_compat 与 anthropic 两条路径应用。
+
+### P.3 实测证据
+
+**离线复现（`work/_prove_fc.py`）** —— 同一份标准，两种 worker 行为：
+
+| 场景 | status | closed | 判定 | 磁盘 |
+| --- | --- | --- | --- | --- |
+| worker 声称「已写入」 | `budget_exhausted` | `false` | `pass=false`，`note="file not found: out/report.md"`，`source="file"` | **无文件** |
+| worker 按协议真写了 | `closed` | `true` | `pass=true`，`source="file"` | **文件在** |
+
+**真实端点**（`claude-opus-5-5` @ `http://127.0.0.1:16024/v1`，免鉴权）：
+
+| 轮次 | 条件 | 结果 |
+| --- | --- | --- |
+| 第一轮 | 只有文件级机检，**没有**写协议 | `status=budget_exhausted`，`closed=false`，两条判定均 `pass=false`（`source="file"`，`note="file not found"`）——**假闭环被正确抓住** |
+| 第二轮 | 加上写协议 | 文件**真的写出**，`status=closed`，`closed=true`，iterations=3，tokens=39212，文件内容含 `MAS-FILECHECK-LIVE-TOKEN`，两条判定均 `pass=true` |
+
+### P.4 本轮修掉的两个真 bug（都是写测试时打出来的）
+
+1. **闭合标记写成了正则量词** —— `write_instruction` 给模型的闭合标记是
+   `<<<MAS:END FILE>{3,}`（把正则的量词语法当字面量交给模型）。模型照抄，
+   我们的正则认不出来 → 写文件永远失败。现在指令给字面量 `>>>`，
+   且正则同时接受 `>>>` / `>>>>` / `>{3,}` 三种写法。
+2. **模板块能被当成真的写请求** —— 指令里嵌了模板，模型照抄模板就会让引擎
+   写出一个叫「相对路径」的文件；如果模板被套上真实路径，还可能用占位内容
+   **骗过** `file_exists` 检查。现在占位路径（`相对路径` / `<path>` 等）
+   会被识别并跳过，记入 `skipped`。
+
+### P.5 回归门禁
+
+| 项 | 结果 |
+| --- | --- |
+| `pytest tests -q` | **365 passed, 4 skipped, 51 subtests** |
+| `ruff check mas tests tools` | All checks passed! |
+| `mas bench --repeats 1` | 3/3，闭环率 100%，账本一致性 100% |
+| `mas demo` | closure / stagnation / budget 三场景全 OK |
+| `work/_prove_fc.py` | PASS: file checks follow the disk, not the prose. |
+
+新增测试：`tests/test_filechecks.py`（36 个）、`tests/test_filewrite.py`（34 个）。
+
+### P.6 边界说明（v0.7.15）
+
+- 文件级机检判定的是**文件系统的事实**，但「这个文件内容对不对」仍然是
+  字节层面的；语义正确性依旧要靠模型评审——这一层解决的是**「它到底在不在」**；
+- 写文件协议**不执行**任何代码，写出去的就是纯文本；用它写脚本再执行，
+  风险与用户自己执行等价；
+- 单文件读取上限 8 MiB / 写入上限 4 MiB，**超大产物**需要用别的机制；
+- 真实端点实测**只覆盖** `claude-opus-5-5` @ `127.0.0.1:16024/v1`（免鉴权）；
+  Kimi / DeepSeek / Qwen / 原生 OpenAI 本机无端点，**未实测**；
+- 写文件协议对模型是**新协议**：不同厂商模型照抄模板的忠实度未实测，
+  可能需要重试或人工介入；
+- PyPI 仍未发布（Trusted Publisher 未在 pypi.org 登记）。

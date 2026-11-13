@@ -1,6 +1,6 @@
 {
   "name": "dsh-openloop-mas",
-  "version": "0.7.14",
+  "version": "0.7.15",
   "description": "OpenLoop MAS plugin for DeepSeek Harness: run a multi-agent loop that actually closes, with machine-checked acceptance criteria, an auditable ledger and human escalation tickets.",
   "keywords": [
     "dsh",

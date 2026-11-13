@@ -244,7 +244,40 @@ def run_doctor(config: Dict[str, Any] | None = None, allow_network: bool = True)
     elif provider != "mock":
         results.append(_check("endpoint", "warn", "端点未配置，跳过握手探测"))
 
+    # The file-level checks are a *capability*, not a setting: if the
+    # runtime cannot read the workspace, every file check would silently
+    # degrade to "unjudged" and the loop would fall back to the model's
+    # prose - exactly the fake closure this project exists to stop. So it
+    # is exercised here, once, on a real temporary file.
+    results.append(_file_check_capability())
+
     return results
+
+
+def _file_check_capability() -> Dict[str, Any]:
+    """Exercise one file check against a real temporary file."""
+    import tempfile
+
+    from mas.filechecks import evaluate_file_check
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = pathlib.Path(tmp) / "probe.md"
+            target.write_text("probe\n", encoding="utf-8")
+            outcome = evaluate_file_check(
+                "file_contains",
+                {"path": "probe.md", "value": "probe"},
+                pathlib.Path(tmp),
+            )
+    except Exception as exc:  # pragma: no cover - defensive
+        return _check("file_checks", "fail", f"无法执行文件级机检: {exc}")
+    if outcome.get("pass") is True:
+        return _check("file_checks", "ok", "文件级机检可用（读真实磁盘）")
+    return _check(
+        "file_checks",
+        "fail",
+        f"文件级机检异常: {outcome.get('note', outcome)}",
+    )
 
 
 def summarize(results: List[Dict[str, Any]]) -> Dict[str, Any]:

@@ -113,6 +113,46 @@ mas bench --repeats 2   # 离线基准：闭环率、迭代数、token、延迟�
 
 `mas verify` 与 `mas bench` 都不需要密钥，适合放进 CI 当冒烟门禁。
 
+## 文件级机检与写文件协议（v0.7.15）
+
+文本机检只能证明「答案里包含这一段」，证明不了「磁盘上那个文件是这样」。
+要验收一个**真的落盘的文件**，用文件级机检：
+
+| type | 含义 | 参数 |
+| --- | --- | --- |
+| `file_exists` | 文件存在且是普通文件 | `path` |
+| `file_missing` | 文件不存在 | `path` |
+| `file_contains` / `file_not_contains` | 文件含 / 不含某串 | `path` + `value` |
+| `file_regex` | 内容命中正则 | `path` + `value` |
+| `file_lines_min` | 非空行数下限 | `path` + `value` |
+| `file_min_bytes` / `file_max_bytes` | 字节数上下限 | `path` + `value` |
+| `file_sha256` | sha256 等于给定摘要 | `path` + `value` |
+| `file_mtime_newer` | 修改时间晚于给定 ISO 时间戳 | `path` + `value` |
+
+```bash
+mas run --workspace ./proj --goal "..." \
+  --criteria 'file_exists:out/report.md' \
+  --criteria 'file_contains:out/report.md::结论'
+```
+
+要点：
+
+- **文件缺失 = 不通过**（不是 unjudged）；路径越界 = 开跑前拒绝；参数写漏 = 开跑前拒绝；
+- 路径相对 **workspace** 解析，从任何目录启动都指向同一个文件；
+- 判定结果里 `source` 为 `"file"`，与文本机检的 `"rule"` 区分；
+- worker 必须**真的**把文件写出来，方式是**写文件协议**围栏块：
+
+```
+<<<MAS:FILE path="notes/finding.txt">>>
+文件内容
+<<<MAS:END FILE>>>
+```
+
+引擎原样写进 workspace、把块从产物里剥掉、写入进账本（`role="write"`）；
+越出 workspace 的路径拒绝写入；模板块（路径为「相对路径」等）会被跳过。
+
+详见 `docs/file-checks.md`。
+
 ## 写验收标准的规矩（关键）
 
 1. **能用机检就别用模型判定。** 支持的 `check.type`：

@@ -29,6 +29,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "timeout_sec": 120,
     "max_retries": 2,
     "state_dir": DEFAULT_STATE_DIR,
+    # v0.7.15: the directory that file-level machine checks resolve their
+    # paths against. It defaults to the current working directory, so a
+    # check written without any configuration still refers to the project
+    # the user is standing in. The path is deliberately *not* expanded to
+    # an absolute path here - it is resolved at check time against the
+    # run's own workspace.
+    "workspace": "",
     "team": "default",
     "language": "zh",
     "budget": {

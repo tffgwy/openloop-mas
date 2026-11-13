@@ -30,6 +30,13 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+from mas.filechecks import (
+    FILE_CHECK_TYPES,
+    evaluate_file_check,
+    file_check_problem,
+    workspace_root,
+)
+from mas.filewrite import apply_write_blocks, write_instruction
 from mas.ledger import Ledger
 from mas.orchestration import (
     ParallelFailure,
@@ -247,12 +254,21 @@ def validate_criteria(crits: List[Criterion]) -> List[str]:
         if not criterion.check:
             continue
         kind = str(criterion.check.get("type") or "").lower()
+        if kind in FILE_CHECK_TYPES:
+            # A file check has its own argument shape (a path plus a
+            # value), so it is validated by its own rule set. The same
+            # principle applies: a check that cannot decide anything must
+            # stop the run before it burns the budget.
+            problem = file_check_problem(kind, criterion.check.get("arg"))
+            if problem:
+                problems.append(f"{criterion.id}: {problem}")
+            continue
         if kind not in _ARG_REQUIRED:
             # An unknown type is a typo in the type name, not a missing
             # argument. The checker refuses to decide it, so the run must
             # not start either - otherwise the criterion would be handed
             # to the model and could be closed by a guess.
-            known = ", ".join(sorted(_ARG_REQUIRED))
+            known = ", ".join(sorted(_ARG_REQUIRED) + sorted(FILE_CHECK_TYPES))
             problems.append(
                 f"{criterion.id}: unknown check type: {kind!r} "
                 f"(known types: {known})"
@@ -264,8 +280,18 @@ def validate_criteria(crits: List[Criterion]) -> List[str]:
     return problems
 
 
-def evaluate_check(criterion: Criterion, artifact: str) -> Dict[str, Any]:
-    """Evaluate the machine check of a criterion against an artifact."""
+def evaluate_check(
+    criterion: Criterion,
+    artifact: str,
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Evaluate the machine check of a criterion against an artifact.
+
+    ``config`` is optional and only used by the file checks, which
+    resolve their paths against the configured workspace. When it is
+    omitted the current working directory is used, so the existing
+    call sites keep working unchanged.
+    """
     check = criterion.check
     if not check:
         return {"id": criterion.id, "pass": None, "note": "no machine check", "source": "none"}
@@ -334,6 +360,14 @@ def evaluate_check(criterion: Criterion, artifact: str) -> Dict[str, Any]:
                 missing = [str(k) for k in keys if str(k) not in data]
                 passed = not missing
                 note = "all keys present" if passed else f"missing keys: {missing}"
+        elif kind in FILE_CHECK_TYPES:
+            # A file check reads the real filesystem instead of the
+            # artifact string. It is evaluated here - by this module - so
+            # the verdict is reproducible and does not depend on the
+            # model's willingness to describe what it "did".
+            outcome = evaluate_file_check(kind, arg, workspace_root(config))
+            outcome["id"] = criterion.id
+            return outcome
         else:
             # An unknown type is a *broken check*, not an absent one. If it
             # stayed undecided the merge step would hand it to the model,
@@ -478,6 +512,14 @@ class LoopEngine:
                 "human_note": human_note,
                 "plan": plan_payload,
             }
+            # A criterion that demands a file creates an obligation the
+            # worker has to know about: without this the worker only ever
+            # *talks* about writing the file, and the file check - which
+            # is right - then fails forever.
+            write_paths = self._required_write_paths(crits)
+            if write_paths:
+                state["write_paths"] = write_paths
+                state["write_instruction"] = write_instruction(write_paths)
 
             try:
                 if attempt == 1:
@@ -488,7 +530,7 @@ class LoopEngine:
                 artifact = candidates["artifact"]
                 tokens += candidates["tokens"]
 
-                checks = [evaluate_check(c, artifact) for c in crits]
+                checks = [evaluate_check(c, artifact, self.config) for c in crits]
                 verify_state = dict(state)
                 verify_state["candidate_artifact"] = artifact
                 verify_state["checks"] = checks
@@ -661,11 +703,29 @@ class LoopEngine:
         if count <= 1:
             work = self._call_text("worker", state)
             artifact = strip_reasoning(work["text"])
+            written: List[Dict[str, Any]] = []
+            write_errors: List[str] = []
+            if state.get("write_paths"):
+                applied = apply_write_blocks(artifact, self._write_workspace())
+                artifact = applied["artifact"]
+                written = applied["written"]
+                write_errors = applied["errors"]
+                if written:
+                    self._log(
+                        state["run_id"], state["task_id"], state["attempt"], "write",
+                        {"written": written},
+                    )
+                if write_errors:
+                    self._log(
+                        state["run_id"], state["task_id"], state["attempt"], "write",
+                        {"errors": write_errors},
+                    )
             return {
                 "artifact": artifact,
                 "tokens": int(work["usage"].get("total_tokens", 0)),
                 "candidates": [{"angle": "direct", "selected": True, "passed": None}],
-                "errors": [],
+                "errors": write_errors,
+                "written": written,
             }
 
         angles = pick_angles(count, self.perspective)
@@ -716,11 +776,29 @@ class LoopEngine:
             state["run_id"], state["task_id"], state["attempt"], "candidates",
             {"count": count, "selected_angle": angles[best_index], "candidates": summary},
         )
+        artifact = results[best_index]["text"]
+        written: List[Dict[str, Any]] = []
+        if state.get("write_paths"):
+            # Only the *winning* candidate is written to disk. Writing
+            # every candidate would leave the workspace with several
+            # versions of the same file, and the file check would then
+            # pass on whichever version happened to be written last -
+            # the check would no longer describe the delivered artifact.
+            applied = apply_write_blocks(artifact, self._write_workspace())
+            artifact = applied["artifact"]
+            written = applied["written"]
+            errors.extend(applied["errors"])
+            if written or applied["errors"]:
+                self._log(
+                    state["run_id"], state["task_id"], state["attempt"], "write",
+                    {"written": written, "errors": applied["errors"]},
+                )
         return {
-            "artifact": results[best_index]["text"],
+            "artifact": artifact,
             "tokens": tokens,
             "candidates": summary,
             "errors": errors,
+            "written": written,
         }
 
     def _make_candidate_task(self, state: Dict[str, Any], angle: str) -> Any:
@@ -731,6 +809,51 @@ class LoopEngine:
             return self._call_text("worker", worker_state, extra=angle_instruction(angle))
 
         return task
+
+    # ------------------------------------------------------------ write files
+    def _required_write_paths(self, crits: List[Criterion]) -> List[str]:
+        """Return the file paths the acceptance criteria demand.
+
+        Only file checks that assert *presence* or *content* create a file
+        obligation. ``file_missing`` deliberately does not - it asserts that
+        a file is gone.
+        """
+        paths: List[str] = []
+        for crit in crits:
+            check = crit.check or {}
+            kind = str(check.get("type") or "").lower()
+            if kind not in {
+                "file_exists",
+                "file_contains",
+                "file_not_contains",
+                "file_regex",
+                "file_lines_min",
+                "file_min_bytes",
+                "file_max_bytes",
+                "file_sha256",
+                "file_mtime_newer",
+            }:
+                continue
+            try:
+                raw = str(check.get("arg") or "")
+                if isinstance(check.get("arg"), dict):
+                    raw = str(
+                        check["arg"].get("path")
+                        or check["arg"].get("file")
+                        or check["arg"].get("target")
+                        or ""
+                    )
+                if "::" in raw:
+                    raw = raw.split("::", 1)[0]
+                raw = raw.strip()
+            except Exception:
+                raw = ""
+            if raw and raw not in paths:
+                paths.append(raw)
+        return paths
+
+    def _write_workspace(self) -> Any:
+        return workspace_root(self.config)
 
     # ------------------------------------------------------ adversarial review
     def _review(self, verify_state: Dict[str, Any]) -> Dict[str, Any]:
@@ -1023,7 +1146,12 @@ class LoopEngine:
                             "id": criterion.id,
                             "pass": bool(check["pass"]),
                             "note": str(check.get("note", "")),
-                            "source": "rule",
+                            # The source is reported as it was produced:
+                            # a file check says "file", a text check says
+                            # "rule". Hiding that would make a
+                            # disk-verified criterion indistinguishable
+                            # from a prose-verified one in the report.
+                            "source": str(check.get("source") or "rule"),
                             "optional": True,
                             "blocking": False,
                         }
@@ -1080,7 +1208,7 @@ class LoopEngine:
                         "id": criterion.id,
                         "pass": bool(check["pass"]),
                         "note": str(check.get("note", "")),
-                        "source": "rule",
+                        "source": str(check.get("source") or "rule"),
                         "blocking": True,
                     }
                 )
