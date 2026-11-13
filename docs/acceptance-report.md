@@ -1178,3 +1178,12 @@ merge 消费归一化后 verdict     -> [{'pass': False, 'source': 'model'}]
 
 **本机运行时升级**：备份 `~/.mas/backup/app_backup_077`，`mas install` 后
 `mas doctor` 全绿（`package mas 0.7.7 可导入`、`skills_sync 9 个已安装 skill 均与包内版本一致`）。
+
+**OpenMausBot 集成**（v0.7.7，端口 28799）：
+
+- MCP 握手：`ok: True`，**12 个工具**
+  （`mas_run` / `mas_status` / `mas_ledger` / `mas_tickets` / `mas_ticket_resolve` /
+  `mas_resume` / `mas_report` / `mas_replay` / `mas_export` / `mas_teams` /
+  `mas_doctor` / `mas_config`）
+- 端到端闭环：`exit 0`，`status: closed`，iterations 1，tokens 3485，
+  c1 regex `[一-龥]{4,}` 命中 → pass
