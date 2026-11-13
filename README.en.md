@@ -57,6 +57,29 @@ ledger entry** all exist. Otherwise the status is one of exactly three:
 > your setup. In CI, use `MAS_CONFIG_PATH` for the config file and
 > `MAS_STATE_DIR` for the state directory.
 
+### Option 1: one pip command (recommended, cross-platform)
+
+```bash
+pip install openloop-mas
+mas install        # install skills + register the MCP server
+mas demo           # no API key needed - watch it close a loop on its own
+```
+
+`mas install` copies the **agent skills into the Codex / Claude Code skill
+directories** and **registers the MCP server** in `~/.codex/config.toml`
+and `~/.claude.json`. Open a new terminal afterwards and both hosts know
+the workflow.
+
+- Idempotent: running it twice never registers twice and never clobbers
+  your existing configuration.
+- Safe: every configuration file it modifies is backed up as
+  `*.bak-<timestamp>` first.
+- No secrets: the install never writes an API key.
+
+> Add `--json` to see exactly what it did.
+
+### Option 2: install from source
+
 ```bash
 git clone https://github.com/tffgwy/openloop-mas.git
 cd openloop-mas

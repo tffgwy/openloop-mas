@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openloop-mas"
-version = "0.5.0"
+version = "0.6.0"
 description = "A loop-engineering runtime for multi-agent systems: closure, verification, budgets and an auditable ledger."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -27,7 +27,11 @@ packages = ["mas"]
 include-package-data = true
 
 [tool.setuptools.package-data]
-mas = ["teams/*.json"]
+# The agent skills travel with the wheel: `pip install openloop-mas` must be
+# enough to get a *working* setup, and the skills are what teach Codex /
+# Claude Code the workflow. Shipping them is what makes `mas install` able
+# to do the whole job on a machine that never cloned the repository.
+mas = ["teams/*.json", "skills/*/SKILL.md", "skills/*/*.md", "skills/*/*.json"]
 
 [tool.ruff]
 # The project ships with zero third-party dependencies, so linting is not

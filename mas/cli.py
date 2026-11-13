@@ -14,6 +14,7 @@ from mas.config import load_config, load_persisted_config, save_config
 from mas.demo import run_scenarios
 from mas.doctor import run_doctor, summarize
 from mas.engine import LoopEngine
+from mas.installer import format_report, run_install
 from mas.orchestration import CANDIDATE_ANGLES
 from mas.report import build_report, ledger_markdown, render_markdown, replay_trace
 from mas.setup import format_verify, run_verify, run_wizard
@@ -75,6 +76,30 @@ def _parse_criterion(text: Any) -> Any:
 
 def _engine(config: Dict[str, Any], team: str | None = None) -> LoopEngine:
     return LoopEngine(config, team=load_team(team or config.get("team")))
+
+
+def cmd_install(args: argparse.Namespace) -> int:
+    """Install the agent skills and register the MCP server.
+
+    This is the step that turns ``pip install openloop-mas`` into a
+    *working* setup. It is the same work ``install.ps1`` / ``install.sh``
+    do, but it runs from the installed package, so it works the same way on
+    every platform.
+    """
+    report = run_install(
+        python_exe=args.python,
+        skip_skills=args.skip_skills,
+        skip_mcp=args.skip_mcp,
+    )
+    if getattr(args, "json", False):
+        _print(report, as_json=True)
+    else:
+        print(format_report(report))
+        print("")
+        print("next:")
+        print("  mas doctor        # 自检")
+        print("  mas demo          # 离线跑通三个闭环场景")
+    return 0
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -350,6 +375,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     def add_json(target: argparse.ArgumentParser) -> None:
         target.add_argument("--json", action="store_true", help="以 JSON 输出")
+
+    install = sub.add_parser("install", help="安装 skills 并注册 MCP 服务器（pip 安装后必跑）")
+    install.add_argument("--python", default=None, help="MCP 服务器使用的 Python 解释器")
+    install.add_argument("--skip-skills", action="store_true", help="不安装 agent skills")
+    install.add_argument("--skip-mcp", action="store_true", help="不注册 MCP 服务器")
+    add_json(install)
+    install.set_defaults(func=cmd_install)
 
     init = sub.add_parser("init", help="生成/更新本地配置")
     init.add_argument("--wizard", action="store_true", help="交互式向导，一步步生成配置")

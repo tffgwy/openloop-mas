@@ -90,6 +90,26 @@ OpenLoop MAS 的做法是把闭环写成代码约束，而不是寄望于提示�
 
 ## 5 分钟上手
 
+### 方式一：pip 一条命令（推荐，跨平台）
+
+```bash
+pip install openloop-mas
+mas install        # 装 skills + 注册 MCP 服务器
+mas demo           # 不需要任何 API Key，先看它自己跑通闭环
+```
+
+`mas install` 做的是**装 agent skills 到 Codex / Claude Code 的 skill 目录**、
+**把 MCP 服务器注册进 `~/.codex/config.toml` 和 `~/.claude.json`**，
+然后你可以直接开一个新终端，Codex 和 Claude Code 就认识这套闭环工作流了。
+
+- 幂等：重复跑不会重复注册，也不会覆盖你已有的配置。
+- 安全：任何被修改的配置文件都会先备份成 `*.bak-<时间戳>`。
+- 不含密钥：安装过程不写入任何 API Key。
+
+> 想看它装了什么，加 `--json`。
+
+### 方式二：从源码安装
+
 ```bash
 git clone https://github.com/tffgwy/openloop-mas.git
 cd openloop-mas
@@ -102,6 +122,9 @@ bash install.sh
 # 不需要任何 API Key，先看它自己跑通闭环
 mas demo
 ```
+
+> `install.ps1` / `install.sh` 与 `mas install` 做的是同一件事，
+> 前者适合从源码装（含开发环境），后者适合 pip 安装后的机器。
 
 > 配置文件固定在 `~/.mas/config.json`（Windows：`%USERPROFILE%\.mas\config.json`）。
 > 运行账本另存在 `state_dir` 下，两者分开——换状态目录不会把配置弄丢。

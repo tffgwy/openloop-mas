@@ -966,3 +966,71 @@ openloop-mas 0.5.0
 本机安装同步到 0.5.0（`install.ps1 -SkipDemo` 全部 `[OK]`），常驻服务重启后 `/health` → `"version": "0.5.0"`；Tailscale HTTPS 鉴权矩阵 7 条探针全部符合预期。
 
 最终测试计数：**166 tests OK (skipped=4)**，`pytest tests -q` → 162 passed / 4 skipped / 8 subtests，`ruff check` → All checks passed。
+
+---
+
+## v0.6.0：`pip install` 后一条命令完成全部安装（面向初学者的真正「一键」）
+
+### 问题
+
+在 v0.5.0 之前，「一键安装」只存在于**源码仓库**里：`git clone` + `install.ps1` / `install.sh`。
+但 `pip install openloop-mas`（若已发布）只能装到**运行时**——
+**agent skills 装不上，MCP 服务器注册不了**。对一个刚入门 AI 的朋友来说，
+这意味着装完还是不会用：Codex 和 Claude Code 根本不知道这套闭环工作流存在。
+
+### 修法
+
+1. **skills 进 wheel**：`mas/skills/` 成为打包内容（`pyproject.toml` 的
+   `package-data` 增加 `skills/*/SKILL.md`），wheel 里实测包含 3 个 SKILL.md。
+2. **新增 `mas/installer.py`**：跨平台的 skills 安装 + MCP 注册实现。
+   - skills 目标：Codex / Claude Code **总是**创建（全新机器上目录不存在也建），
+     `.agents` / `.gemini` **仅在用户已经在用时**才写入。
+   - MCP 注册：`~/.codex/config.toml`（TOML 块）与 `~/.claude.json`（JSON）。
+   - **幂等**：已注册就跳过，重复跑不产生重复条目。
+   - **不覆盖**：任何被修改的配置文件先备份成 `*.bak-<时间戳>`。
+   - **不崩**：一个 host 写失败只报告，不影响其它 host 与运行时本身。
+   - **无密钥**：不写入任何 API Key。
+3. **新增 `mas install` 子命令**：`--python` / `--skip-skills` / `--skip-mcp` / `--json`。
+4. **新增一致性测试** `tests/test_packaged_skills.py`：打包副本与源 `skills/`
+   必须逐字节一致（忽略 CRLF/LF），防止两边悄悄漂移。
+
+### 端到端验证（本轮实测，全新隔离环境）
+
+```
+pip install work/_dist51/openloop_mas-0.5.0-py3-none-any.whl   # 全新 venv
+mas install
+  [OK ] skills installed: 6
+  [OK ] MCP registered (codex): ...\.codex\config.toml
+  [OK ] MCP registered (claude): ...\.claude.json
+```
+
+落地检查（隔离 HOME）：
+
+- `~/.codex/skills/{mas-loop,mas-review,mas-scaffold}/SKILL.md` 全部存在
+- `~/.claude/skills/` 同上
+- `~/.codex/config.toml` 含 `[mcp_servers.mas_loop]`，`args = ["-m", "mas", "serve"]`
+- `~/.claude.json` 的 `mcpServers` 含 `mas_loop`
+
+幂等性：第二次 `mas install` 报 `MCP already registered`，config.toml 里
+`[mcp_servers.mas_loop]` 块**仍然只有 1 个**，`.claude.json` 的 mcpServers 键**仍然只有 1 个**。
+
+`mas doctor` 在该隔离环境下：skills / mcp_codex 两项均为 `[OK]`，
+provider 为 `mock（离线模式，无需密钥）`；`mas demo` 三个场景全 `[OK]`。
+
+### 新增测试
+
+- `tests/test_installer.py`：10 条（skills 落地、两个 host 的 MCP 注册、幂等、
+  保留既有配置、修改前备份、坏 JSON 不崩、报告渲染）。
+- `tests/test_packaged_skills.py`：3 条（目录一致、文件逐字节一致、wheel 声明）。
+
+测试总数：166 → **179**。
+
+### 边界
+
+1. **`pip install openloop-mas` 仍未在 PyPI 上验证过**——项目名在 PyPI 上返回 404
+   （尚未占用），但发布需要仓库 secret `PYPI_API_TOKEN`，本轮无法提供。
+   上面验证的是**用同一份源码构建的 wheel**装出来的完整流程。
+2. `mas install` **不写 PATH**。pip 安装时 `mas` 命令已经可用；
+   从源码装的用户仍需用 `install.ps1` / `install.sh`（或自行加 PATH）。
+3. skills 的目标目录策略是「Codex/Claude 总是，.agents/.gemini 仅在已用时」——
+   与 `install.ps1` 的既有策略保持一致。
