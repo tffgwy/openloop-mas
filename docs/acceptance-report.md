@@ -323,7 +323,7 @@ CLI 新增子命令：`report` `replay` `export` `verify` `bench` `http`；
 | 「本轮 OpenMausBot 端到端闭环用的是 **mock provider**（`config.json` 里 `provider = "mock"`），交付物正文是占位草稿」 | **已推翻**。本机 `~/.mas/config.json` 现为 `provider=openai_compat` / `model=claude-opus-5-5` @ `http://127.0.0.1:16024/v1`；OpenMausBot 端到端闭环 `R-1ee0025b0f` 是**真实端点**产出，`artifact_sha=d0f3091cb554`，`tokens_used=4009`，`iterations=1`，`status=closed` | `mas run` 输出 JSON + `openmausbot run MausBot` 事件流 |
 | 「若要接更多协议（**HTTP 化 MCP**、Slack/飞书机器人入口），当前仓库尚未包含，可作为 v0.2.0 议题」 | **已推翻**。HTTP 化 MCP 自 v0.2.0 起就存在（`mas/http_server.py`，`/health` `/tools` `/call` `/events`）；**v0.4.8 起还内置了鉴权** | `mas/http_server.py`、`tests/test_http_auth.py` |
 | 「**手机接入未配置** —— 本机无 HTTPS 入口（未启用 Tailscale / 隧道 / 反代）」 | **已推翻**。v0.4.8 用真实 Tailscale HTTPS 入口 `https://win-io6eufe3grh.tail4c219e.ts.net:8768` 实测过鉴权链路（health 200 / 无令牌 401 / 错令牌 401 / 正确令牌 200）。**但未留常驻配置**，验证后已 `tailscale serve --https=8768 off` 清理 | Tailscale serve 真实进程探针输出 |
-| 「v0.2.0 新链路尚未在真实模型端点跑过」（并行候选、故障转移、对抗评审） | **部分更正**。真实端点已验证**主闭环链路**（`mas run` + OpenMausBot 端到端）；并行候选 / 故障转移 / 对抗评审三条链路仍**只有 mock 与注入式测试**覆盖，**未在真实端点跑过** | v0.4.8 真实端点闭环 `R-aea1a8ba15` / `R-1ee0025b0f`；`tests/` 139 条 |
+| 「v0.2.0 新链路尚未在真实模型端点跑过」（并行候选、故障转移、对抗评审） | **部分更正**。真实端点已验证**主闭环链路**（`mas run` + OpenMausBot 端到端）；并行候选 / 故障转移 / 对抗评审三条链路仍**只有 mock 与注入式测试**覆盖，**未在真实端点跑过** | v0.4.8 真实端点闭环 `R-aea1a8ba15` / `R-1ee0025b0f`；`tests/` 161 条（v0.4.9） |
 | 「PyPI 未真实发布」 | **仍然成立**。`https://pypi.org/pypi/openloop-mas/json` 返回 404；`gh secret list` 为空，缺 `PYPI_API_TOKEN` | 本轮 `gh secret list` + PyPI JSON 接口 |
 
 ### A.2 v0.4.8 新增的安全承诺
@@ -365,3 +365,47 @@ CLI 新增子命令：`report` `replay` `export` `verify` `bench` `http`；
 6. **手机接入未常驻配置** —— 链路已验证可通（见 A.1），但 `mas http` 未常驻、Tailscale serve 已关闭。
 7. `install.ps1` 只在本机 Windows 跑过；`install.sh` 的原生 Linux/macOS 验证依赖 install CI（v0.4.8 三平台全绿）。
 8. **不承诺流量、签约、平台批准或检测结果**。
+
+---
+
+## 附录 B：v0.4.9 增量验收（2026-11-13，本轮实测）
+
+> v0.4.9 的主题不是加功能，而是**修两个会让"绿灯"失去意义的缺陷**。
+
+### B.1 修掉的两个真实缺陷
+
+| # | 缺陷 | 严重度 | 发现方式 | 证据 |
+| --- | --- | --- | --- | --- |
+| 1 | **测试隔离从未生效**：`unittest discover -s tests` 下 `tests/__init__.py` 不执行，套件读真实 `~/.mas/config.json`、打真实端点 | 高（CI 绿灯不代表沙箱） | 本机 6 跑 3 败（40 秒超时） | `docs/live-model-verification.md` v0.4.9 章节；耗时 40s → 16.5s |
+| 2 | **POSIX launcher 未声明绑定地址**：systemd unit / launchd plist 只指向 wrapper，绑定地址藏在脚本里 | 中（运维看不到 fail-closed 承诺） | **CI 在 ubuntu 3.10/3.13 + macos 3.10 上失败** | `be87b99` 的 ci run 失败日志 |
+
+第 2 个缺陷是 CI 抓出来的，本机 Windows 跑不出来——这正是「跨平台项目必须让 CI 说话」的例证。
+
+### B.2 v0.4.9 验收证据汇总（本轮工具输出）
+
+| 验收项 | 结果 | 证据 |
+| --- | --- | --- |
+| 本地全量测试 | 161 tests OK (skipped=4)，~16.5–18.5 秒 | `unittest discover -s tests` |
+| 连跑稳定性 | 5 跑 5 全绿，16.3–16.7 秒 | 修复前 6 跑 3 败 |
+| pytest 路径 | 155 passed / 2 skipped / 8 subtests | `pytest tests -q` |
+| lint | All checks passed | `ruff check mas tests tools` |
+| CI | 4 个 workflow 全 success（ci / pages / install / release） | run 43318210169 等 |
+| Release 产物 | wheel 81,026 B + sdist 108,894 B | `gh release view v0.4.9` |
+| Release wheel 真实闭环 | `R-69722fd5e3` / closed / 1 iter / 4284 tokens | 全新 venv + `mas run` |
+| OpenMausBot 端到端 | `R-9657aa76a0` / closed / 1 iter / 3713 tokens | `openmausbot run MausBot` |
+| MCP 握手 | ok，12 tools | `install_openmausbot_mcp.py --verify` |
+| 常驻服务版本 | `/health` → `0.4.9` | 本机 Startup 服务重启后 |
+| HTTPS 鉴权矩阵 | 7 条探针全部符合预期（401/200 对照） | Tailscale HTTPS 真实进程 |
+| 防回归测试 | 新增 `tests/test_isolation.py`（6 条）+ daemon 4 条 | 测试文件本身 |
+
+### B.3 仍然成立的边界（v0.4.9）
+
+1. 真实模型实测只覆盖一个端点；Kimi / DeepSeek / Qwen / 原生 OpenAI 未实测。
+2. 契约测试覆盖协议形状，不保证每厂商接受额外的 `input` 字段。
+3. 判定的是结构不是事实；`return list(seen)` 恒空 bug 仍是模型判断。
+4. 真实端点下未做多轮崩溃恢复的账本重放校验。
+5. **PyPI 仍未发布**（缺 `PYPI_API_TOKEN`）。
+6. 手机接入是 tailnet only，非公网 Funnel。
+7. `install.ps1` 只在本机 Windows 跑过。
+8. `Ledger.append` 每次全量重读账本 → O(n²) 写入路径，已定位未修。
+9. 不承诺流量 / 签约 / 平台批准 / 检测结果。

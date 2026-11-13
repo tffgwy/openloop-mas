@@ -804,3 +804,108 @@ L1 是根本原因：隔离只挂在一个不会执行的钩子上。L2/L3 是�
 
 - 修复的是**测试套件自身**的隔离，不改变 `mas` 在生产中的任何行为。
 - `pytest` 与 `unittest` 两条路径都验证过；CI 用的仍是 `unittest discover -s tests`。
+
+---
+
+## v0.4.9 收口：Release 产物 + 真实端点 + OpenMausBot 端到端复测
+
+### CI 与 Release
+
+`be87b99`（测试隔离修复）触发的 `ci` workflow **首次失败**，暴露了第二个真实缺陷（见下）。修复后 `e1b171a` 的 4 个 workflow 全部 success：
+
+| workflow | run id | 结论 |
+| --- | --- | --- |
+| ci | 43318210169 | success（lint + site + build + 15 个 test 矩阵） |
+| pages | 43318210060 | success |
+| install | 43318210211 | success（windows / macos / ubuntu 三平台） |
+| release | 43318569086 | success |
+
+Release `v0.4.9`：`openloop_mas-0.4.9-py3-none-any.whl`（81,026 B）+ `openloop_mas-0.4.9.tar.gz`（108,894 B）。
+
+### CI 暴露的第二个缺陷：POSIX launcher 未声明绑定地址
+
+`be87b99` 的 ci 在 ubuntu-latest 3.10 / 3.13 与 macos-latest 3.10 上失败：
+
+```
+FAIL: test_launcher_binds_loopback_only (test_serve_daemon.ServeDaemonTest)
+AssertionError: '127.0.0.1' not found in '[Unit]\nDescription=OpenLoop MAS HTTP/SSE transport\n...
+```
+
+根因不是测试写错，而是**设计缺陷**：systemd unit 与 launchd plist 只写 `ExecStart=/bin/sh <wrapper>`，绑定地址 `127.0.0.1` 只存在于 wrapper 脚本里。launcher 本身——也就是交给服务管理器的那份声明——完全没有表达「只绑 loopback」。这意味着一个运维只看 unit 文件时，无法从声明中确认服务不会监听 LAN 地址。
+
+修法（`e1b171a`）：
+
+- systemd unit 增加 `Environment="MAS_HTTP_HOST=127.0.0.1"` 与 `Environment="MAS_HTTP_PORT=<port>"`，并附注释说明只绑 loopback。
+- launchd plist 增加同样的 `EnvironmentVariables` 字典。
+- wrapper 改为读取 `MAS_HTTP_HOST` / `MAS_HTTP_PORT`，带 loopback 默认值。
+- 新增 4 条测试：`每个 launcher 面都必须声明 loopback 且不得出现通配地址` / `POSIX launcher 必须把 host/port 传给服务` / `wrapper 必须尊重传入的 host/port` / `POSIX 路径必须用正斜杠`。
+
+这是本轮第二次由 CI 抓出真实问题——第一次是测试隔离，第二次是 launcher 声明。两者的共同点是：**「本机跑通」不等于「跨平台正确」**。
+
+### Release wheel 真实端点闭环
+
+从 `gh release download v0.4.9` 下载 wheel → 全新 venv 安装 → `mas --version` = `openloop-mas 0.4.9` → `mas doctor` 全部 OK：
+
+```
+[OK  ] provider  openai_compat / claude-opus-5-5 @ http://127.0.0.1:16024/v1（免鉴权端点，由握手探测确认）
+[OK  ] endpoint  端点可用，协议方言 = openai-responses-events
+```
+
+`mas run`（真实端点）：
+
+```json
+{"run_id": "R-69722fd5e3", "status": "closed", "iterations": 1, "tokens": 4284}
+```
+
+两条机检标准 c1 / c2 均 `pass`，`issues` 为空。
+
+### OpenMausBot 端到端（v0.4.9）
+
+本机安装同步到 0.4.9（`install.ps1 -SkipDemo` 全部自检 OK），重启 OpenMausBot（端口 28799）后：
+
+- MCP 握手：`handshake: ok, 12 tools`
+- `openmausbot run MausBot <prompt>` 真实任务：
+
+```json
+{"run_id": "R-9657aa76a0", "task_id": "R-9657aa76a0-1",
+ "iterations": 1, "artifact_sha": "29fc6fafa39f", "tokens": 3713,
+ "verdict": "pass", "decision": "close", "stagnation": 0}
+```
+
+账本明细：planner 3 步计划，closure `verdict=pass` / `decision=close`，c1 规则机检 `regex /(?s)def dedupe.*set/ matched`，issues 为空。
+
+### 常驻服务与 HTTPS 入口复测（v0.4.9）
+
+常驻服务重启后版本已升：`/health` 返回 `"version": "0.4.9"`。走 Tailscale HTTPS（`https://win-io6eufe3grh.tail4c219e.ts.net:8768`）实测：
+
+```
+health                   -> 200  {"ok": true, "name": "openloop-mas", "version": "0.4.9"}
+tools(no token)          -> 401  {"error": "unauthorized: missing or invalid bearer token"}
+tools(bad token)         -> 401  {"error": "unauthorized: missing or invalid bearer token"}
+tools(bearer)            -> 200  {"tools": [...]}
+tools(x-mas-token)       -> 200  {"tools": [...]}
+call(no token) POST      -> 401  {"error": "unauthorized: missing or invalid bearer token"}
+call(bad token) POST     -> 401  {"error": "unauthorized: missing or invalid bearer token"}
+call(good token) POST    -> 200  {"tool": "mas_status", "result": {"config": {"provider": "openai_compat", ...}}}
+```
+
+### 本轮测试证据
+
+| 项 | 数值 |
+| --- | --- |
+| `unittest discover -s tests` | 161 tests，**OK (skipped=4)**，~16.5–18.5 秒 |
+| 连跑 5 次（隔离修复后） | 5 跑 5 全绿，耗时 16.3–16.7 秒 |
+| `pytest tests -q` | 155 passed / 2 skipped / 8 subtests（隔离修复后），17.04 秒 |
+| `ruff check mas tests tools` | All checks passed |
+| CI test 矩阵 | 15 个 job 全 success（lint + site + build + 12 组 test） |
+
+### 边界（v0.4.9 仍然成立）
+
+1. 真实模型实测只覆盖一个端点（`claude-opus-5-5` @ Codex Responses 桥接，免鉴权）。Kimi / DeepSeek / Qwen / 原生 OpenAI 本机无端点，**未实测**。
+2. 契约测试覆盖协议形状，不保证每厂商接受额外的 `input` 字段。
+3. 判定的是结构不是事实；对抗评审发现的 `return list(seen)` 恒空 bug 仍是模型判断。
+4. 真实端点下未做多轮崩溃恢复的账本重放校验。
+5. **PyPI 仍未发布**：缺 secret `PYPI_API_TOKEN`。
+6. 手机接入是 **tailnet only**，非公网 Funnel。
+7. `install.ps1` 只在本机 Windows 跑过；`install.sh` 依赖 install CI（三平台全绿）。
+8. 不承诺流量 / 签约 / 平台批准 / 检测结果。
