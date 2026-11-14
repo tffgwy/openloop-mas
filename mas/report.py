@@ -25,6 +25,11 @@ CHARGE_ROLES = (
     "review",
     "reask",
     "reask_failed",
+    # The lead is a paid call too. Leaving it out of this list made
+    # the ledger under-report the spend of every run the lead was
+    # consulted in - the book said 550 tokens while the endpoint
+    # billed 565. A ledger that under-reports is not a ledger.
+    "lead",
     "truncated",
     "error",
 )

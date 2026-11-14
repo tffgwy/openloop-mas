@@ -744,6 +744,23 @@ class LoopEngine:
                 stagnant = stagnant + 1 if art_sha == last_sha else 0
                 last_sha = art_sha
 
+                # The lead is consulted when nobody could decide. It is
+                # not consulted when the machine checks already did:
+                # a failed check is a fact, and a lead that disagrees
+                # with a fact does not get to overrule it.
+                lead_verdict: Dict[str, Any] = {}
+                if not passed and self._lead_is_consulted(scores):
+                    lead_verdict = self._consult_lead(
+                        verify_state, scores, checks
+                    )
+                    # The lead is a paid call. Its tokens belong to the
+                    # budget like every other call's - a run whose spend
+                    # is understated is a run whose budget is a fiction.
+                    lead_usage = dict(lead_verdict.get("_usage") or {})
+                    tokens += int(
+                        lead_usage.get("total_tokens", 0) or 0
+                    )
+
                 decision = "close" if passed else "revise"
                 if not passed and stagnant >= stagnation_limit:
                     decision = "escalate"
@@ -760,6 +777,21 @@ class LoopEngine:
                         f"{stagnant} consecutive attempts "
                         f"(stagnation_limit={stagnation_limit})"
                     )
+                # The lead's judgement fills in the criteria nobody could
+                # judge. It can only *unblock* a criterion the machine
+                # checks did not speak about - it can never turn a failed
+                # machine check into a pass, and it can never overrule the
+                # user's budget. The engine keeps the final word.
+                if lead_verdict:
+                    scores = self._apply_lead_judgement(
+                        scores, checks, lead_verdict
+                    )
+                    blocking = [s for s in scores if s.get("blocking", True)]
+                    passed = bool(scores) and all(
+                        bool(s["pass"]) for s in blocking
+                    )
+                    decision = "close" if passed else "revise"
+
                 if tokens >= max_tokens:
                     decision = "escalate"
                     error = f"budget: tokens {tokens} >= {max_tokens}"
@@ -1689,6 +1721,124 @@ class LoopEngine:
         data["_usage"] = response.get("usage", {})
         data["_raw"] = response.get("text", "")
         return data
+
+    def _consult_lead(
+        self,
+        verify_state: Dict[str, Any],
+        scores: List[Dict[str, Any]],
+        checks: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Ask the lead to judge the criteria nobody else could judge.
+
+        The lead is a paid call, so it is booked like every other call
+        and its answer goes into the ledger. A lead that fails - a
+        broken endpoint, a garbled answer - leaves the criteria
+        unjudged: the run then continues as it did before, which is
+        the honest outcome. A lead can never make a criterion pass by
+        being silent.
+        """
+        state = dict(verify_state)
+        state["scores"] = list(scores)
+        state["checks"] = list(checks)
+        try:
+            answer = self._call_json("lead", state)
+        except (ProviderError, TruncatedAnswer):
+            # The lead is an advisor. If it cannot be reached, the run
+            # goes on without it - the engine's own verdict is not
+            # weakened by a missing advisor.
+            return {}
+        usage = dict(answer.get("_usage") or {})
+        self._log(
+            verify_state["run_id"], verify_state["task_id"],
+            verify_state["attempt"], "lead",
+            {
+                "lead": {
+                    key: value
+                    for key, value in answer.items()
+                    if key not in ("_usage", "_raw")
+                },
+                "tokens": int(usage.get("total_tokens", 0) or 0),
+            },
+        )
+        return answer
+
+    def _apply_lead_judgement(
+        self,
+        scores: List[Dict[str, Any]],
+        checks: List[Dict[str, Any]],
+        lead: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """Fold the lead's verdicts into the criteria nobody could judge.
+
+        The lead may only fill a gap. A criterion that a machine check
+        decided is left exactly as the check decided it - the lead
+        cannot overrule a machine check, whatever it says. A criterion
+        the lead itself could not judge stays unjudged, so the run
+        keeps asking rather than closing on a shrug.
+        """
+        judged: Dict[str, Dict[str, Any]] = {}
+        for item in lead.get("judged") or []:
+            if not isinstance(item, dict):
+                continue
+            cid = str(item.get("id") or "")
+            if cid:
+                judged[cid] = item
+        if not judged:
+            return scores
+
+        decided_ids = {
+            str(check.get("id"))
+            for check in checks or []
+            if check.get("pass") is not None
+        }
+        updated: List[Dict[str, Any]] = []
+        for score in scores:
+            cid = str(score.get("id") or "")
+            answer = judged.get(cid)
+            # A criterion the machine checks already decided is not the
+            # lead's to decide.
+            if (
+                not answer
+                or score.get("source") != "model-missing"
+                or cid in decided_ids
+            ):
+                updated.append(score)
+                continue
+            met = _as_bool(answer.get("met"))
+            if met is None:
+                # The lead did not say. An undecided lead is not a
+                # passing lead.
+                updated.append(score)
+                continue
+            entry = dict(score)
+            entry["pass"] = met
+            entry["source"] = "lead"
+            entry["note"] = str(answer.get("note") or score.get("note") or "")
+            updated.append(entry)
+        return updated
+
+    @staticmethod
+    def _lead_is_consulted(scores: List[Dict[str, Any]]) -> bool:
+        """Whether the lead has anything to decide.
+
+        The lead exists for exactly one situation: some acceptance
+        criteria have no verdict at all. The machine checks could not
+        speak about them and the reviewers did not either, so the
+        engine has no answer - and without the lead such a run simply
+        spins until it stagnates and escalates, which tells the human
+        nothing except that nobody could judge.
+
+        The lead is *not* consulted when the machine checks already
+        decided. A check that failed is a fact, not a matter of
+        opinion, and no amount of lead reasoning may turn it into a
+        pass.
+        """
+        for score in scores or []:
+            if not score.get("blocking", True):
+                continue
+            if score.get("source") == "model-missing":
+                return True
+        return False
 
     @staticmethod
     def _read_review_pass(review: Optional[Dict[str, Any]]) -> Optional[bool]:

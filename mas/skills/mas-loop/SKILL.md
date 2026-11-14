@@ -17,7 +17,7 @@ OpenLoop MAS 把闭环写成代码约束：
 | 执行 | worker | **交付物本身** |
 | 验证 | verifier | 逐条验收标准的通过/不通过 + 证据 |
 | 复盘 | reflector | 失败原因与下一轮改法 |
-| 闭合 | lead | close / revise / escalate |
+| 闭合 | lead | 只判没人判的标准：close / revise / escalate |
 
 只有当"产物 + 逐条判定 + 决策 + 账本条目"四件套齐全，循环才算闭合；否则状态只会是
 `closed` / `escalated`（升级人工）/ `budget_exhausted`（预算耗尽），没有"差不多完成"。

@@ -7,6 +7,40 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.38 adds** (the role that was supposed to close the loop is
+actually wired up now):
+
+- **The `lead` role had a contract but no wiring.** `roles.py`
+  described a lead agent, `providers.py` had a mock branch for it, the
+  README and the skill both listed it as the role that closes the loop -
+  and the engine never called it. The outcome was the line
+  `decision = "close" if passed else "revise"`. The lead is now
+  consulted exactly when there is something for it to decide: some
+  acceptance criteria carry no machine check and no reviewer verdict
+  either. It receives those criteria and the deliverable, and answers
+  with `{"decision", "reason", "judged": [{"id", "met", "note"}]}`.
+- **The lead is an advisor, not a judge of facts.** A machine check
+  that failed is a fact: the lead is not consulted at all in that case,
+  and when it is consulted it may only fill a gap - a criterion the
+  machine checks already decided is left exactly as the check decided
+  it, whatever the lead says. The engine keeps the final word over
+  stagnation, budget and deadline, so a lead cannot close a run that
+  has run out of budget.
+- **A lead that shrugs closes nothing.** When the lead's `met` field
+  cannot be read as a boolean, the criterion stays unjudged and the
+  loop keeps asking - the same rule that governs an unreadable
+  reviewer answer, applied to the advisor. A broken lead (an
+  unreachable endpoint or a garbled reply) leaves the criteria
+  unjudged and the run continues as it did before.
+- **The lead's call was not in the book.** The lead is a paid call,
+  but its role was missing from the ledger's charge list, so every run
+  the lead was consulted in under-reported its spend. The role is now
+  charged, and the ledger's total equals the run's reported token
+  usage.
+- Five new engine tests cover the wiring, and every layer of the
+  change was counter-proven by reverting it on its own and confirming
+  the matching test fails.
+
 **What v0.7.37 adds** (an answer nobody can read can no longer get
 past the loop):
 
@@ -736,7 +770,13 @@ prompt will do it:
 | Work | `worker` | **the deliverable itself** | — |
 | Verify | `verifier` | per-criterion pass/fail plus evidence | engine (machine checks win) |
 | Reflect | `reflector` | why it failed, what to change | — |
-| Close | `lead` | `close` / `revise` / `escalate` | engine |
+| Close | `lead` | **judges only what nobody judged**: `close` / `revise` / `escalate` | engine (**final veto**) |
+
+The `lead` is an *advisor, not a judge of facts*: a failed machine check
+is a fact, so the lead is not consulted at all in that case, and when it
+is consulted it may only fill a gap. The engine keeps the final word
+over stagnation, budget and deadline, and a lead that cannot decide
+leaves the criterion unjudged and the loop asking.
 
 A loop is closed only when **artifact + per-criterion verdicts + decision +
 ledger entry** all exist. Otherwise the status is one of exactly three:

@@ -35,8 +35,15 @@ DEFAULT_SYSTEM = {
         "\"revise\"}."
     ),
     "lead": (
-        "You are the lead agent. Decide whether the loop may close. Answer with a "
-        "single JSON object: {\"decision\": \"close|revise|escalate\", \"reason\": str}."
+        "You are the lead agent. Decide whether the loop may close. You are "
+        "consulted only when the machine checks and the reviewers could not "
+        "decide - some acceptance criteria have no verdict at all. Judge "
+        "those criteria yourself against the artifact, and say plainly which "
+        "ones are met. A criterion you cannot judge must be reported as "
+        "unmet, not assumed. Answer with a single JSON object: "
+        "{\"decision\": \"close|revise|escalate\", \"reason\": str, "
+        "\"judged\": [{\"id\": str, \"met\": bool, \"note\": str}]}. "
+        "Use \"escalate\" when the remaining work needs a human."
     ),
 }
 
@@ -45,7 +52,10 @@ ROLE_INSTRUCTIONS = {
     "worker": "Produce the deliverable now. Output only the deliverable text.",
     "verifier": "Verify the candidate artifact. JSON only.",
     "reflector": "Reflect on the failure and specify the next attempt. JSON only.",
-    "lead": "Decide the next action for the loop. JSON only.",
+    "lead": (
+        "Decide the next action for the loop. Judge the criteria that have no "
+        "verdict yet and answer with JSON only."
+    ),
 }
 
 
@@ -157,9 +167,14 @@ class Roles:
             )
         elif role == "lead":
             out.append(
-                "判断这个循环是否可以结束。"
+                "下面有一些验收标准既没有机检结果，评审也没有给出判定。"
+                "请对照交付物自己逐条判断，判断不了的如实说判断不了，"
+                "然后决定这个循环是否可以结束。"
                 if zh else
-                "Decide whether the loop may close."
+                "Some acceptance criteria have neither a machine check nor a "
+                "verdict. Judge them yourself against the artifact, say "
+                "plainly which ones you cannot judge, and then decide whether "
+                "this loop may close."
             )
 
         out.append("")
@@ -224,6 +239,31 @@ class Roles:
             out.append("### 人类补充说明 / HUMAN NOTE" if zh
                        else "### HUMAN NOTE")
             out.append(human_note)
+
+        if role == "lead" and artifact:
+            # The lead is consulted when the engine could not decide on
+            # its own. It can only judge what it can see: the artifact,
+            # the per-criterion results, and - above all - which criteria
+            # nobody has judged. Without the artifact the lead would be
+            # guessing, and a guess that closes the loop is worse than
+            # no lead at all.
+            out.append("")
+            out.append("### 待判定的标准 / UNJUDGED CRITERIA" if zh
+                       else "### UNJUDGED CRITERIA")
+            for item in state.get("scores") or []:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("source") != "model-missing":
+                    continue
+                out.append(
+                    f"- [{item.get('id')}] 待判定 / unjudged"
+                    f"（{item.get('note', '') or '评审未给出判定'}）"
+                )
+            out.append("")
+            out.append("### 交付物 / ARTIFACT" if zh else "### ARTIFACT")
+            out.append("<<ARTIFACT>>")
+            out.append(artifact)
+            out.append("<<END ARTIFACT>>")
 
         if role == "verifier" and artifact:
             out.append("")

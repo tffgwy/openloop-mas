@@ -4,6 +4,57 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.38] - 2026-11-15
+
+### Fixed
+
+The lead role had a contract but no wiring. ``roles.py`` described a lead
+agent, ``providers.py`` had a mock branch for it, the README and the
+skill both listed it as the role that closes the loop - and the engine
+never called it. A run whose criteria nobody could judge simply spun
+until it stagnated and escalated, which told the human nothing except
+that nobody could decide.
+
+* **The lead was never called.** The engine decided the outcome with
+  ``decision = "close" if passed else "revise"`` and no lead was ever
+  consulted, so the role that the documentation names as the one who
+  closes the loop existed only as prose. The lead is now consulted
+  exactly when there is something for it to decide: some acceptance
+  criteria carry no machine check and no reviewer verdict either. It
+  receives the unjudged criteria and the deliverable, and answers with
+  ``{"decision", "reason", "judged": [{"id", "met", "note"}]}``.
+
+* **The lead is an advisor, not a judge of facts.** A machine check
+  that failed is a fact: the lead is not consulted at all in that case,
+  and when it is consulted it may only fill a gap - a criterion the
+  machine checks already decided is left exactly as the check decided
+  it, whatever the lead says. The engine keeps the final word over
+  stagnation, budget and deadline, so a lead cannot close a run that
+  has run out of budget.
+
+* **A lead that shrugs closes nothing.** When the lead's ``met`` field
+  cannot be read as a boolean, the criterion stays unjudged and the
+  loop keeps asking - the same rule that governs an unreadable
+  reviewer answer, applied to the advisor. A broken lead (an
+  unreachable endpoint or a garbled reply) leaves the criteria
+  unjudged and the run continues as it did before; a missing advisor
+  does not weaken the engine's own verdict.
+
+* **The lead's call was not in the book.** The lead is a paid call,
+  but its role was missing from the ledger's charge list, so every run
+  the lead was consulted in under-reported its spend. The role is now
+  charged, and the ledger's total equals the run's reported token
+  usage.
+
+### Tests
+
+Five new engine tests cover the wiring: the lead is called when nobody
+could judge, the lead cannot overrule a failed machine check, the lead
+only fills the gap a machine check left, a lead that cannot decide
+closes nothing, and the lead's call is booked in the ledger. Every
+layer of the change was counter-proven by reverting it on its own and
+confirming the matching test fails.
+
 ## [0.7.37] - 2026-11-15
 
 ### Fixed

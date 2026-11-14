@@ -1445,6 +1445,172 @@ class TestAFractionIsNotAVerdict(unittest.TestCase):
         )
 
 
+class TestTheLeadIsActuallyWired(unittest.TestCase):
+    """The lead role had a contract but no wiring.
+
+    ``roles.py`` described a lead agent, ``providers.py`` had a mock
+    branch for it, and the README and the skill both listed it as the
+    role that closes the loop - but the engine never called it. A run
+    whose criteria nobody could judge simply spun until it stagnated
+    and escalated, which told the human nothing except that nobody
+    could decide.
+    """
+
+    def _provider(self, lead_text, verifier_scores=None, worker_text="artifact"):
+        calls = []
+
+        class _P(Provider):
+            name = "p"
+
+            def __init__(self):
+                super().__init__(model="m")
+
+            def complete(self, *, system, prompt, role="worker",
+                         expect_json=False, max_tokens=4000):
+                calls.append(role)
+                if role == "planner":
+                    text = json.dumps({"summary": "p", "plan": ["one"], "risks": []})
+                elif role == "verifier":
+                    if verifier_scores is None:
+                        # No per-criterion verdict at all: the reviewer
+                        # only wrote a summary. This is the situation the
+                        # lead exists for.
+                        text = json.dumps({"verdict": "pass", "summary": "ok"})
+                    else:
+                        text = json.dumps(
+                            {"verdict": "fail", "scores": verifier_scores}
+                        )
+                elif role == "lead":
+                    text = lead_text
+                elif role == "reflector":
+                    text = json.dumps(
+                        {"summary": "r", "issues": ["x"], "next_action": "revise"}
+                    )
+                else:
+                    text = worker_text
+                return {"text": text,
+                        "usage": {"total_tokens": 10},
+                        "raw": {}}
+
+        return _P(), calls
+
+    def _run(self, provider, criteria, **overrides):
+        config = make_config(tempfile.mkdtemp())
+        config["budget"]["max_iterations"] = overrides.pop("max_iterations", 4)
+        # ``max_iterations`` lives inside the budget block, so it is
+        # set there - passing it at the top level would leave the
+        # default of 8 in place and the test would measure the wrong
+        # thing.
+        config.update(overrides)
+        engine = LoopEngine(config, team=load_team("default"))
+        engine.provider = provider
+        result = engine.run("goal", criteria)
+        return result, engine
+
+    def test_the_lead_is_called_when_nobody_could_judge(self):
+        provider, calls = self._provider(json.dumps({
+            "decision": "close",
+            "reason": "交付物确实满足这条散文标准",
+            "judged": [{"id": "c1", "met": True, "note": "写清楚了"}],
+        }))
+        result, _engine = self._run(
+            provider, [{"id": "c1", "desc": "散文标准，无机检"}]
+        )
+        self.assertIn("lead", calls)
+        self.assertTrue(result.closed, result.status)
+        self.assertEqual(result.scores[0]["source"], "lead")
+
+    def test_the_lead_cannot_overrule_a_failed_machine_check(self):
+        # The lead is an advisor, not a judge of facts. A machine check
+        # that failed is a fact.
+        provider, calls = self._provider(json.dumps({
+            "decision": "close",
+            "reason": "我觉得它可以过",
+            "judged": [{"id": "c1", "met": True, "note": "我说了算"}],
+        }))
+        result, _engine = self._run(
+            provider,
+            [{"id": "c1", "desc": "必须包含 MARK",
+              "check": {"type": "contains", "arg": "MARK"}}],
+            worker_text="no marker here",
+            stagnation_limit=2,
+            max_iterations=5,
+        )
+        self.assertNotIn("lead", calls)
+        self.assertFalse(result.closed)
+        self.assertEqual(result.scores[0]["source"], "rule")
+        self.assertFalse(result.scores[0]["pass"])
+
+    def test_the_lead_only_fills_the_gap_a_machine_check_left(self):
+        # The lead answered "not met" for a criterion the machine check
+        # had already decided. The check wins.
+        # The worker has to deliver the marker, otherwise the machine
+        # check *fails* - and a failed machine check is a fact the lead
+        # is not allowed to overrule. The point of this test is the
+        # other way around: the check succeeded, the lead disagreed,
+        # the check still wins.
+        provider, calls = self._provider(json.dumps({
+            "decision": "close",
+            "reason": "c2 也满足",
+            "judged": [
+                {"id": "c1", "met": False, "note": "我说没过"},
+                {"id": "c2", "met": True, "note": "c2 满足"},
+            ],
+        }), worker_text="MARK artifact")
+        result, _engine = self._run(
+            provider,
+            [
+                {"id": "c1", "desc": "必须包含 MARK",
+                 "check": {"type": "contains", "arg": "MARK"}},
+                {"id": "c2", "desc": "散文标准，无机检"},
+            ],
+            max_iterations=6,
+            stagnation_limit=3,
+        )
+        self.assertIn("lead", calls)
+        self.assertTrue(result.closed, result.status)
+        by_id = {s["id"]: s for s in result.scores}
+        self.assertTrue(by_id["c1"]["pass"])
+        self.assertEqual(by_id["c1"]["source"], "rule")
+        self.assertEqual(by_id["c2"]["source"], "lead")
+
+    def test_a_lead_that_cannot_decide_closes_nothing(self):
+        # An advisor that shrugs is not a passing advisor.
+        provider, _calls = self._provider(json.dumps({
+            "decision": "close",
+            "reason": "大概可以吧",
+            "judged": [{"id": "c1", "met": "maybe", "note": "说不清"}],
+        }))
+        result, _engine = self._run(
+            provider, [{"id": "c1", "desc": "散文标准，无机检"}]
+        )
+        self.assertFalse(result.closed)
+        self.assertEqual(result.scores[0]["source"], "model-missing")
+
+    def test_the_lead_call_is_booked_in_the_ledger(self):
+        provider, _calls = self._provider(json.dumps({
+            "decision": "close",
+            "reason": "ok",
+            "judged": [{"id": "c1", "met": True, "note": "写清楚了"}],
+        }))
+        result, engine = self._run(
+            provider, [{"id": "c1", "desc": "散文标准，无机检"}]
+        )
+        entries = engine.ledger.entries()
+        leads = [e for e in entries if e.get("role") == "lead"]
+        self.assertTrue(leads)
+        # The entry carries the lead's answer itself: the decision it
+        # took and the criteria it judged.
+        answer = leads[-1].get("lead") or {}
+        self.assertEqual(answer.get("decision"), "close")
+        self.assertEqual(
+            [j.get("id") for j in (answer.get("judged") or [])], ["c1"]
+        )
+        # A paid call has to be in the book, or the book is not a book.
+        from mas.report import ledger_spend
+        self.assertEqual(ledger_spend(entries), result.tokens_used)
+
+
 class TestAnUnreadableAnswerIsNoAnswer(unittest.TestCase):
     """A garbled reply must be re-asked, not booked as a failure.
 
