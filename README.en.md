@@ -12,6 +12,35 @@
 [![python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![deps](https://img.shields.io/badge/dependencies-0-orange.svg)]()
 
+**What v0.7.19 adds** (fixing a defect that destroyed the truth of every verdict):
+
+- **The role instruction was dropped entirely on Responses-style gateways.**
+  This is the most damaging defect this project has shipped, and it was
+  found by running the loop against a *real* Codex Responses bridge rather
+  than a mock. The runtime sends `messages` (the chat-completions shape)
+  *and* `input` (the Responses shape); a Responses-style gateway reads
+  `input` and ignores `messages` completely - and `input` used to carry
+  only the user prompt. The system instruction was therefore thrown away:
+  the worker's "output the deliverable itself", the verifier's JSON
+  schema, the reflector's and the lead's decision contract - none of them
+  were in effect. The symptom is deeply misleading: the endpoint answers
+  normally, `mas doctor` reports the endpoint as healthy, the loop still
+  reports "closed" - but the verdicts are guesswork. A loop built on a
+  discarded contract is exactly the fake closure this project exists to
+  prevent. `input` now carries the whole conversation - the system item
+  included - while `messages` keeps the chat-completions shape, so the
+  instruction survives whichever dialect the endpoint speaks, with nothing
+  for the user to configure.
+- **`mas doctor` no longer reports a broken setup as healthy.** The
+  handshake could prove that the endpoint answers, not that the
+  instruction was applied. The new `instruction` check asks the model to
+  repeat a token that appears *only* in the system instruction, and
+  reports a `warn` with an explicit "the role contract may not be in
+  effect, the verdicts are not trustworthy" when the endpoint answers but
+  the instruction was not applied. The probe now sends the same payload
+  shape the provider sends, so the handshake tests the request the runtime
+  really makes.
+
 **What v0.7.18 adds** (making the "one-click install" promise actually true):
 
 - **Downloading a single script used to fail** - the installer needed a source

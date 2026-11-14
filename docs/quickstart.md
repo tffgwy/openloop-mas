@@ -94,7 +94,7 @@ bash install.sh
 验证：
 
 ```bash
-mas doctor      # 9 项自检
+mas doctor      # 安装自检：运行时 / 配置 / 账本 / skills / MCP / 端点 / 指令是否生效
 mas demo        # 离线跑三个闭环场景
 ```
 
@@ -237,6 +237,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\uninstall.ps1
 
 **Q：`mas doctor` 报 provider 不可用？**
 默认是 `mock` 离线模式，永远可用。要用真实模型先 `mas init` 并设置 `MAS_API_KEY`。
+
+**Q：`mas doctor` 报 `instruction` 是 warn？**
+这条检查在问一件更要紧的事：*你发的角色指令，模型到底采纳了没有*。
+它让模型复述一个只出现在 system 指令里的标记词。端点能应答、却没复述，
+说明你的网关读的是 `input` 而不是 `messages`（或反过来），于是 worker / verifier 的
+角色契约没有生效——**闭环可能"闭合"得毫无意义**。这时先确认网关方言，
+再升级到 v0.7.19 及以上（该版本起 `input` 会携带整段对话）。
 
 **Q：任务一直不闭合？**
 看 `mas ledger` 里的 `verdict` 与 `note`；若是 `unjudged`，说明该标准既没有机检规则，模型也没给判定——补一条 `check` 规则最省事。

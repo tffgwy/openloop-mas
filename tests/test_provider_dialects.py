@@ -187,8 +187,95 @@ class InputOnlyBridgeDialectTest(unittest.TestCase):
             self.assertTrue(result["text"].startswith("INPUT-ECHO:"))
             payload = server.requests[0]
             # both keys are sent so strict gateways and bridges both work
-            self.assertEqual(payload["input"], "bridge-prompt")
+            self.assertEqual(payload["input"][-1]["content"], "bridge-prompt")
             self.assertEqual(payload["messages"][-1]["content"], "bridge-prompt")
+
+    def test_the_system_instruction_survives_the_bridge(self):
+        """The bridge prefers ``input`` over ``messages``.
+
+        When ``input`` carried only the user prompt, the system
+        instruction was dropped on the floor: every role contract in the
+        loop (the verifier's JSON schema, the worker's "output the
+        deliverable") silently stopped applying while the endpoint kept
+        answering normally. ``input`` therefore carries the *whole*
+        conversation.
+        """
+        with _FakeDialectServer("input_only") as server:
+            provider = OpenAICompatProvider(model="bridge-model", base_url=server.base_url)
+            provider.complete(system="SYSTEM-CONTRACT", prompt="bridge-prompt")
+            payload = server.requests[0]
+            roles = [item["role"] for item in payload["input"]]
+            self.assertEqual(roles, ["system", "user"])
+            self.assertEqual(payload["input"][0]["content"], "SYSTEM-CONTRACT")
+            # The chat-completions shape still carries it, for strict
+            # gateways that never look at ``input``.
+            self.assertEqual(payload["messages"][0]["role"], "system")
+            self.assertEqual(payload["messages"][0]["content"], "SYSTEM-CONTRACT")
+
+
+class SystemInstructionDroppedDialectTest(unittest.TestCase):
+    """A bridge that prefers ``input`` *and* ignores its system item.
+
+    This is the failure mode the runtime has to survive: the endpoint
+    answers, the dialect is recognised, and the role contract is gone.
+    """
+
+    class _Server(_FakeDialectServer):
+        def dispatch(self, path: str, payload: Dict[str, Any]):
+            items = payload.get("input")
+            if isinstance(items, list):
+                system = next(
+                    (i for i in items if isinstance(i, dict) and i.get("role") == "system"),
+                    None,
+                )
+                if system is None:
+                    # The old, broken shape: no system item in ``input``.
+                    return self._json(
+                        {"choices": [{"message": {"content": "pong"}}],
+                         "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+                    )
+                text = str(system.get("content") or "")
+                return self._json(
+                    {"choices": [{"message": {"content": text}}],
+                     "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+                )
+            return self._json(
+                {"choices": [{"message": {"content": "pong"}}],
+                 "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+            )
+
+    def test_the_instruction_reaches_the_model(self):
+        from mas.probe import probe_instruction_echo
+
+        with self._Server("input_only") as server:
+            result = probe_instruction_echo(
+                provider="openai_compat",
+                base_url=server.base_url,
+                model="m",
+            )
+        self.assertEqual(result["status"], "ok", result)
+        self.assertIn("指令", result["detail"])
+
+    def test_a_gateway_that_ignores_the_system_item_is_reported(self):
+        from mas.probe import ECHO_MARKER, probe_instruction_echo
+
+        class _Ignoring(SystemInstructionDroppedDialectTest._Server):
+            def dispatch(self, path: str, payload: Dict[str, Any]):
+                # Answers happily, but the system item never reaches the
+                # model - the exact failure the runtime has to catch.
+                return self._json(
+                    {"choices": [{"message": {"content": "pong"}}],
+                     "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+                )
+
+        with _Ignoring("input_only") as server:
+            result = probe_instruction_echo(
+                provider="openai_compat",
+                base_url=server.base_url,
+                model="m",
+            )
+        self.assertEqual(result["status"], "warn", result)
+        self.assertIn(ECHO_MARKER, result["detail"])
 
 
 class SseChatDialectTest(unittest.TestCase):

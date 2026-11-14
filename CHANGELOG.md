@@ -4,6 +4,52 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.19] - 2026-11-14
+
+### Fixed
+
+The role contract of the loop was silently discarded on Responses-style
+gateways. This is the most damaging defect this project has shipped, and it
+was found by running the loop against a real Codex Responses bridge instead
+of a mock.
+
+* **The system instruction never reached the model.** The provider sent
+  `messages` (the chat-completions shape) *and* `input` (the Responses
+  shape). A Responses-style bridge reads `input` and ignores `messages`
+  entirely - and `input` used to carry only the user prompt. The system
+  instruction was therefore dropped on the floor on every such gateway.
+  The visible symptom was subtle: the endpoint answered normally, `mas
+  doctor` reported the endpoint as healthy, and the loop still "closed" -
+  but the verdicts were guesswork. The worker's "output the deliverable
+  itself", the verifier's JSON schema, the reflector's and the lead's
+  decision contract: none of them were in effect. A closed loop built on
+  a discarded contract is exactly the fake closure this project exists to
+  prevent.
+  `input` now carries the whole conversation - the system item included -
+  in the Responses item shape, while `messages` keeps the chat-completions
+  shape for strict gateways. Both carry the instruction, so it survives
+  whichever dialect the endpoint actually speaks, and nothing has to be
+  configured to pick one.
+
+* **`mas doctor` reported a broken setup as healthy.** The handshake only
+  proved that the endpoint answers and which dialect it speaks - it could
+  not tell whether the instruction it sent was applied. A new
+  `instruction` check asks the model to repeat a token that only the
+  system instruction mentions, and reports a `warn` with an explicit
+  "角色契约可能未生效，闭环判定不可信" when the endpoint answers but the
+  instruction was not applied. The probe now also sends the same payload
+  shape the provider sends, so the handshake tests the request the runtime
+  really makes.
+
+### Added
+
+* `mas.probe.probe_instruction_echo` - the instruction check on its own,
+  usable outside `mas doctor`.
+* `mas doctor` gained the `instruction` check. It runs on every configured
+  non-mock endpoint and is reported by the MCP tool `mas_doctor` as well.
+* Regression tests for the dropped-system case, for the provider payload
+  shape and for the new check.
+
 ## [0.7.18] - 2026-11-14
 
 ### Fixed

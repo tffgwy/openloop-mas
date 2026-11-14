@@ -568,8 +568,28 @@ class ProviderPayloadTest(unittest.TestCase):
         provider._post_json = fake_post
         provider.complete(system="s", prompt="the task", role="worker")
         self.assertIn("messages", captured["payload"])
-        self.assertEqual(captured["payload"]["input"], "the task")
+        self.assertEqual(captured["payload"]["input"][-1]["content"], "the task")
         self.assertEqual(captured["payload"]["messages"][1]["content"], "the task")
+
+    def test_input_carries_the_system_instruction_too(self):
+        """A Responses-style gateway reads ``input`` and ignores ``messages``.
+
+        Sending the bare prompt in ``input`` silently dropped the system
+        instruction on those gateways, so every role contract stopped
+        applying. ``input`` must carry the system item as well.
+        """
+        provider = OpenAICompatProvider(model="m", base_url="http://x/v1", api_key="k")
+        captured = {}
+
+        def fake_post(url, payload, headers):
+            captured["payload"] = payload
+            return {"choices": [{"message": {"content": "hello"}}], "usage": {"total_tokens": 1}}
+
+        provider._post_json = fake_post
+        provider.complete(system="ROLE-CONTRACT", prompt="the task", role="worker")
+        items = captured["payload"]["input"]
+        self.assertEqual([item["role"] for item in items], ["system", "user"])
+        self.assertEqual(items[0]["content"], "ROLE-CONTRACT")
 
     def test_fallback_can_override_the_connection_settings(self):
         from mas.providers import build_provider_chain

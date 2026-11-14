@@ -153,6 +153,21 @@ class _GatewayServer:
                 prompt = content
             elif message.get("role") == "system":
                 system = content
+        # A Responses-style bridge reads ``input`` and ignores ``messages``.
+        # The system instruction has to be picked up from either shape,
+        # otherwise the role contract is lost and the loop closes on a
+        # guess instead of on a verdict.
+        if isinstance(payload.get("input"), list):
+            for item in payload["input"]:
+                if not isinstance(item, dict):
+                    continue
+                content = item.get("content")
+                if not isinstance(content, str):
+                    continue
+                if item.get("role") == "user" and not prompt:
+                    prompt = content
+                elif item.get("role") == "system" and not system:
+                    system = content
         if not prompt:
             prompt = str(payload.get("input") or "")
         answer = _role_answer(prompt, system)

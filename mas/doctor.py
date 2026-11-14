@@ -14,7 +14,7 @@ import sys
 from typing import Any, Dict, List
 
 from mas.config import config_path, load_config, state_dir, user_config_path
-from mas.probe import probe_from_config
+from mas.probe import probe_from_config, probe_instruction_echo
 
 
 def _check(name: str, status: str, detail: str) -> Dict[str, Any]:
@@ -239,10 +239,32 @@ def run_doctor(config: Dict[str, Any] | None = None, allow_network: bool = True)
         except Exception as exc:  # pragma: no cover - defensive
             live = {"status": "warn", "dialect": "unknown", "detail": f"探测异常: {exc}"}
         results.append(_check("endpoint", live.get("status", "warn"), str(live.get("detail", ""))))
+        # A reachable endpoint is not the same as a *usable* one. On a
+        # Responses-style gateway the system instruction used to be
+        # dropped while the endpoint still answered normally - so the
+        # endpoint check said "ok" and every role contract in the loop
+        # was silently discarded. This check asks the model to repeat a
+        # token that only the system instruction mentions, and reports
+        # honestly when the instruction was not applied.
+        try:
+            echo = probe_instruction_echo(
+                provider=provider,
+                base_url=base_url,
+                model=str(config.get("model") or ""),
+                api_key=key,
+                timeout_sec=float(config.get("timeout_sec", 20) or 20),
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            echo = {"status": "warn", "detail": f"指令校验异常: {exc}"}
+        results.append(
+            _check("instruction", echo.get("status", "warn"), str(echo.get("detail", "")))
+        )
     elif provider != "mock" and not allow_network:
         results.append(_check("endpoint", "warn", "已按 --no-network 跳过握手探测"))
+        results.append(_check("instruction", "warn", "已按 --no-network 跳过指令生效校验"))
     elif provider != "mock":
         results.append(_check("endpoint", "warn", "端点未配置，跳过握手探测"))
+        results.append(_check("instruction", "warn", "端点未配置，跳过指令生效校验"))
 
     # The file-level checks are a *capability*, not a setting: if the
     # runtime cannot read the workspace, every file check would silently

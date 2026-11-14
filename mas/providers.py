@@ -255,6 +255,45 @@ class OpenAICompatProvider(_HttpProvider):
 
     name = "openai_compat"
 
+    @staticmethod
+    def _responses_input(system: str, prompt: str) -> List[Dict[str, Any]]:
+        """Build the ``input`` array for a Responses-style gateway.
+
+        The gateway family this project has to survive is not one API but
+        a family of dialects, and they disagree about where the *system*
+        instruction lives:
+
+        * a strict ``/chat/completions`` server reads ``messages``;
+        * a Responses-style bridge (the Codex Responses bridge among them)
+          reads ``input`` and **ignores ``messages`` completely**.
+
+        Sending ``input`` as a bare prompt string therefore silently threw
+        the system instruction away on every Responses-style gateway: the
+        model answered the user message with no role contract at all. That
+        is a *fake* loop - the worker, verifier and reflector prompts all
+        lost their "answer with this JSON shape" instruction, so the
+        verdicts were guesswork dressed up as verification.
+
+        The fix is to send the *same* conversation twice, in the two
+        shapes the two dialects read:
+
+        * ``messages`` - ``[system, user]``, the chat-completions shape;
+        * ``input``   - ``[system, user]`` as an array of role/content
+          items, the Responses shape.
+
+        Both carry the system instruction, so it survives whichever
+        dialect the endpoint actually speaks. A plain OpenAI endpoint
+        ignores the unknown ``input`` key; a Responses bridge ignores
+        ``messages``. Nothing has to be configured to pick one.
+        """
+        system = str(system or "")
+        prompt = str(prompt or "")
+        items: List[Dict[str, Any]] = []
+        if system:
+            items.append({"role": "system", "content": system})
+        items.append({"role": "user", "content": prompt})
+        return items
+
     def complete(self, *, system: str, prompt: str, role: str = "worker",
                  expect_json: bool = False, max_tokens: int = 4000) -> Dict[str, Any]:
         base_url = str(self.options.get("base_url") or "https://api.openai.com/v1").rstrip("/")
@@ -277,10 +316,16 @@ class OpenAICompatProvider(_HttpProvider):
         # front of Claude models among them - ignore ``messages`` entirely
         # and only read ``input``. Sending both makes the request work on
         # strict OpenAI gateways (they read ``messages``) and on the
-        # Responses-style bridges (they read ``input``). When both are
-        # present the bridge prefers ``input``; a plain OpenAI endpoint
-        # ignores the unknown key.
-        payload["input"] = prompt
+        # Responses-style bridges (they read ``input``).
+        #
+        # ``input`` carries the *whole* conversation - system included - and
+        # not just the user prompt. An earlier version sent the bare prompt
+        # string, which the bridge preferred over ``messages``: the system
+        # instruction was dropped on the floor and every role contract
+        # (verifier JSON schema, worker's "output the deliverable", ...)
+        # silently stopped applying. The array shape keeps the instruction
+        # alive on both dialects.
+        payload["input"] = self._responses_input(system, prompt)
         if expect_json:
             payload["response_format"] = {"type": "json_object"}
         url = f"{base_url}/chat/completions"
