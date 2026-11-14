@@ -4,6 +4,49 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.49] - 2026-11-15
+
+### Fixed
+
+Only the ``escalate`` ending opened a human ticket. Every other
+unfinished ending left *nothing* behind: a run that stopped on the
+iteration ceiling, that ran out of wall-clock time, that ran out of
+tokens, or that died on a provider error ended with a status and no
+ticket at all.
+
+Measured on the live model: a run that hit ``max_iterations`` ended as
+``budget_exhausted`` with the deliverable on disk and **no ticket**.
+The status page said "未闭环 1" and the human queue was empty - the
+loop reported an unfinished job and offered nobody a way to finish
+it. That is the one link of the loop that was missing: escalate ->
+handle it by hand -> resume had no entry point for the run that ran
+out of road.
+
+* **Every ending that is not "closed" now opens a ticket.** The run
+  that stops on the budget ceiling, and the run that dies on a
+  provider error, both leave something a human can pick up.
+
+* **The ticket says which kind of failure it was.** A run that hit the
+  ceiling gets a ``budget_exhausted`` ticket; a run that died on the
+  backend gets a ``run_error`` ticket. "Raise the budget" and "fix
+  the endpoint" are different human reactions, and a ticket that
+  calls both of them the same thing cannot tell the human which one
+  happened.
+
+* **The ticket carries the reason, the goal, the criteria and the
+  last deliverable** - everything needed to decide whether to resume,
+  without re-running anything.
+
+* **A closed run still leaves no ticket**, and a resumed run still
+  keeps the ticket it already has: one problem is never listed twice.
+
+### Tests
+
+* ``tests/test_every_unfinished_run_leaves_a_ticket.py`` - 14 new
+  regression tests.
+* ``work/_rc749.py`` - a seven-layer falsification framework
+  (AA~GG); every layer is caught by the tests.
+
 ## [0.7.48] - 2026-11-15
 
 ### Added

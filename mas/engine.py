@@ -1003,6 +1003,39 @@ class LoopEngine:
         # is not a handover.
         artifact_path = self._save_artifact(run_id, artifact)
 
+        # Every run that did not close has to leave something a human
+        # can pick up. The escalation path opened a ticket, but the
+        # other endings did not: a run that stopped on the iteration
+        # ceiling, that ran out of wall-clock time, that ran out of
+        # tokens, or that died on a provider error ended with the
+        # status "budget_exhausted" or "error" and *no ticket at all*.
+        # The status page then said "未闭环 1" and the human queue was
+        # empty - the loop reported an unfinished job and offered
+        # nobody a way to finish it. Measured on the live model: a run
+        # that hit max_iterations left no ticket, so the deliverable
+        # existed and nothing pointed at it.
+        #
+        # A run without a ticket is not a result. Every ending that is
+        # not "closed" now opens one, so the queue always matches the
+        # report.
+        if status != STATUS_CLOSED and not ticket_id:
+            ticket_id = self._open_handover_ticket(
+                run_id=run_id,
+                task_id=task_id,
+                goal=goal,
+                title=title or goal[:40],
+                crits=crits,
+                artifact=artifact,
+                issues=issues,
+                attempt=attempt,
+                history=history,
+                stagnant=stagnant,
+                status=status,
+                error=error or last_error,
+                last_error=last_error,
+                parent_ticket_id=parent_ticket_id,
+            )
+
         self._log(
             run_id, task_id, attempt, "run_end",
             {
@@ -2105,6 +2138,65 @@ class LoopEngine:
     ) -> List[Dict[str, Any]]:
         return LoopEngine._merge_verdict_scores(crits, checks, [verdict])
 
+
+    # -------------------------------------------------------- handover ticket
+    def _open_handover_ticket(
+        self,
+        run_id: str,
+        task_id: str,
+        goal: str,
+        title: str,
+        crits: List[Any],
+        artifact: str,
+        issues: List[str],
+        attempt: int,
+        history: List[Dict[str, Any]],
+        stagnant: int,
+        status: str,
+        error: str,
+        last_error: str,
+        parent_ticket_id: Optional[str] = None,
+    ) -> str:
+        """Open a human ticket for a run that did not close.
+
+        The reason a run stopped matters as much as the fact that it
+        stopped: "hit the iteration ceiling" and "the provider died"
+        call for different human reactions - raise the budget versus
+        fix the credentials. The ticket carries the reason, the last
+        deliverable and the criteria, so the human can decide without
+        re-running anything.
+        """
+        if status == STATUS_BUDGET:
+            kind = "budget_exhausted"
+            reason = error or last_error or "the run ran out of budget"
+        elif status == STATUS_ERROR:
+            kind = "run_error"
+            reason = error or last_error or "the run failed"
+        else:
+            kind = "loop_escalation"
+            reason = error or last_error or "loop could not close itself"
+
+        payload = {
+            "run_id": run_id,
+            "task_id": task_id,
+            "goal": goal,
+            "title": title,
+            "criteria": [c.to_dict() for c in crits],
+            "last_artifact": artifact,
+            "issues": list(issues),
+            "attempts": attempt,
+            "history": history,
+            "stagnation": stagnant,
+            "reason": reason,
+            "status": status,
+        }
+        if parent_ticket_id:
+            # A resumed loop keeps the ticket it already has: one
+            # problem must not be listed twice.
+            self.tickets.append_attempt(parent_ticket_id, payload, reason=reason)
+            return parent_ticket_id
+        ticket = self.tickets.create(kind, payload)
+        return str(ticket["id"])
 
     # --------------------------------------------------------------- resume
     def resume(self, ticket_id: str, note: str = "") -> RunResult:

@@ -7,6 +7,33 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.49 adds** (an unfinished run always leaves a ticket):
+
+- **Only the "escalate" ending opened a ticket.** Every other
+  unfinished ending left *nothing* behind: a run that stopped on the
+  iteration ceiling, that ran out of wall-clock time, that ran out of
+  tokens, or that died on a provider error.
+- **Measured on the live model.** A run that hit `max_iterations`
+  ended as `budget_exhausted` with the deliverable on disk and **no
+  ticket**. The status page said "未闭环 1" and the human queue was
+  empty - the loop reported an unfinished job and offered nobody a way
+  to finish it. That was the one missing link: escalate -> handle it
+  by hand -> resume had no entry point for the run that ran out of
+  road.
+- **Every ending that is not "closed" now opens a ticket** - the run
+  that stops on the ceiling and the run that dies on the backend both
+  leave something a human can pick up.
+- **The ticket says which kind of failure it was**: a
+  `budget_exhausted` ticket or a `run_error` ticket. "Raise the
+  budget" and "fix the endpoint" are different human reactions.
+- **The ticket carries the reason, the goal, the criteria and the last
+  deliverable** - enough to decide whether to resume without
+  re-running anything.
+- **A closed run still leaves no ticket**, and a resumed run keeps
+  the ticket it already has.
+- 14 new regression tests; a seven-layer falsification framework
+  (AA~GG) - every layer, reverted on its own, is caught by the tests.
+
 **What v0.7.48 adds** (a ticket explains itself):
 
 - **A ticket used to be a serial number.** `mas tickets` printed one
