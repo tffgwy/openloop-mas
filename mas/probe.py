@@ -220,6 +220,35 @@ def probe(
     }
 
 
+def _probe_key(config: Dict[str, Any]) -> str:
+    """Resolve the key the handshake must use, exactly like the runtime.
+
+    The provider resolves its credential through
+    :func:`mas.config.resolve_api_key` (see ``mas.providers._resolved_key``),
+    which honours ``api_key_env``. The handshake used to read only the
+    *literal* ``config["api_key"]`` field - the field the wizard
+    deliberately leaves empty so that no plaintext key is written to disk.
+    The result was a handshake without an ``Authorization`` header against
+    an endpoint that demands one: the endpoint check reported ``401`` and
+    the user was told their configuration was broken, while every real
+    request from the same configuration carried the key and worked.
+
+    A handshake has to speak the same dialect as the runtime, credentials
+    included, or it diagnoses a configuration the user never made.
+    """
+    literal = str(config.get("api_key") or "")
+    if literal:
+        return literal
+    try:
+        from mas.config import resolve_api_key
+
+        return resolve_api_key(config)
+    except Exception:  # pragma: no cover - defensive
+        import os
+
+        return os.environ.get(str(config.get("api_key_env") or "MAS_API_KEY"), "")
+
+
 def probe_from_config(config: Dict[str, Any], api_key: Optional[str] = None) -> Dict[str, Any]:
     """Probe using the values of a loaded configuration."""
     provider = str(config.get("provider") or "mock")
@@ -229,7 +258,7 @@ def probe_from_config(config: Dict[str, Any], api_key: Optional[str] = None) -> 
             "dialect": "mock",
             "detail": "mock（离线模式，未发起网络请求）",
         }
-    key = api_key if api_key is not None else str(config.get("api_key") or "")
+    key = api_key if api_key is not None else _probe_key(config)
     return probe(
         provider=provider,
         base_url=str(config.get("base_url") or ""),

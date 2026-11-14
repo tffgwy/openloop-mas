@@ -7,6 +7,29 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.35 adds** (the self-check now diagnoses *your* configuration
+instead of an illusion):
+
+- **The endpoint handshake ran without the key and reported 401.**
+  v0.7.34 made the provider read its credential from the environment
+  variable named by `api_key_env` - the same contract the wizard writes
+  to disk, where only the *name* is stored so that no secret ever hits
+  the disk. The handshake did not follow: `probe_from_config` still read
+  only the literal `api_key` field, and that field is deliberately
+  empty. Against an endpoint that requires authentication the handshake
+  therefore went out with an empty `Authorization` header and came back
+  `401` - while every real request of the very same run carried the key
+  and worked. The beginner was told to fix a setup that was already
+  correct, and `mas doctor` and `mas verify` disagreed about the same
+  machine. The handshake now resolves its credential exactly like the
+  runtime does, so the provider check, the instruction check and the
+  endpoint check all speak the same dialect with the same credentials.
+- Reproduced against a local server that rejects unauthenticated
+  requests: before the fix the endpoint line reported `HTTP 401` while
+  the server logged the key on every other request of the same run;
+  after the fix the endpoint line reports the endpoint as reachable and
+  the closed loop actually closes.
+
 **What v0.7.34 adds** (the self-check tells the truth - and the key you
 set actually reaches the model):
 

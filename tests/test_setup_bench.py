@@ -18,8 +18,10 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import unittest
 from contextlib import redirect_stdout
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from mas.bench import run_bench
 from mas.config import DEFAULT_CONFIG
@@ -443,6 +445,102 @@ class TestBench(unittest.TestCase):
         result = run_bench(repeats=1, scenarios=["closure"])
         self.assertEqual(result["summary"]["runs"], 1)
         self.assertEqual(result["rows"][0]["scenario"], "closure")
+
+
+class TestVerifyHandshakeUsesTheRealCredential(unittest.TestCase):
+    """``mas verify`` must not diagnose a configuration the user never made.
+
+    The verify handshake has to speak the same dialect as the runtime,
+    credentials included. When it dropped the ``api_key_env`` key it
+    reported ``401`` against an endpoint that every other request from
+    the same configuration authenticated successfully - the beginner is
+    told to fix a setup that was already correct.
+    """
+
+    def _run_against_authenticated_endpoint(self):
+        seen: list = []
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):  # noqa: N802
+                length = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(length).decode("utf-8", "replace")
+                seen.append(self.headers.get("Authorization"))
+                if self.headers.get("Authorization") != "Bearer verify-secret":
+                    body = json.dumps({"error": "missing or wrong api key"}).encode("utf-8")
+                    self.send_response(401)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                payload = json.loads(raw)
+                blob = json.dumps(payload, ensure_ascii=False)
+                system = " ".join(
+                    str(m.get("content") or "")
+                    for m in (payload.get("messages") or [])
+                    if m.get("role") == "system"
+                )
+                if "MASPROBE7Q" in system:
+                    text = "MASPROBE7Q"
+                elif "MAS_VERIFY_OK" in blob:
+                    text = "用于验证闭环是否真的能跑通的短文，包含 MAS_VERIFY_OK 标记。" * 4
+                else:
+                    text = "pong"
+                body = json.dumps({"choices": [{"message": {"content": text}}]}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+        env_name = "MAS_TEST_VERIFY_KEY"
+        old = os.environ.get(env_name)
+        os.environ[env_name] = "verify-secret"
+        self.addCleanup(
+            os.environ.__setitem__, env_name, old
+        ) if old is not None else self.addCleanup(os.environ.pop, env_name, None)
+
+        config = {
+            "provider": "openai_compat",
+            "model": "test-model",
+            "base_url": f"http://127.0.0.1:{port}/v1",
+            "api_key": "",
+            "api_key_env": env_name,
+            "timeout_sec": 15,
+            "team": "default",
+            "budget": {"max_iterations": 2, "deadline_sec": 60},
+        }
+        result = run_verify(config)
+        return result, seen
+
+    def test_verify_reports_the_endpoint_as_reachable(self):
+        result, seen = self._run_against_authenticated_endpoint()
+        rows = {row["check"]: row for row in result["checks"]}
+        self.assertEqual(rows["endpoint"]["status"], "ok", rows["endpoint"])
+        self.assertTrue(seen, "verify must talk to the endpoint")
+        self.assertTrue(
+            all(auth == "Bearer verify-secret" for auth in seen),
+            f"every verify request must carry the configured key, saw: {seen}",
+        )
+
+    def test_verify_closes_the_loop_against_an_authenticated_endpoint(self):
+        result, _ = self._run_against_authenticated_endpoint()
+        rows = {row["check"]: row for row in result["checks"]}
+        self.assertEqual(rows["closure"]["status"], "ok", rows["closure"])
+        self.assertTrue(result["ok"], result["checks"])
 
 
 if __name__ == "__main__":

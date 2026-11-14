@@ -4,6 +4,36 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.35] - 2026-11-14
+
+### Fixed
+
+``mas verify`` could report a configuration the user never made.
+
+* **The endpoint handshake ran without the key.** v0.7.34 made the
+  provider read its credential from the environment variable named by
+  ``api_key_env`` - the same contract the setup wizard writes to disk.
+  The handshake did not follow: ``probe_from_config`` still read only the
+  *literal* ``api_key`` field, which the wizard deliberately leaves empty
+  so that no secret is ever written to disk. Against an endpoint that
+  requires authentication the handshake therefore went out with an empty
+  ``Authorization`` header and came back ``401`` - while every real
+  request from the very same configuration carried the key and worked.
+  The beginner was told to fix a setup that was already correct, and
+  ``mas doctor`` and ``mas verify`` disagreed about the same machine.
+
+  The handshake now resolves its credential exactly like the runtime does.
+  Both the provider check and the instruction check of ``mas verify``
+  and the endpoint check of ``mas doctor`` speak the same dialect, with
+  the same credentials, so a diagnosis is a diagnosis of the user's own
+  configuration.
+
+  Reproduced against a local server that rejects unauthenticated
+  requests: before the fix the endpoint check reported ``HTTP 401`` while
+  the server logged the key on every other request of the same run;
+  after the fix the endpoint check reports the endpoint as reachable and
+  the closed loop closes.
+
 ## [0.7.34] - 2026-11-14
 
 ### Fixed

@@ -15,6 +15,7 @@ except ImportError:  # loaded as a top-level module (unittest -s tests)
     from _isolation import ISOLATION_ACTIVE  # noqa: F401
 
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -29,6 +30,7 @@ from mas.probe import (
     DIALECT_UNKNOWN,
     _detect_dialect,
     probe,
+    probe_from_config,
 )
 
 
@@ -189,6 +191,103 @@ class DoctorEndpointCheckTest(unittest.TestCase):
         self.assertEqual(rows["provider"]["status"], "ok", rows["provider"])
         self.assertEqual(rows["endpoint"]["status"], "ok", rows["endpoint"])
         self.assertIn(DIALECT_OPENAI_CHAT, rows["endpoint"]["detail"])
+
+
+class ProbeCredentialTest(unittest.TestCase):
+    """The handshake must use the same credential the runtime uses.
+
+    The provider resolves its key through ``api_key_env`` (the setup
+    wizard records the *name* of the environment variable, never the key
+    itself). The handshake used to read only the literal ``api_key``
+    field, so it talked to an authenticated endpoint without an
+    ``Authorization`` header and reported ``401`` - a diagnosis of a
+    configuration the user never made, while every real request from the
+    very same configuration worked.
+    """
+
+    def _server_recording_auth(self):
+        seen = []
+
+        def handler(_: Any):
+            return (json.dumps({"choices": [{"message": {"content": "pong"}}]}), 200, "application/json")
+
+        return seen, handler
+
+    def test_probe_from_config_uses_the_key_from_the_environment(self):
+        seen: list = []
+
+        class Recorder:
+            def __init__(self) -> None:
+                outer = self
+
+                class Handler(BaseHTTPRequestHandler):
+                    protocol_version = "HTTP/1.1"
+
+                    def log_message(self, *args: Any) -> None:
+                        pass
+
+                    def do_POST(self) -> None:  # noqa: N802
+                        length = int(self.headers.get("Content-Length") or 0)
+                        self.rfile.read(length)
+                        seen.append(self.headers.get("Authorization"))
+                        body = json.dumps({"choices": [{"message": {"content": "pong"}}]}).encode("utf-8")
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.end_headers()
+                        self.wfile.write(body)
+
+                self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+                self.base_url = f"http://127.0.0.1:{self._server.server_address[1]}/v1"
+
+            def __enter__(self) -> "Recorder":
+                threading.Thread(target=self._server.serve_forever, daemon=True).start()
+                return self
+
+            def __exit__(self, *exc: Any) -> None:
+                self._server.shutdown()
+                self._server.server_close()
+
+        env_name = "MAS_TEST_PROBE_ENV_KEY"
+        old = os.environ.get(env_name)
+        os.environ[env_name] = "env-secret-key"
+        try:
+            with Recorder() as server:
+                result = probe_from_config(
+                    {
+                        "provider": "openai_compat",
+                        "model": "m",
+                        "base_url": server.base_url,
+                        # The literal field is deliberately empty - this is
+                        # exactly the shape the setup wizard writes to disk.
+                        "api_key": "",
+                        "api_key_env": env_name,
+                        "timeout_sec": 10,
+                    }
+                )
+        finally:
+            if old is None:
+                os.environ.pop(env_name, None)
+            else:
+                os.environ[env_name] = old
+
+        self.assertEqual(result["status"], "ok", result)
+        self.assertEqual(seen, ["Bearer env-secret-key"])
+
+    def test_probe_from_config_prefers_an_explicit_key(self):
+        env_name = "MAS_TEST_PROBE_ENV_KEY_2"
+        old = os.environ.get(env_name)
+        os.environ[env_name] = "env-secret-key"
+        try:
+            from mas.probe import _probe_key
+
+            resolved = _probe_key({"api_key": "literal-key", "api_key_env": env_name})
+        finally:
+            if old is None:
+                os.environ.pop(env_name, None)
+            else:
+                os.environ[env_name] = old
+        self.assertEqual(resolved, "literal-key")
 
 
 if __name__ == "__main__":
