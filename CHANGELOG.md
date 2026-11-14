@@ -4,6 +4,38 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.41] - 2026-11-15
+
+### Fixed
+
+The loop's last link was written in the engine and never reached the
+report. When a run escalates, the engine opens a ticket that holds the
+deliverable, the criteria and the history, and ``mas resume`` picks the
+work up from there. But the ticket number was never written to the
+ledger, so the report could not name it.
+
+* **The ticket number never entered the ledger.** The engine's end
+  entry carried the status, the error and the deliverable hash, but not
+  the ticket the escalation had just opened. The report therefore had
+  nothing to say beyond "escalated", and a human reading the report had
+  no way to find the ticket that held the work. The ticket number is
+  now booked on the run's end entry.
+
+* **The report could not point at the ticket.** The summary now carries
+  the ticket number, and the rendered report names it together with
+  what to do with it: ``mas tickets`` to look at it, ``mas resume
+  <ticket>`` to continue from there. An escalated run now tells the
+  human where to act, not merely that something went wrong.
+
+### Tests
+
+Four new tests cover the chain: the summary carries the ticket, a run
+without one reports an empty ticket rather than a wrong one, the
+Markdown names the ticket and the next step, and the engine really
+writes the ticket into the ledger (an end-to-end check over a run that
+actually escalates). Every layer was counter-proven by reverting it on
+its own and confirming the matching test fails.
+
 ## [0.7.40] - 2026-11-15
 
 ### Fixed

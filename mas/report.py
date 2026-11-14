@@ -219,6 +219,10 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         # The number of consecutive attempts that produced no change.
         # Zero means the run never stagnated.
         "stagnation": stagnation,
+        # The ticket this run escalated into. An escalated run without
+        # a ticket number tells the human that something went wrong but
+        # not where to act on it.
+        "ticket_id": str(end.get("ticket_id") or "") if end else "",
         "verdict": last_verdict,
         "decision": decision,
         # The end entry is the engine's own account of the run, so it
@@ -352,6 +356,11 @@ def render_markdown(report: Dict[str, Any]) -> str:
             lines.append(
                 f"- ⚠ 停滞：交付物连续 **{int(run.get('stagnation'))}** 次没有变化"
                 "（worker 反复产出相同内容）"
+            )
+        if run.get("ticket_id"):
+            lines.append(
+                f"- 人工工单：`{run.get('ticket_id')}`"
+                "（`mas tickets` 查看，`mas resume <工单号>` 从这里继续）"
             )
         if run.get("plan"):
             summary = (run.get("plan") or {}).get("summary") or ""

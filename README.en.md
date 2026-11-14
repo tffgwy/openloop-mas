@@ -7,6 +7,23 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.41 adds** (the last link of the loop is connected now):
+
+- **The ticket number never entered the ledger.** When a run escalates,
+  the engine opens a ticket that holds the deliverable, the criteria
+  and the history, and `mas resume` picks the work up from there - but
+  the ticket number was never written to the ledger, so the report
+  could say nothing beyond "escalated" and a human reading it had no
+  way to find the ticket that held the work. The ticket number is now
+  booked on the run's end entry.
+- **The report can point at the ticket and say what to do with it.**
+  The summary now carries the ticket number, and the rendered report
+  names it together with the next step: `mas tickets` to look at it,
+  `mas resume <ticket>` to continue from there. An escalated run now
+  tells the human where to act, not merely that something went wrong.
+- Four new tests cover the chain, and every layer was counter-proven
+  by reverting it on its own and confirming the matching test fails.
+
 **What v0.7.40 adds** (the reason a run did not close no longer gets
 lost):
 

@@ -172,6 +172,100 @@ class ReplaySummaryTest(unittest.TestCase):
 
 
 
+class TestTheReportPointsAtTheTicket(unittest.TestCase):
+    """The last link of the loop must be reachable from the report.
+
+    The engine opens a ticket when a run escalates, and ``mas resume``
+    picks the work up from there. But the ticket number was never
+    written to the ledger, so the report could not name it: a human
+    reading "escalated" had no way to find the ticket that held the
+    deliverable, the criteria and the history. The loop broke exactly
+    where it promised to connect.
+    """
+
+    def _escalated_rows(self, ticket_id="T-20261115-020214-ddc0"):
+        return [
+            {"run_id": "R-1", "role": "closure", "iteration": 1,
+             "closed": False, "verdict": "fail", "decision": "escalate",
+             "scores": [{"id": "c1", "pass": False, "source": "rule"}]},
+            {"run_id": "R-1", "role": "run_end", "iteration": 3,
+             "status": "escalated", "closed": False, "deliverable_ok": False,
+             "ticket_id": ticket_id,
+             "error": "stagnation: the deliverable did not change"},
+        ]
+
+    def test_the_summary_carries_the_ticket(self):
+        from mas.report import run_summary
+
+        summary = run_summary("R-1", self._escalated_rows())
+        self.assertEqual(summary["ticket_id"], "T-20261115-020214-ddc0")
+
+    def test_a_run_without_a_ticket_reports_an_empty_one(self):
+        from mas.report import run_summary
+
+        rows = self._escalated_rows(ticket_id="")
+        summary = run_summary("R-1", rows)
+        self.assertEqual(summary["ticket_id"], "")
+
+    def test_the_markdown_names_the_ticket_and_the_next_step(self):
+        from mas.report import build_report, render_markdown
+
+        text = render_markdown(build_report(self._escalated_rows()))
+        self.assertIn("T-20261115-020214-ddc0", text)
+        self.assertIn("人工工单", text)
+        # The report has to say what to do with the ticket, not only
+        # that one exists.
+        self.assertIn("resume", text)
+
+    def test_the_engine_writes_the_ticket_into_the_ledger(self):
+        # The report can only name the ticket if the ledger carries it.
+        import json
+        import tempfile
+
+        from mas.config import DEFAULT_CONFIG
+        from mas.engine import LoopEngine
+
+        class _Stuck:
+            name = "p"
+
+            def __init__(self):
+                self.model = "m"
+
+            def complete(self, *, system, prompt, role="worker",
+                         expect_json=False, max_tokens=4000):
+                if role == "planner":
+                    text = json.dumps({"summary": "p", "plan": ["one"], "risks": []})
+                elif role == "verifier":
+                    text = json.dumps(
+                        {"verdict": "fail",
+                         "scores": [{"id": "c1", "pass": False, "note": "no"}]}
+                    )
+                elif role == "reflector":
+                    text = json.dumps(
+                        {"summary": "r", "issues": ["x"], "next_action": "revise"}
+                    )
+                else:
+                    text = "the same artifact every time"
+                return {"text": text, "usage": {"total_tokens": 10}, "raw": {}}
+
+        config = json.loads(json.dumps(DEFAULT_CONFIG))
+        config["state_dir"] = tempfile.mkdtemp()
+        config["budget"] = dict(config["budget"])
+        config["budget"]["max_iterations"] = 6
+        config["stagnation_limit"] = 2
+        engine = LoopEngine(config)
+        engine.provider = _Stuck()
+        result = engine.run(
+            "goal",
+            [{"id": "c1", "desc": "must contain MARK",
+              "check": {"type": "contains", "arg": "MARK"}}],
+        )
+        self.assertEqual(result.status, "escalated")
+        self.assertTrue(result.ticket_id)
+        end = [r for r in engine.ledger.entries() if r.get("role") == "run_end"][-1]
+        self.assertEqual(end.get("ticket_id"), result.ticket_id)
+
+
 class TestTheReportSaysWhyTheRunDidNotClose(unittest.TestCase):
     """An escalated run must say what escalated it.
 

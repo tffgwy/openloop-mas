@@ -988,6 +988,14 @@ class LoopEngine:
                 "iterations": attempt,
                 "closed": status == STATUS_CLOSED,
                 "deliverable_ok": deliverable_ok,
+                # The ticket the escalation opened. Without it the
+                # ledger says "escalated" and stops: the human who
+                # reads the report has no way to find the ticket that
+                # holds the deliverable, the criteria and the history.
+                # The last link of the loop - escalate, handle it by
+                # hand, resume - was written in the engine and never
+                # reached the report.
+                "ticket_id": ticket_id or "",
                 "artifact_sha": sha256_text(artifact) if artifact else "",
                 "issues": list(issues),
                 "tokens_total": int(tokens),
