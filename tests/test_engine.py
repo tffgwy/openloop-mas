@@ -2063,6 +2063,152 @@ class PoolFailureSpendOrderTest(unittest.TestCase):
         )
 
 
+class ReAskFidelityTest(unittest.TestCase):
+    """The follow-up question must behave the same in both review modes.
+
+    The panel path and the single reviewer path asked the same question
+    about the same criteria - but they disagreed about what happens when
+    it fails, and the single reviewer path wrote the old panel into the
+    ledger. A run that closed on the follow-up answer was audited as a
+    run whose review had judged nothing.
+    """
+
+    class _Silent:
+        """A verifier that says nothing about c1 until it is re-asked."""
+
+        name = "silent"
+
+        def __init__(self, fail_reask=False):
+            self.model = "silent-1"
+            self.fail_reask = fail_reask
+            self.reask_calls = 0
+
+        def complete(self, *, system, prompt, role="worker", expect_json=False,
+                     max_tokens=4000):
+            if role == "verifier":
+                if "missing_criteria" in prompt:
+                    self.reask_calls += 1
+                    if self.fail_reask:
+                        raise ProviderError(
+                            "reask boom", usage={"total_tokens": 500}
+                        )
+                    text = json.dumps({
+                        "verdict": "pass",
+                        "scores": [{"id": "c1", "pass": True, "note": "reask ok"}],
+                    })
+                    return {"text": text, "usage": {"total_tokens": 100}, "raw": {}}
+                text = json.dumps({"verdict": "pass", "scores": []})
+                return {"text": text, "usage": {"total_tokens": 100}, "raw": {}}
+            if role == "planner":
+                text = json.dumps({"summary": "s", "plan": [], "risks": []})
+                return {"text": text, "usage": {"total_tokens": 10}, "raw": {}}
+            if role == "reflector":
+                text = json.dumps({
+                    "summary": "r", "issues": [], "next_action": "revise",
+                })
+                return {"text": text, "usage": {"total_tokens": 10}, "raw": {}}
+            return {
+                "text": "交付物 正文",
+                "usage": {"total_tokens": 100},
+                "raw": {},
+            }
+
+    def _run(self, provider, reviewers=1):
+        tmp = tempfile.mkdtemp()
+        config = make_config(tmp)
+        config["budget"] = dict(config["budget"])
+        config["budget"]["max_iterations"] = 2
+        config["budget"]["max_tokens"] = 1000000
+        config["orchestration"] = {
+            "parallel_workers": 1,
+            "reviewers": reviewers,
+            "review_mode": "all",
+        }
+        engine = LoopEngine(config, provider=provider)
+        # No machine check: the criterion has to be judged by the model,
+        # otherwise the check answers it and the follow-up never happens.
+        result = engine.run("写一份说明", [{"id": "c1", "desc": "内容够好"}])
+        return result, engine
+
+    def _review_entries(self, engine):
+        return [r for r in engine.ledger.entries() if r.get("role") == "review"]
+
+    def test_the_ledger_records_the_follow_up_answer(self):
+        provider = self._Silent()
+        result, engine = self._run(provider)
+        self.assertTrue(result.closed, result.status)
+        entries = self._review_entries(engine)
+        self.assertTrue(entries)
+        scores = entries[-1].get("scores") or []
+        self.assertTrue(
+            scores,
+            "the ledger must describe the review the engine decided on",
+        )
+        self.assertTrue(
+            any(s.get("id") == "c1" and s.get("pass") for s in scores),
+            f"the follow-up answer is missing from the ledger: {scores!r}",
+        )
+
+    def test_the_ledger_and_the_closure_agree(self):
+        provider = self._Silent()
+        _result, engine = self._run(provider)
+        entries = self._review_entries(engine)
+        closure = [
+            r for r in engine.ledger.entries() if r.get("role") == "closure"
+        ]
+        self.assertTrue(closure)
+        judged = {s.get("id") for s in (entries[-1].get("scores") or [])}
+        decided = {s.get("id") for s in (closure[-1].get("scores") or [])}
+        self.assertEqual(
+            judged, decided,
+            "the review entry and the closure must judge the same criteria",
+        )
+
+    def test_a_failed_follow_up_does_not_kill_the_run(self):
+        # The panel path already survived this. The single reviewer path
+        # let the error escape and ended the run - the same missing
+        # verdict crashed one setup and merely slowed the other down.
+        provider = self._Silent(fail_reask=True)
+        result, _engine = self._run(provider)
+        self.assertNotEqual(
+            result.status, "error",
+            "a failed follow-up question must not end the whole run",
+        )
+
+    def test_a_failed_follow_up_keeps_the_criterion_unjudged(self):
+        provider = self._Silent(fail_reask=True)
+        result, engine = self._run(provider)
+        self.assertFalse(result.closed)
+        closure = [
+            r for r in engine.ledger.entries() if r.get("role") == "closure"
+        ]
+        self.assertTrue(closure)
+        self.assertTrue(
+            any(
+                s.get("source") == "model-missing"
+                for s in closure[0].get("scores") or []
+            ),
+            "the criterion must stay unjudged, not be decided by the failure",
+        )
+
+    def test_a_failed_follow_up_is_still_charged(self):
+        provider = self._Silent(fail_reask=True)
+        result, _engine = self._run(provider)
+        self.assertGreaterEqual(
+            result.tokens_used, 500,
+            "the failed follow-up call was billed and must be charged",
+        )
+
+    def test_the_two_modes_agree_on_a_failed_follow_up(self):
+        single = self._Silent(fail_reask=True)
+        panel = self._Silent(fail_reask=True)
+        single_result, _ = self._run(single, reviewers=1)
+        panel_result, _ = self._run(panel, reviewers=2)
+        self.assertNotEqual(single_result.status, "error")
+        self.assertNotEqual(panel_result.status, "error")
+        self.assertEqual(single_result.closed, panel_result.closed)
+
+
 class TokenCeilingTest(unittest.TestCase):
     """The token ceiling must hold even when every answer is truncated."""
 

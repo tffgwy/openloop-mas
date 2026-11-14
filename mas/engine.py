@@ -609,8 +609,13 @@ class LoopEngine:
                         # The other criteria still carry the panel's own
                         # verdicts, so the aggregate is rebuilt from the
                         # merged panel - not from the re-ask alone.
-                        if self.reviewers > 1:
-                            verdict = extra
+                        # The ledger must describe the panel the engine
+                        # decided on. The single reviewer path used to
+                        # keep the *old* verdict here, so the book showed
+                        # a review that had judged nothing next to a run
+                        # that had actually closed on the follow-up
+                        # answer. Both paths carry the re-ask forward now.
+                        verdict = extra
 
                 # The ledger entry describes the panel the engine finally
                 # decided on - including everything the re-ask added.
@@ -1267,7 +1272,29 @@ class LoopEngine:
             rebuilt["_panel"] = merged_panel
             return rebuilt
 
-        extra = self._call_json("verifier", follow_state, extra=instruction)
+        # A failed follow-up question is not a failed run. The panel
+        # path already treats it that way: the reviewer that could not
+        # answer simply stays silent, and the criterion keeps its
+        # "unjudged" state, which the loop handles like any other
+        # unresolved criterion. The single reviewer path used to let
+        # the error escape and end the whole run - so the same missing
+        # verdict crashed one setup and merely slowed the other down.
+        try:
+            extra = self._call_json("verifier", follow_state, extra=instruction)
+        except (TruncatedAnswer, ProviderError) as exc:
+            # The call was billed even though it did not answer, so the
+            # failure is charged to the budget and reported.
+            spent = int(getattr(exc, "tokens", 0) or 0)
+            self._log(
+                verify_state["run_id"], verify_state["task_id"],
+                verify_state["attempt"], "reask_failed",
+                {"error": str(exc), "tokens": spent, "missing": list(missing)},
+            )
+            merged = dict(verdict)
+            merged["_usage"] = {"total_tokens": spent}
+            merged["_reask_failed"] = True
+            merged["_reask_error"] = str(exc)
+            return merged
         # Keep the verdicts that already arrived; only the new ones count.
         merged_scores = list(verdict.get("scores") or [])
         known = {str(item.get("id")) for item in merged_scores if isinstance(item, dict)}

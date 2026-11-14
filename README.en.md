@@ -7,6 +7,27 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.30 adds** (fixing two defects in the follow-up question - the
+panel mode and the single reviewer mode behaved differently):
+
+- **A run that closed on the follow-up answer was audited as a run whose
+  review had judged nothing.** When a reviewer did not judge a criterion,
+  the engine asks once more - a cheap question rather than a whole new
+  iteration. But in the single reviewer mode the ledger kept the *old*
+  verdict after the re-ask, so the book showed a review with no scores
+  at all next to a closed run. The panel mode already carried the re-ask
+  forward; this mode does the same now - the ledger describes the panel
+  the engine actually decided on.
+- **A failed follow-up question ended the whole run.** The re-ask is a
+  supplementary question - if it fails, the criterion stays unjudged and
+  the loop handles it like any other unresolved criterion. The panel mode
+  already degraded that way; the single reviewer mode let the error
+  escape, so the same missing verdict crashed one setup and merely slowed
+  the other down. Both modes now behave the same. The failed call is
+  still charged (the endpoint billed it) and recorded in the ledger.
+- Six regression tests. Verified: reverting each fix one at a time makes
+  the corresponding test fail (three and two respectively).
+
 **What v0.7.29 adds** (fixing three "a failed call was not charged" defects):
 
 - **A failed candidate was charged only if it happened to fail before the

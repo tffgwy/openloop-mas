@@ -4,6 +4,37 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.30] - 2026-11-14
+
+### Fixed
+
+The follow-up question - the cheap re-ask for the criteria a reviewer
+did not judge. It behaved one way in the panel mode and another way in
+the single reviewer mode, and it lied to the ledger in one of them.
+
+* **A run that closed on the follow-up answer was audited as a run whose
+  review had judged nothing.** In the single reviewer mode the ledger
+  kept the *old* verdict after the re-ask, so the book showed a review
+  with no scores at all next to a closed run. The panel mode already
+  carried the re-ask forward; this mode now does the same. The ledger
+  describes the panel the engine actually decided on.
+
+* **A failed follow-up question ended the whole run.** The re-ask is a
+  cheap supplementary question - if it fails, the criterion simply stays
+  unjudged and the loop handles it like any other unresolved criterion.
+  The panel mode already degraded that way. The single reviewer mode let
+  the error escape, so the same missing verdict crashed one setup and
+  merely slowed the other down. The failure is now charged to the
+  budget, recorded in the ledger, and the loop continues.
+
+* **The failed follow-up call was free.** The call was billed before it
+  failed to answer, so its cost is charged to the budget now.
+
+### Changed
+
+* Six regression tests. Verified: reverting each fix one at a time
+  makes the corresponding test fail (three and two respectively).
+
 ## [0.7.29] - 2026-11-14
 
 ### Fixed
