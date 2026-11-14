@@ -747,7 +747,15 @@ class LoopEngine:
             tokens += int(item["usage"].get("total_tokens", 0))
             passed_count = 0
             for crit in crits:
-                outcome = evaluate_check(crit, artifact)
+                # The configuration carries the workspace, and the file
+                # checks resolve their paths against it. Without it the
+                # check would look at the *current working directory*
+                # instead of the workspace the run was configured with -
+                # so every file level check would fail here, and the
+                # candidate ranking would be decided by the wrong
+                # evidence. The winner is picked on this ranking, so a
+                # wrong workspace meant the *wrong candidate* won.
+                outcome = evaluate_check(crit, artifact, self.config)
                 if outcome.get("pass"):
                     passed_count += 1
             summary.append(

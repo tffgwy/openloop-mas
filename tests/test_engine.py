@@ -14,6 +14,7 @@ except ImportError:  # loaded as a top-level module (unittest -s tests)
 
 
 import json
+import os
 import tempfile
 import unittest
 
@@ -58,6 +59,93 @@ class TestCriterionChecks(unittest.TestCase):
         criterion = Criterion("c1", "未知", {"type": "nope", "arg": 1})
         result = evaluate_check(criterion, "anything")
         self.assertIsNone(result["pass"])
+
+
+class ParallelCandidateWorkspaceTest(unittest.TestCase):
+    """The parallel candidate ranking must use the *configured* workspace.
+
+    The file level checks resolve their paths against the workspace in the
+    configuration. The candidate ranking used to call ``evaluate_check``
+    without that configuration, so every file level check looked at the
+    *current working directory* instead of the run's workspace - and the
+    ranking, which decides which candidate wins, was decided by the wrong
+    evidence.
+    """
+
+    class _AngleProvider:
+        """Answers differently depending on the angle the worker was given."""
+
+        name = "angle"
+
+        def __init__(self) -> None:
+            self.model = "angle-1"
+            self.calls = 0
+
+        def complete(self, *, system, prompt, role="worker",
+                     expect_json=False, max_tokens=4000):
+            self.calls += 1
+            if role == "worker":
+                # The "concise" angle answers without the token, the
+                # others answer with it. Only a check that resolves
+                # against the real workspace can tell them apart.
+                if "concise" in prompt.lower():
+                    text = "TOO SHORT"
+                else:
+                    text = "contains NEEDLE_TOKEN and is long enough to pass the length rule"
+            elif role == "verifier":
+                text = json.dumps({"verdict": "pass", "scores": [], "issues": []})
+            elif role == "planner":
+                text = json.dumps({"summary": "plan", "plan": ["step"], "risks": []})
+            else:
+                text = json.dumps({"decision": "close", "reason": "ok"})
+            return {
+                "text": text,
+                "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
+                "raw": {},
+            }
+
+        def describe(self):
+            return {"provider": self.name, "model": self.model, "calls": self.calls}
+
+    def test_the_ranking_uses_the_configured_workspace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = os.path.join(tmp, "ws")
+            os.makedirs(workspace, exist_ok=True)
+            with open(os.path.join(workspace, "out.md"), "w", encoding="utf-8") as handle:
+                handle.write("NEEDLE_TOKEN")
+
+            config = make_config(tmp)
+            config["workspace"] = workspace
+            config["orchestration"] = {
+                "parallel_workers": 3,
+                "reviewers": 1,
+                "review_mode": "all",
+            }
+            engine = LoopEngine(config, provider=self._AngleProvider())
+            engine.run(
+                "任务",
+                [
+                    {
+                        "id": "c1",
+                        "desc": "文件含 token",
+                        "check": {
+                            "type": "file_contains",
+                            "arg": {"path": "out.md", "value": "NEEDLE_TOKEN"},
+                        },
+                    }
+                ],
+            )
+            rows = [r for r in engine.ledger.entries() if r.get("role") == "candidates"]
+            self.assertTrue(rows, "the candidate ranking was not written to the ledger")
+            candidates = rows[-1]["candidates"]
+            chosen = [c for c in candidates if c.get("selected")]
+            self.assertEqual(len(chosen), 1, candidates)
+            # The winner is the candidate that passes the file check in
+            # the configured workspace. With the wrong workspace every
+            # candidate scored zero and the tie was broken by length -
+            # which could select the "TOO SHORT" candidate.
+            self.assertEqual(chosen[0]["passed"], 1, candidates)
+            self.assertNotEqual(chosen[0]["angle"], "concise", candidates)
 
 
 class TestLoopClosure(unittest.TestCase):

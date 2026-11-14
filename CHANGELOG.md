@@ -4,6 +4,41 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.20] - 2026-11-14
+
+### Fixed
+
+The parallel candidate ranking scored the candidates against the wrong
+directory. The winner of the race is picked on that ranking, so the wrong
+directory did not just mislabel a score - it decided *which* candidate
+became the deliverable.
+
+* **The ranking ran without the configuration.** The candidate scoring
+  called the check evaluator without the configuration, and the file level
+  checks resolve their paths against the workspace *in the configuration*.
+  With no configuration the workspace falls back to the current working
+  directory. Every file level check therefore ran against a directory that
+  the run was not using, every candidate scored zero on the file rules, and
+  the ranking degenerated into a tie broken by length - so a candidate that
+  violated the file rule could win the race, and the file rules could not
+  influence the choice at all. The single worker path and the final
+  verdict always passed the configuration; only the ranking forgot it.
+  The ranking now passes the configuration too, so all three paths resolve
+  the same workspace.
+
+* Note that the *final* verdict was never affected: it is recomputed with
+  the configuration after the winner is chosen. The damage was limited to
+  the choice of candidate - but that is exactly what the race exists for.
+
+### Added
+
+* A regression test that runs the race with the workspace in a different
+  directory than the current working directory, with three candidates that
+  answer differently, and asserts that the winner is the one that passes
+  the file rule. Reverting the fix makes the test fail with every
+  candidate at zero passes - the test is proven to catch the defect, not
+  merely to run.
+
 ## [0.7.19] - 2026-11-14
 
 ### Fixed

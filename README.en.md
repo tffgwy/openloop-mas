@@ -5,7 +5,29 @@
 > criteria, exit conditions and an auditable ledger**. One command to install;
 > beginners can run it too.
 
-[English](README.md) | [中文](README.md)
+[English](README.en.md) | [中文](README.md)
+
+**What v0.7.20 adds** (fixing the defect that decided *which* candidate won):
+
+- **The parallel candidate ranking scored the wrong directory.** The ranking
+  called the check evaluator *without* the configuration, but the file level
+  checks (`file_contains`, `file_exists`, ...) resolve their paths against the
+  workspace *in the configuration*; without it the workspace falls back to the
+  current working directory. Every file level check therefore looked in a
+  directory the run was not using, **every candidate scored zero on the file
+  rules**, and the ranking degenerated into "pick by length" - so the
+  candidate that violated the file rule could win the race, and the file
+  rules had no influence on the choice at all. The single worker path and
+  the final verdict always passed the configuration; only the ranking
+  forgot it. All three paths now resolve the same workspace.
+- **The final verdict was never affected** - it is recomputed with the
+  configuration after the winner is picked. The damage was limited to the
+  choice of candidate - but that is exactly what the race exists for.
+- The regression test puts the workspace in a *different* directory than the
+  current working directory, has three candidates answer differently, and
+  asserts that the winner is the one passing the file rule. Verified: with
+  the fix reverted the test fails immediately (all candidates at zero
+  passes) - the test provably catches the defect, it does not merely run.
 
 [![ci](https://github.com/tffgwy/openloop-mas/actions/workflows/ci.yml/badge.svg)](https://github.com/tffgwy/openloop-mas/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
