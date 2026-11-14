@@ -195,6 +195,20 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     if status != "closed" and deliverable_ok and scores:
         status = "deliverable_ok_but_not_closed"
 
+    # How many consecutive attempts produced the *same* deliverable. The
+    # engine counts this - it is what tells "the worker is stuck" apart
+    # from "the worker needs another round" - and the report threw it
+    # away. A run that escalated because nothing changed looked exactly
+    # like a run that escalated for any other reason.
+    stagnation = 0
+    for row in rows or []:
+        if row.get("role") != "closure":
+            continue
+        try:
+            stagnation = max(stagnation, int(row.get("stagnation") or 0))
+        except (TypeError, ValueError):
+            continue
+
     return {
         "run_id": run_id,
         "status": status,
@@ -202,6 +216,9 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         # whether the run closed. ``None`` means the run never said -
         # which is not the same as "the deliverable was bad".
         "deliverable_ok": deliverable_ok if end else None,
+        # The number of consecutive attempts that produced no change.
+        # Zero means the run never stagnated.
+        "stagnation": stagnation,
         "verdict": last_verdict,
         "decision": decision,
         # The end entry is the engine's own account of the run, so it
@@ -290,14 +307,15 @@ def render_markdown(report: Dict[str, Any]) -> str:
 
     lines.append("## 运行概览")
     lines.append("")
-    lines.append("| 运行 ID | 状态 | 决策 | 迭代 | 产物 SHA | 条目 | token |")
-    lines.append("|---|---|---|---|---|---|---|")
+    lines.append("| 运行 ID | 状态 | 决策 | 迭代 | 停滞 | 产物 SHA | 条目 | token |")
+    lines.append("|---|---|---|---|---|---|---|---|")
     for run in runs:
         status = str(run.get("status") or "-")
         icon = STATUS_ICON.get(status, "-")
         lines.append(
             f"| `{run.get('run_id')}` | {icon} {status} | {run.get('decision') or '-'} | "
-            f"{run.get('iterations', 0)} | `{(run.get('artifact_sha') or '')[:12]}` | "
+            f"{run.get('iterations', 0)} | {int(run.get('stagnation') or 0)} | "
+            f"`{(run.get('artifact_sha') or '')[:12]}` | "
             f"{run.get('entries', 0)} | {int(run.get('tokens') or 0)} |"
         )
     lines.append("")
@@ -319,6 +337,21 @@ def render_markdown(report: Dict[str, Any]) -> str:
         elif run.get("deliverable_ok") is False and run.get("scores"):
             lines.append(
                 "- 交付物：❌ 未通过验收标准（见下方未通过项）"
+            )
+        # Why the run ended the way it did. The engine writes the reason
+        # on the run's end entry - including the specific cause of a
+        # stagnation escalation ("the deliverable did not change for N
+        # consecutive attempts") - and the report used to drop it
+        # entirely. An escalated run whose reason is invisible sends the
+        # human looking for the wrong thing.
+        if run.get("error"):
+            lines.append(f"- 未闭合原因：{run.get('error')}")
+        elif run.get("status") == "escalated":
+            lines.append("- 未闭合原因：运行升级人工处理（账本未记录具体原因）")
+        if run.get("stagnation"):
+            lines.append(
+                f"- ⚠ 停滞：交付物连续 **{int(run.get('stagnation'))}** 次没有变化"
+                "（worker 反复产出相同内容）"
             )
         if run.get("plan"):
             summary = (run.get("plan") or {}).get("summary") or ""

@@ -7,6 +7,28 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.40 adds** (the reason a run did not close no longer gets
+lost):
+
+- **The report never said why the run did not close.** The engine
+  books the reason on the run's end entry, and since v0.7.37 it names
+  the cause of a stagnation escalation precisely - "the deliverable did
+  not change for N consecutive attempts" - but the report read the
+  entry for the status and dropped the reason on the floor. The
+  rendered report now carries it as "未闭合原因", and an escalation
+  whose reason the ledger does not record says so instead of staying
+  mute.
+- **The stagnation count was thrown away.** The engine counts how many
+  consecutive attempts produced the *same* deliverable - that count is
+  what tells "the worker is stuck" apart from "the worker needs
+  another round". The report now reports it, states it in words, and
+  shows it in the overview table next to every run, so a reader
+  scanning the table can see which run was stuck.
+- Six new tests cover the projection, and every layer was counter-proven
+  by reverting it on its own and confirming the matching test fails -
+  the overview table initially had no coverage at all, and the
+  counter-proof for it caught that gap before the release.
+
 **What v0.7.39 adds** ("not closed" is no longer a vague sentence):
 
 - **A good deliverable was reported as "not closed".** The engine

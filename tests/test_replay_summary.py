@@ -172,6 +172,89 @@ class ReplaySummaryTest(unittest.TestCase):
 
 
 
+class TestTheReportSaysWhyTheRunDidNotClose(unittest.TestCase):
+    """An escalated run must say what escalated it.
+
+    The engine writes the reason on the run's end entry - and since
+    v0.7.37 the stagnation reason names the actual cause ("the
+    deliverable did not change for N consecutive attempts"). The report
+    dropped the reason entirely: an escalated run looked identical
+    whatever went wrong, which sends the human looking for the wrong
+    thing.
+    """
+
+    def _stagnated_rows(self):
+        return [
+            {"run_id": "R-1", "role": "closure", "iteration": 1,
+             "closed": False, "verdict": "fail", "decision": "escalate",
+             "stagnation": 3, "tokens_total": 130,
+             "scores": [{"id": "c1", "pass": False, "source": "rule"}]},
+            {"run_id": "R-1", "role": "run_end", "iteration": 4,
+             "status": "escalated", "closed": False, "deliverable_ok": False,
+             "error": "stagnation: the deliverable did not change for 3 "
+                      "consecutive attempts (stagnation_limit=3)"},
+        ]
+
+    def test_the_summary_carries_the_stagnation_count(self):
+        from mas.report import run_summary
+
+        summary = run_summary("R-1", self._stagnated_rows())
+        self.assertEqual(summary["stagnation"], 3)
+
+    def test_the_summary_carries_the_reason_the_run_ended(self):
+        from mas.report import run_summary
+
+        summary = run_summary("R-1", self._stagnated_rows())
+        self.assertIn("stagnation", summary["error"])
+
+    def test_a_run_that_never_stagnated_reports_zero(self):
+        from mas.report import run_summary
+
+        rows = [{"run_id": "R-2", "role": "closure", "iteration": 1,
+                 "closed": True, "verdict": "pass", "decision": "close"}]
+        summary = run_summary("R-2", rows)
+        self.assertEqual(summary["stagnation"], 0)
+
+    def test_the_markdown_shows_the_reason(self):
+        from mas.report import build_report, render_markdown
+
+        text = render_markdown(build_report(self._stagnated_rows()))
+        self.assertIn("未闭合原因", text)
+        self.assertIn("stagnation", text)
+
+    def test_the_markdown_shows_the_stagnation_count(self):
+        from mas.report import build_report, render_markdown
+
+        text = render_markdown(build_report(self._stagnated_rows()))
+        self.assertIn("停滞", text)
+        self.assertIn("3", text)
+
+    def test_the_overview_table_carries_the_stagnation_count(self):
+        # The overview table is the first thing anyone reads. If the
+        # stagnation count is only in the detail section, a reader
+        # scanning the table cannot see which run was stuck.
+        from mas.report import build_report, render_markdown
+
+        text = render_markdown(build_report(self._stagnated_rows()))
+        header = [line for line in text.split("\n") if line.startswith("| 运行 ID")]
+        self.assertTrue(header)
+        self.assertIn("停滞", header[0])
+        row = [line for line in text.split("\n") if line.startswith("| `R-1`")]
+        self.assertTrue(row)
+        self.assertIn("| 3 |", row[0])
+
+    def test_an_escalation_without_a_reason_says_so_instead_of_guessing(self):
+        from mas.report import build_report, render_markdown
+
+        rows = [
+            {"run_id": "R-3", "role": "run_end", "iteration": 1,
+             "status": "escalated", "closed": False},
+        ]
+        text = render_markdown(build_report(rows))
+        self.assertIn("未闭合原因", text)
+        self.assertIn("未记录具体原因", text)
+
+
 class TestTheReportSaysWhichHalfFailed(unittest.TestCase):
     """A run that did not close has two very different causes.
 

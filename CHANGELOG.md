@@ -4,6 +4,41 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.40] - 2026-11-15
+
+### Fixed
+
+The engine explains why a run ended, and the report dropped the
+explanation. Since v0.7.37 the engine names the cause of a stagnation
+escalation precisely - "the deliverable did not change for N
+consecutive attempts" - and the report rendered neither the reason nor
+the stagnation count. An escalated run therefore looked the same
+whatever went wrong.
+
+* **The report never said why the run did not close.** The engine
+  books the reason on the run's end entry; the report read the entry
+  for the status but dropped the reason on the floor. The rendered
+  report now carries it as "未闭合原因", and an escalation whose reason
+  the ledger does not record says so instead of staying mute.
+
+* **The stagnation count was thrown away.** The engine counts how many
+  consecutive attempts produced the *same* deliverable - that count is
+  what tells "the worker is stuck" apart from "the worker needs
+  another round". The report now reports it, states it in words, and
+  shows it in the overview table next to every run, so a reader
+  scanning the table can see which run was stuck.
+
+### Tests
+
+Six new tests cover the projection: the summary carries the stagnation
+count and the end reason, a run that never stagnated reports zero, the
+Markdown shows both, the overview table carries the count, and an
+escalation without a recorded reason says so rather than guessing.
+Every layer was counter-proven by reverting it on its own and
+confirming the matching test fails - the overview table initially
+had no coverage at all, and the counter-proof for it caught that gap
+before the release.
+
 ## [0.7.39] - 2026-11-15
 
 ### Fixed
