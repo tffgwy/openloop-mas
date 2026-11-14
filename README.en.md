@@ -7,6 +7,30 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.31 adds** (making the ledger answer "how much did this run
+spend" on its own):
+
+- **The ledger could not answer "how much did this cost" at all.** The
+  figure only lived in the engine's memory: it was not in the ledger and
+  it was not in the replay report. Every billed call is booked in the
+  ledger now, and the report shows the spend of every run and of the
+  report as a whole.
+- **The single worker path wrote no ledger entry at all.** The parallel
+  candidate pool booked its own spend; the single worker did not, so the
+  money the worker spent was nowhere in the book. It is booked under the
+  same role now.
+- **The reflector was never booked.** The reflector runs after every
+  failed iteration and it is a paid call, but the ledger never mentioned
+  it. A run that revised itself again and again never said what the
+  reflection cost. It is booked now.
+- **Only the last review round was booked.** The first round and the
+  follow-up question are two separate paid calls; they are booked
+  separately now, and a token is never counted twice.
+- Fourteen regression tests. Verified: reverting each fix one at a time
+  makes the corresponding test fail. The invariant sweep covers 45 pool
+  shapes and checks that the endpoint's bill, the engine's total and the
+  ledger's sum agree to the token.
+
 **What v0.7.30 adds** (fixing two defects in the follow-up question - the
 panel mode and the single reviewer mode behaved differently):
 

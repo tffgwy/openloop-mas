@@ -4,6 +4,46 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.31] - 2026-11-14
+
+### Fixed
+
+The ledger could not answer "how much did this run spend". The figure
+only existed in the engine's memory, so a replay report built from the
+ledger had no cost in it at all.
+
+* **The single worker path wrote no ledger entry at all.** The parallel
+  candidate pool booked its own spend, the single worker did not - so
+  the money the worker spent was nowhere in the book. It is booked now,
+  under the same role as the parallel pool.
+
+* **The reflector was never booked.** The reflector runs after every
+  failed iteration and it is a paid call, but the ledger never mentioned
+  it: the book showed a run that revised itself again and again and
+  never said what the reflection cost. It is booked now.
+
+* **Only the last review round was booked.** The first review round and
+  the follow-up question are two separate paid calls; only the final
+  aggregate carried a number. The two rounds are booked separately now,
+  and a token is never counted twice.
+
+* **The report had no cost in it.** ``run_summary()`` and
+  ``build_report()`` gained a ``tokens`` field, and the Markdown report
+  shows the spend of every run and of the report as a whole.
+
+### Changed
+
+* ``mas.report.ledger_spend()`` is the single place that sums the
+  charges of a ledger. ``closure`` entries carry the running total
+  (``tokens_total``) as a checkpoint, not a charge - summing them on
+  top of the call entries would double the bill.
+
+* Fourteen regression tests. Verified: reverting each fix one at a time
+  makes the corresponding test fail. The invariant sweep now covers
+  45 pool shapes (1-4 workers x 1-3 reviewers, across clean runs,
+  truncations, failures and mixes) and checks that the endpoint's bill,
+  the engine's total and the ledger's sum agree to the token.
+
 ## [0.7.30] - 2026-11-14
 
 ### Fixed

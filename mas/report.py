@@ -12,6 +12,42 @@ from typing import Any, Dict, List
 
 from mas.util import now_iso
 
+# The roles that represent a *charge*: an entry in these roles books
+# the tokens of one call the endpoint billed. The sum over these
+# entries is the spend of the run, and it must equal the number the
+# engine reported. ``closure`` is deliberately not in this list: it is
+# a checkpoint of the running total, not a charge of its own - the
+# money is booked on the call entries.
+CHARGE_ROLES = (
+    "planner",
+    "candidates",
+    "reflector",
+    "review",
+    "reask",
+    "reask_failed",
+    "truncated",
+    "error",
+)
+
+
+def ledger_spend(rows: List[Dict[str, Any]]) -> int:
+    """Total tokens booked by the ledger rows.
+
+    Every billed call is booked exactly once, so this number is what
+    the run really cost - no matter that the engine kept the figure in
+    memory only.
+    """
+    total = 0
+    for row in rows:
+        if str(row.get("role", "")) not in CHARGE_ROLES:
+            continue
+        try:
+            total += int(row.get("tokens", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
 STATUS_ICON = {
     "closed": "OK",
     "escalated": "ESC",
@@ -112,6 +148,10 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             "missing": (review or {}).get("missing"),
         },
         "errors": errors,
+        # What the run cost. The report could not answer this before:
+        # the figure only existed in the engine's memory, so a replay
+        # of the ledger could not say how much a run spent.
+        "tokens": ledger_spend(rows),
         "started_at": str(rows[0].get("ts")) if rows else "",
         "finished_at": str(rows[-1].get("ts")) if rows else "",
         "artifacts": artifacts,
@@ -133,6 +173,8 @@ def build_report(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             "not_closed": len(failed_runs),
             "closure_rate": round(len(closed) / len(runs), 4) if runs else 0.0,
             "entries": len(rows),
+            # The spend of every run in this report.
+            "tokens": sum(int(run.get("tokens") or 0) for run in runs),
         },
     }
 
@@ -146,6 +188,7 @@ def render_markdown(report: Dict[str, Any]) -> str:
         f"运行总数：{totals.get('runs', 0)}　已闭环：{totals.get('closed', 0)}　"
         f"未闭环：{totals.get('not_closed', 0)}　闭环率：{totals.get('closure_rate', 0):.0%}"
     )
+    lines.append(f"总花费：{int(totals.get('tokens', 0) or 0)} token")
     lines.append("")
 
     runs = report.get("runs") or []
@@ -155,14 +198,15 @@ def render_markdown(report: Dict[str, Any]) -> str:
 
     lines.append("## 运行概览")
     lines.append("")
-    lines.append("| 运行 ID | 状态 | 决策 | 迭代 | 产物 SHA | 条目 |")
-    lines.append("|---|---|---|---|---|---|")
+    lines.append("| 运行 ID | 状态 | 决策 | 迭代 | 产物 SHA | 条目 | token |")
+    lines.append("|---|---|---|---|---|---|---|")
     for run in runs:
         status = str(run.get("status") or "-")
         icon = STATUS_ICON.get(status, "-")
         lines.append(
             f"| `{run.get('run_id')}` | {icon} {status} | {run.get('decision') or '-'} | "
-            f"{run.get('iterations', 0)} | `{(run.get('artifact_sha') or '')[:12]}` | {run.get('entries', 0)} |"
+            f"{run.get('iterations', 0)} | `{(run.get('artifact_sha') or '')[:12]}` | "
+            f"{run.get('entries', 0)} | {int(run.get('tokens') or 0)} |"
         )
     lines.append("")
 
@@ -171,6 +215,7 @@ def render_markdown(report: Dict[str, Any]) -> str:
         lines.append("")
         lines.append(f"- 开始：{run.get('started_at') or '-'}")
         lines.append(f"- 结束：{run.get('finished_at') or '-'}")
+        lines.append(f"- 花费：{int(run.get('tokens') or 0)} token")
         if run.get("plan"):
             summary = (run.get("plan") or {}).get("summary") or ""
             lines.append(f"- 规划：{summary}")

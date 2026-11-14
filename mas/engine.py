@@ -572,7 +572,15 @@ class LoopEngine:
                     # call, not only the ones that produced an artifact.
                     self._log(
                         run_id, task_id, attempt, "planner",
-                        {"plan": plan_payload, "usage": plan_usage},
+                        {
+                            "plan": plan_payload,
+                            "usage": plan_usage,
+                            # The charge of this call. Every token the
+                            # endpoint bills has to show up in the ledger
+                            # exactly once, otherwise the book cannot be
+                            # reconciled with the bill.
+                            "tokens": int(plan_usage.get("total_tokens", 0) or 0),
+                        },
                     )
 
                 candidates = self._produce_candidates(state)
@@ -584,7 +592,17 @@ class LoopEngine:
                 verify_state["candidate_artifact"] = artifact
                 verify_state["checks"] = checks
                 verdict = self._review(verify_state)
-                tokens += verdict.get("_usage", {}).get("total_tokens", 0)
+                review_tokens = int(
+                    verdict.get("_usage", {}).get("total_tokens", 0) or 0
+                )
+                tokens += review_tokens
+                # The first review round is booked right here. The final
+                # panel is written further down, after the follow-up
+                # question - and a follow-up that dies (a truncated
+                # reviewer) never reaches that point. Booking the round
+                # here means the money is in the book even when the
+                # iteration ends in a retry.
+                self._log_review(verify_state, verdict, review_tokens)
                 if self.reviewers > 1:
                     scores = self._merge_review_scores(crits, checks, verdict)
                 else:
@@ -595,12 +613,33 @@ class LoopEngine:
                 # the verifier again for the missing ids costs one cheap
                 # call; regenerating the whole artifact costs a whole
                 # iteration and usually changes nothing.
+                reasked = False
                 if not self._all_judged(scores):
+                    missing_ids = [
+                        score["id"]
+                        for score in scores
+                        if score.get("source") == "model-missing" and score.get("id")
+                    ]
                     extra = self._ask_missing_verdicts(
                         verify_state, crits, checks, verdict, scores
                     )
                     if extra:
-                        tokens += extra.get("_usage", {}).get("total_tokens", 0)
+                        reask_tokens = int(
+                            extra.get("_usage", {}).get("total_tokens", 0) or 0
+                        )
+                        tokens += reask_tokens
+                        if not extra.get("_charge_logged"):
+                            # The follow-up question is a paid call and it
+                            # has its own entry: the money must be
+                            # traceable to the question that asked for it.
+                            self._log(
+                                run_id, task_id, attempt, "reask",
+                                {
+                                    "missing": missing_ids,
+                                    "tokens": reask_tokens,
+                                },
+                            )
+                        reasked = True
                         if self.reviewers > 1:
                             scores = self._merge_review_scores(crits, checks, extra)
                         else:
@@ -617,9 +656,14 @@ class LoopEngine:
                         # answer. Both paths carry the re-ask forward now.
                         verdict = extra
 
-                # The ledger entry describes the panel the engine finally
-                # decided on - including everything the re-ask added.
-                self._log_review(verify_state, verdict)
+                # After a follow-up question the first review entry no
+                # longer describes what the engine decided on - it shows
+                # the panel *before* the missing criteria were answered.
+                # The final panel is written here, and it carries no
+                # charge of its own: the two rounds are booked
+                # separately, so a token is never counted twice.
+                if reasked:
+                    self._log_review(verify_state, verdict, 0)
 
                 # Only the required criteria decide whether the loop closes.
                 # An optional criterion may fail - it is recorded, it is
@@ -639,7 +683,23 @@ class LoopEngine:
                     # The reflection cost tokens as well, and the raw
                     # provider text has no business in the history.
                     reflect_usage = dict(reflection.get("_usage") or {})
-                    tokens += int(reflect_usage.get("total_tokens", 0) or 0)
+                    reflect_tokens = int(reflect_usage.get("total_tokens", 0) or 0)
+                    tokens += reflect_tokens
+                    # The reflector is a paid call and the ledger never
+                    # mentioned it: the book showed a run that revised
+                    # itself again and again and never said what the
+                    # reflection cost. It is booked here.
+                    self._log(
+                        run_id, task_id, attempt, "reflector",
+                        {
+                            "reflection": {
+                                key: value
+                                for key, value in reflection.items()
+                                if key not in ("_usage", "_raw")
+                            },
+                            "tokens": reflect_tokens,
+                        },
+                    )
                     reflection = {
                         key: value
                         for key, value in reflection.items()
@@ -669,6 +729,14 @@ class LoopEngine:
                     "issues": issues,
                     "stagnation": stagnant,
                     "closed": bool(passed),
+                    # The cumulative spend of the run at this point. This
+                    # is a checkpoint, not a charge: the charges live on
+                    # the call entries, and this number has to equal
+                    # their sum. The ledger has to answer "how much did
+                    # this run spend" on its own - the figure only lived
+                    # in the engine's memory, so the replay report could
+                    # never show it.
+                    "tokens_total": int(tokens),
                 }
                 self._log(run_id, task_id, attempt, "closure", closure)
                 history.append(
@@ -844,9 +912,30 @@ class LoopEngine:
                         state["run_id"], state["task_id"], state["attempt"], "write",
                         {"errors": write_errors},
                     )
+            work_tokens = int(work["usage"].get("total_tokens", 0))
+            # The single worker path wrote no ledger entry at all, so the
+            # money it spent was nowhere in the book. A run whose ledger
+            # cannot be reconciled with its bill is not auditable - the
+            # charge of the call that produced the deliverable is booked
+            # here, exactly like the parallel pool books its own.
+            self._log(
+                state["run_id"], state["task_id"], state["attempt"], "candidates",
+                {
+                    "count": 1,
+                    "selected_angle": "direct",
+                    # The single worker path produces one candidate, the
+                    # parallel path produces several. The role is the
+                    # same, so the report can show the pool of both.
+                    "parallel": False,
+                    "candidates": [
+                        {"angle": "direct", "selected": True, "passed": None}
+                    ],
+                    "tokens": work_tokens,
+                },
+            )
             return {
                 "artifact": artifact,
-                "tokens": int(work["usage"].get("total_tokens", 0)),
+                "tokens": work_tokens,
                 "candidates": [{"angle": "direct", "selected": True, "passed": None}],
                 "errors": write_errors,
                 "written": written,
@@ -981,7 +1070,15 @@ class LoopEngine:
         summary[best_index]["selected"] = True
         self._log(
             state["run_id"], state["task_id"], state["attempt"], "candidates",
-            {"count": count, "selected_angle": angles[best_index], "candidates": summary},
+            {
+                "count": count,
+                "selected_angle": angles[best_index],
+                "parallel": True,
+                "candidates": summary,
+                # The whole pool was billed - the winner and the
+                # candidates that lost the race.
+                "tokens": int(tokens),
+            },
         )
         artifact = strip_reasoning(results[best_index]["text"])
         written: List[Dict[str, Any]] = []
@@ -1129,11 +1226,18 @@ class LoopEngine:
         aggregate["_panel"] = panel
         return aggregate
 
-    def _log_review(self, verify_state: Dict[str, Any], aggregate: Dict[str, Any]) -> None:
-        """Write the *final* panel state to the ledger.
+    def _log_review(
+        self,
+        verify_state: Dict[str, Any],
+        aggregate: Dict[str, Any],
+        tokens: int = 0,
+    ) -> None:
+        """Write the panel state to the ledger.
 
-        This runs after the targeted re-ask, so the entry shows the
-        aggregate the engine actually decided on - not the first one.
+        The entry shows the aggregate the engine decided on. The charge
+        is passed in explicitly: the first review round is booked on its
+        own entry, the follow-up question on another one, so a token is
+        never counted twice.
         """
         self._log(
             verify_state["run_id"], verify_state["task_id"], verify_state["attempt"],
@@ -1146,6 +1250,10 @@ class LoopEngine:
                 "missing": aggregate.get("missing"),
                 "errors": aggregate.get("errors") or [],
                 "scores": aggregate.get("scores"),
+                # The charge of the round this entry books. Zero for the
+                # final state entry - its money was booked with the
+                # round that actually made the call.
+                "tokens": int(tokens or 0),
             },
         )
 
@@ -1294,6 +1402,9 @@ class LoopEngine:
             merged["_usage"] = {"total_tokens": spent}
             merged["_reask_failed"] = True
             merged["_reask_error"] = str(exc)
+            # The failure was already booked by the ``reask_failed``
+            # entry above. The caller must not book it a second time.
+            merged["_charge_logged"] = True
             return merged
         # Keep the verdicts that already arrived; only the new ones count.
         merged_scores = list(verdict.get("scores") or [])
