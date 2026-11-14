@@ -243,9 +243,42 @@ def cmd_demo(args: argparse.Namespace) -> int:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
+    """Say where this machine stands - in words, not in a JSON dump.
+
+    The status command printed a raw JSON payload and nothing else.
+    That is fine for a machine and useless for the beginner the project
+    is written for: the JSON says "entries: 27" and "waiting_human:
+    [T-...]" and never says "you have 1 deliverable and 1 ticket
+    waiting for you". A status page that a person cannot read is not a
+    status page.
+    """
     config = load_config()
     engine = _engine(config)
     tickets = engine.tickets.list()
+    rows = engine.ledger.entries()
+    # The deliverables this machine produced, and the runs they came
+    # from. A status page that omits the results of the work is a
+    # status page about the plumbing.
+    artifacts = []
+    for group in group_runs(rows):
+        summary = run_summary(group["run_id"], group["rows"])
+        path = str(summary.get("artifact_path") or "")
+        if not path:
+            continue
+        artifacts.append(
+            {
+                "run_id": summary["run_id"],
+                "title": summary.get("title") or summary.get("goal") or "",
+                "path": path,
+                "exists": pathlib.Path(path).exists(),
+                "chars": int(summary.get("artifact_chars") or 0),
+            }
+        )
+    waiting = [t["id"] for t in tickets if t.get("state") == "waiting_human"]
+    resolved = [t["id"] for t in tickets if t.get("state") == "resolved"]
+    runs = [
+        run_summary(group["run_id"], group["rows"]) for group in group_runs(rows)
+    ]
     payload = {
         "config": {
             "provider": config.get("provider"),
@@ -256,11 +289,57 @@ def cmd_status(args: argparse.Namespace) -> int:
         },
         "ledger": engine.ledger.summary(),
         "tickets": {
-            "waiting_human": [t["id"] for t in tickets if t.get("state") == "waiting_human"],
-            "resolved": [t["id"] for t in tickets if t.get("state") == "resolved"],
+            "waiting_human": waiting,
+            "resolved": resolved,
+        },
+        # How much work this machine has done, and how much of it
+        # actually closed. "entries: 27" says how many lines the log
+        # has; "3 runs, 2 closed" says how the work went.
+        "runs": {
+            "total": len(runs),
+            "closed": len([r for r in runs if r.get("closed")]),
+            "open": len([r for r in runs if not r.get("closed")]),
+        },
+        # The deliverables, and whether they are still on disk.
+        "artifacts": {
+            "count": len(artifacts),
+            "missing": len([a for a in artifacts if not a["exists"]]),
+            "items": artifacts,
         },
     }
-    _print(payload, args.json)
+    if args.json:
+        _print(payload, True)
+        return 0
+
+    budget = config.get("budget") or {}
+    print(f"provider：{config.get('provider')} / {config.get('model')}")
+    print(f"状态目录：{config.get('state_dir')}")
+    print(
+        f"账本：{payload['ledger']['entries']} 条  "
+        f"运行 {payload['runs']['total']} 次  "
+        f"已闭环 {payload['runs']['closed']}  "
+        f"未闭环 {payload['runs']['open']}"
+    )
+    # The deliverables come first among the things to look at: they are
+    # what the user came for.
+    print(f"交付物：{payload['artifacts']['count']} 份")
+    for item in artifacts:
+        flag = "OK " if item["exists"] else "缺失"
+        print(f"  [{flag}] {item['title'] or '-'}  {item['chars']} 字  {item['path']}")
+    if payload["artifacts"]["missing"]:
+        print(f"  ⚠ 有 {payload['artifacts']['missing']} 份交付物文件已不在原处。")
+    if waiting:
+        print(f"待处理工单：{len(waiting)} 个")
+        for ticket_id in waiting:
+            print(f"  {ticket_id}  →  mas resume {ticket_id} --note \"你的意见\"")
+    else:
+        print("待处理工单：0 个")
+    if resolved:
+        print(f"已解决工单：{len(resolved)} 个")
+    print(
+        f"预算：迭代 {budget.get('max_iterations')} / "
+        f"{budget.get('deadline_sec')} 秒 / {budget.get('max_tokens')} token"
+    )
     return 0
 
 

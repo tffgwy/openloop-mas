@@ -4,6 +4,48 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.47] - 2026-11-15
+
+### Added
+
+``mas status`` printed a raw JSON payload and nothing else. That is
+fine for a machine and useless for the beginner this project is written
+for: the JSON says ``entries: 27`` and ``waiting_human: [T-...]`` and
+never says "you have 2 deliverables and 1 ticket waiting for you". A
+status page a person cannot read is not a status page.
+
+* **The status page talks to a human.** The default output is now a
+  short plain-text page: the provider and model, the state directory,
+  the ledger size, how many runs happened and how many closed, the
+  deliverables with their paths, the tickets waiting for a human, and
+  the budget. ``--json`` still gives the machine-readable payload.
+
+* **The status page counts the work.** It now says "运行 N 次 / 已闭环
+  N / 未闭环 N" - ``entries: 27`` says how many lines the log has,
+  "3 runs, 2 closed" says how the work went.
+
+* **The status page lists the deliverables.** With their titles, their
+  sizes and their paths, and it says so when a file is missing.
+
+* **The status page points at the waiting tickets.** It prints each
+  ticket with the exact ``mas resume`` command to continue it. An
+  escalation that the user cannot find is an escalation that never
+  gets handled.
+
+* **The JSON payload grew the same sections.** ``runs`` carries the
+  total, the closed count and the open count; ``artifacts`` carries
+  the count, how many files are missing and the items themselves.
+
+### Tests
+
+Eleven new tests in ``tests/test_status_readable.py`` cover the
+change: the default output is not a JSON dump, it names the provider,
+counts the runs, lists the deliverables, names the waiting tickets
+with the resume command, says when there is none, says the budget,
+calls out a missing file, and the JSON output carries both new
+sections while keeping the old ones. Seven layers were counter-proven
+by reverting each on its own.
+
 ## [0.7.46] - 2026-11-15
 
 ### Added

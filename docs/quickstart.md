@@ -199,6 +199,7 @@ mas resume T-20261111-085346-4396 --note "按用户口径重写结论段"
 ## 5.1 找回你的交付物
 
 ```bash
+mas status                                  # 一页人话：跑了多少、闭环多少、交付物在哪、谁在等你
 mas artifacts                                # 列出本机产出的全部交付物
 mas artifacts --run-id R-20261115-033129    # 只看某一次运行
 mas artifacts --json                        # 结构化输出

@@ -7,6 +7,22 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.47 adds** (`mas status` talks to a human):
+
+- **The status page used to be a JSON dump.** Fine for a machine,
+  useless for the beginner this project is written for: it said
+  "entries: 27" and never said "you have 2 deliverables and 1 ticket
+  waiting for you". A status page a person cannot read is not a status
+  page.
+- **It is now a short plain-text page**: provider and model, state
+  directory, ledger size, how many runs happened and how many closed,
+  the deliverables with their paths, the tickets waiting for a human
+  (each with the exact `mas resume` command), and the budget.
+- **The JSON payload grew the same sections** (``runs`` and
+  ``artifacts``), and the old ones stayed.
+- Eleven new regression tests, seven layers counter-proven by reverting
+  each on its own.
+
 **What v0.7.46 adds** (the ledger knows what each run was about):
 
 - **The ledger recorded everything about a run except the one thing a
