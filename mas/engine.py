@@ -694,6 +694,23 @@ class LoopEngine:
                 self._log(run_id, task_id, attempt, "error", {"error": error})
                 status = STATUS_ERROR
                 break
+            except Exception as exc:  # noqa: BLE001 - the run must stay auditable
+                # Something that is not a provider error went wrong inside
+                # the loop - a broken role contract, a malformed answer, a
+                # bug in a check. Letting it escape would end the run
+                # *without a ledger entry*: the ledger would show a run
+                # that started and never ended, and the closure state
+                # could not be audited. The CLI, the MCP tool and the HTTP
+                # route each have their own boundary, but the engine is
+                # also a library entry point, so the loop closes its own
+                # books before the error leaves.
+                error = f"internal error: {type(exc).__name__}: {exc}"
+                self._log(
+                    run_id, task_id, attempt, "error",
+                    {"error": error, "kind": "internal"},
+                )
+                status = STATUS_ERROR
+                break
 
         return RunResult(
             run_id=run_id,

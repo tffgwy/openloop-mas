@@ -7,6 +7,28 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.26 adds** (fixing "when it broke, the ledger had no record"):
+
+- **An unexpected error erased the audit trail.** The engine caught
+  `ProviderError` and nothing else, so any other exception raised inside
+  the loop escaped `run()` entirely - and a run that ends without a
+  ledger entry is a run that cannot be audited. The ledger showed a run
+  that started and never ended: no error entry, no closure record, no
+  ticket. The closure state of that run was simply unknowable.
+- **The engine was not a safe library entry point.** The CLI, the MCP tool
+  and the HTTP route each have their own exception boundary, so the user
+  saw a clean error message. But the engine is also called directly - by
+  a library user, by a script, by anything embedding the runtime - and
+  there it raised a bare traceback.
+- The loop now catches everything that is not a `ProviderError`, records
+  it in the ledger as an `internal` error and returns a normal `error`
+  result. The distinction is kept: a provider failure still reads
+  `provider error`, and the criterion validation still raises its
+  `ValueError` before the loop starts, because a broken rule must never
+  look like a closed run.
+- Seven regression tests. Verified: with the containment removed six of
+  the seven fail.
+
 **What v0.7.25 adds** (fixing "the budget ledger was lying"):
 
 - **A truncated call was free.** The endpoint had already generated the

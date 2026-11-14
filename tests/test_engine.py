@@ -23,7 +23,7 @@ from mas.config import DEFAULT_CONFIG
 from mas.demo import StaticProvider
 from mas.engine import Criterion, LoopEngine, evaluate_check, validate_criteria
 from mas.filechecks import evaluate_file_check
-from mas.providers import TruncatedAnswer
+from mas.providers import ProviderError, TruncatedAnswer
 from mas.teams import load_team
 
 
@@ -515,6 +515,116 @@ class TruncatedAnswerLoopTest(unittest.TestCase):
         result, _engine = self._run(provider, workers=3)
         # Every attempt truncated, so every attempt charged 3 x 200.
         self.assertGreaterEqual(result.tokens_used, 3 * 200 * result.iterations)
+
+
+class InternalErrorContainmentTest(unittest.TestCase):
+    """An unexpected error inside the loop must not erase the audit trail.
+
+    The CLI, the MCP tool and the HTTP route each have their own
+    exception boundary, but the engine is also a library entry point. An
+    error that escaped the loop ended the run *without a ledger entry*:
+    the ledger showed a run that started and never ended, and the closure
+    state could not be audited.
+    """
+
+    class _BrokenProvider:
+        name = "broken"
+        model = "broken-1"
+
+        def __init__(self, fail_role="verifier"):
+            self.fail_role = fail_role
+            self.calls = 0
+
+        def complete(self, *, system, prompt, role="worker",
+                     expect_json=False, max_tokens=4000):
+            self.calls += 1
+            if role == self.fail_role:
+                raise RuntimeError("the role contract exploded")
+            if role == "worker":
+                text = "ANSWER WITH NEEDLE_TOKEN"
+            elif role == "planner":
+                text = json.dumps({"summary": "plan", "plan": ["step"], "risks": []})
+            else:
+                text = json.dumps({"decision": "close", "reason": "ok"})
+            return {
+                "text": text,
+                "usage": {"prompt_tokens": 10, "completion_tokens": 10, "total_tokens": 20},
+                "raw": {},
+            }
+
+        def describe(self):
+            return {"provider": self.name, "model": self.model, "calls": self.calls}
+
+    def _run(self, provider, workers=1):
+        tmp = tempfile.mkdtemp()
+        config = json.loads(json.dumps(DEFAULT_CONFIG))
+        config["state_dir"] = tmp
+        config["budget"] = dict(config["budget"])
+        config["budget"]["max_iterations"] = 2
+        config["orchestration"] = {
+            "parallel_workers": workers,
+            "reviewers": 1,
+            "review_mode": "all",
+        }
+        engine = LoopEngine(config, provider=provider)
+        result = engine.run(
+            "写一份结论",
+            [
+                {
+                    "id": "c1",
+                    "desc": "含关键结论",
+                    "check": {"type": "contains", "arg": "NEEDLE_TOKEN"},
+                }
+            ],
+        )
+        return result, engine
+
+    def test_the_run_does_not_raise(self):
+        provider = self._BrokenProvider()
+        result, _engine = self._run(provider)
+        self.assertEqual(result.status, "error")
+
+    def test_the_error_is_reported_on_the_result(self):
+        provider = self._BrokenProvider()
+        result, _engine = self._run(provider)
+        self.assertIn("internal error", result.error)
+        self.assertIn("RuntimeError", result.error)
+
+    def test_the_ledger_records_the_error(self):
+        provider = self._BrokenProvider()
+        _result, engine = self._run(provider)
+        rows = [r for r in engine.ledger.entries() if r.get("role") == "error"]
+        self.assertTrue(rows, "the error must be visible in the ledger")
+        self.assertEqual(rows[-1].get("kind"), "internal")
+
+    def test_the_run_is_still_auditable(self):
+        # The ledger must show the run *and* its end, so the closure state
+        # can be reconstructed.
+        provider = self._BrokenProvider()
+        _result, engine = self._run(provider)
+        roles = [r.get("role") for r in engine.ledger.entries()]
+        self.assertIn("error", roles)
+
+    def test_the_parallel_path_is_contained_too(self):
+        provider = self._BrokenProvider()
+        result, _engine = self._run(provider, workers=3)
+        self.assertEqual(result.status, "error")
+
+    def test_a_broken_worker_is_contained_too(self):
+        provider = self._BrokenProvider(fail_role="worker")
+        result, _engine = self._run(provider)
+        self.assertEqual(result.status, "error")
+
+    def test_a_provider_error_is_still_a_provider_error(self):
+        class _ProviderDown(self._BrokenProvider):
+            def complete(self, **kwargs):
+                raise ProviderError("the endpoint is down")
+
+        provider = _ProviderDown()
+        result, _engine = self._run(provider)
+        self.assertEqual(result.status, "error")
+        self.assertIn("provider error", result.error)
+        self.assertNotIn("internal error", result.error)
 
 
 class TestLoopClosure(unittest.TestCase):

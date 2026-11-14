@@ -4,6 +4,40 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.26] - 2026-11-14
+
+### Fixed
+
+The engine caught `ProviderError` and nothing else. Any other exception
+raised inside the loop escaped `run()` entirely - and a run that ends
+without a ledger entry is a run that cannot be audited.
+
+* **An unexpected error erased the audit trail.** The ledger showed a
+  run that started and never ended: no error entry, no closure record,
+  no ticket. The closure state of that run was simply unknowable, which
+  is the one thing this project exists to make knowable.
+
+* **The engine was not a safe library entry point.** The CLI, the MCP
+  tool and the HTTP route each have their own exception boundary, so the
+  user saw a clean error message. But the engine is also called
+  directly - by a library user, by a script, by anything embedding the
+  runtime - and there it raised a bare traceback.
+
+* The loop now catches everything that is not a `ProviderError`,
+  records it in the ledger as an `internal` error and returns a normal
+  `error` result. The distinction is kept: a provider failure still
+  reads `provider error`, and the criterion validation still raises its
+  `ValueError` before the loop starts, because a broken rule must never
+  look like a closed run.
+
+### Added
+
+* Seven regression tests: the run does not raise, the error is reported
+  on the result, the ledger records it with the `internal` kind, the run
+  stays auditable, the parallel path and the broken-worker path are
+  contained, and a provider failure still reads as a provider failure.
+  Verified: with the containment removed six of the seven fail.
+
 ## [0.7.25] - 2026-11-14
 
 ### Fixed
