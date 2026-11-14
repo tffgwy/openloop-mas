@@ -1765,6 +1765,304 @@ class TruncatedReviewerRetryTest(unittest.TestCase):
         self.assertGreaterEqual(result.iterations, 2)
 
 
+class FailedCallAccountingTest(unittest.TestCase):
+    """A failed call that was billed must still be charged.
+
+    The budget is only a budget if every call the endpoint made is
+    counted. A call that failed after the endpoint answered and billed
+    us - a broken response shape, a stream that died halfway, a chain
+    that fell over to the next backend - spent real tokens. Reporting
+    those calls as free made the ceiling systematically too generous,
+    and a run that died on a provider error reported a spend of zero
+    for work it had already paid for.
+    """
+
+    class _Broken:
+        """The endpoint answered and billed us; the answer was unusable."""
+
+        name = "broken"
+
+        def __init__(self, cost=800, roles=("worker",)):
+            self.model = "broken-1"
+            self.cost = cost
+            self.roles = set(roles)
+            self.spent = 0
+
+        def complete(self, *, system, prompt, role="worker", expect_json=False,
+                     max_tokens=4000):
+            if role not in self.roles:
+                return {"text": "{}", "usage": {"total_tokens": 10}, "raw": {}}
+            self.spent += self.cost
+            raise ProviderError(
+                "unexpected response shape: {}",
+                usage={"total_tokens": self.cost},
+            )
+
+        def describe(self):
+            return {"provider": self.name, "model": self.model}
+
+    def _run(self, provider, workers=1):
+        tmp = tempfile.mkdtemp()
+        config = make_config(tmp)
+        config["budget"] = dict(config["budget"])
+        config["budget"]["max_iterations"] = 2
+        config["budget"]["max_tokens"] = 1000000
+        config["orchestration"] = {
+            "parallel_workers": workers,
+            "reviewers": 1,
+            "review_mode": "all",
+        }
+        engine = LoopEngine(config, provider=provider)
+        result = engine.run(
+            "写一份说明",
+            [{"id": "c1", "desc": "内容够好", "check": {"type": "contains", "arg": "正文"}}],
+        )
+        return result, engine
+
+    def test_a_failed_call_is_charged_to_the_budget(self):
+        provider = self._Broken()
+        result, _engine = self._run(provider)
+        self.assertEqual(result.status, "error")
+        self.assertGreaterEqual(
+            result.tokens_used, provider.cost,
+            "the failed call was billed and must be charged",
+        )
+
+    def test_the_failure_is_recorded_in_the_ledger_with_its_cost(self):
+        provider = self._Broken()
+        _result, engine = self._run(provider)
+        rows = [r for r in engine.ledger.entries() if r.get("role") == "error"]
+        self.assertTrue(rows)
+        self.assertGreaterEqual(int(rows[-1].get("tokens", 0) or 0), provider.cost)
+
+    def test_a_failed_parallel_pool_charges_every_candidate(self):
+        # Three candidates, three billed calls. The pool failed as a
+        # whole, and the combined spend has to reach the budget.
+        provider = self._Broken()
+        result, _engine = self._run(provider, workers=3)
+        self.assertEqual(result.status, "error")
+        self.assertGreaterEqual(
+            result.tokens_used, 3 * provider.cost,
+            "a pool that lost all of its members cost money",
+        )
+
+    def test_a_failover_chain_charges_the_backend_that_failed(self):
+        from mas.providers import ProviderChain
+
+        class _Good(self._Broken):
+            name = "good"
+
+            def complete(self, *, system, prompt, role="worker", expect_json=False,
+                         max_tokens=4000):
+                if role != "worker":
+                    return {"text": "{}", "usage": {"total_tokens": 10}, "raw": {}}
+                self.spent += 100
+                return {"text": "交付物 正文", "usage": {"total_tokens": 100}, "raw": {}}
+
+        provider = ProviderChain([self._Broken(), _Good()])
+        result, _engine = self._run(provider)
+        self.assertTrue(result.closed, result.status)
+        self.assertGreaterEqual(
+            result.tokens_used, 800 + 100,
+            "the backend that failed over was billed and must be charged",
+        )
+
+
+class ProviderErrorUsageTest(unittest.TestCase):
+    """``ProviderError`` must carry the usage of the call that failed."""
+
+    def test_the_error_carries_its_usage(self):
+        from mas.providers import ProviderError as Err
+        exc = Err("boom", usage={"total_tokens": 42})
+        self.assertEqual(exc.tokens, 42)
+
+    def test_an_error_without_usage_costs_nothing(self):
+        from mas.providers import ProviderError as Err
+        exc = Err("boom")
+        self.assertEqual(exc.tokens, 0)
+
+    def test_a_broken_response_shape_carries_the_usage(self):
+        # The HTTP layer must hand the usage of the billed answer to
+        # the error, otherwise the spend is nowhere.
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        from mas.providers import OpenAICompatProvider
+
+        class _Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_POST(self):
+                body = json.dumps({
+                    "usage": {"prompt_tokens": 30, "completion_tokens": 70, "total_tokens": 100},
+                    "choices": [{"unexpected": "shape"}],
+                }).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        server = HTTPServer(("127.0.0.1", 0), _Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            provider = OpenAICompatProvider(
+                model="m", base_url=f"http://127.0.0.1:{server.server_port}",
+            )
+            with self.assertRaises(Exception) as ctx:
+                provider.complete(system="s", prompt="p")
+            exc = ctx.exception
+            self.assertEqual(getattr(exc, "tokens", 0), 100)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+class PoolFailureSpendOrderTest(unittest.TestCase):
+    """The spend of a failed pool member must not depend on the order.
+
+    A parallel pool charges the calls that failed alongside the one that
+    won. The charge used to be flushed when the winner was reached, so a
+    candidate that failed *after* the winner in the list was never
+    charged: the same pool cost a different amount depending on which
+    candidate happened to finish first. A budget that depends on the
+    race is not a budget.
+    """
+
+    class _Plan:
+        """A provider that answers by angle / persona, not by call order.
+
+        The pool members are told which angle (or which persona) they
+        are, and that instruction is part of the prompt. Dispatching on
+        it makes every attempt of the same member behave the same way,
+        so a retry cannot shift the script and the test stays about the
+        accounting rather than about the order of the calls.
+
+        The roles that are not scripted answer for ten tokens each, and
+        those ten tokens are counted too - otherwise the provider would
+        look cheaper than it is and every comparison would be off by the
+        cost of the planner and the verifier.
+        """
+
+        name = "planned"
+
+        def __init__(self, workers=None, reviewers=None):
+            self.model = "planned-1"
+            # angle -> (kind, cost) for the candidate pool
+            self.workers = dict(workers or {})
+            # persona -> (kind, cost) for the review panel
+            self.reviewers = dict(reviewers or {})
+            self.spent = 0
+            self.log = []
+
+        @staticmethod
+        def _key_of(prompt, field):
+            match = re.search(r'"%s":\s*"([^"]+)"' % field, prompt)
+            return match.group(1) if match else ""
+
+        def complete(self, *, system, prompt, role="worker", expect_json=False,
+                     max_tokens=4000):
+            if role == "worker":
+                kind, cost = self.workers.get(
+                    self._key_of(prompt, "angle"), ("ok", 700)
+                )
+            elif role == "verifier":
+                kind, cost = self.reviewers.get(
+                    self._key_of(prompt, "persona"), ("ok", 100)
+                )
+            else:
+                kind, cost = ("ok", 10)
+            self.spent += cost
+            self.log.append((role, kind, cost))
+            if kind == "fail":
+                raise ProviderError("boom", usage={"total_tokens": cost})
+            if kind == "trunc":
+                raise TruncatedAnswer("truncated", usage={"total_tokens": cost})
+            if role == "worker":
+                return {
+                    "text": "交付物 正文",
+                    "usage": {"total_tokens": cost},
+                    "raw": {},
+                }
+            if role == "verifier":
+                text = json.dumps({
+                    "verdict": "pass",
+                    "scores": [{"id": "c1", "pass": True, "note": "ok"}],
+                })
+            else:
+                text = "{}"
+            return {"text": text, "usage": {"total_tokens": cost}, "raw": {}}
+
+
+    def _run(self, provider, workers=2, reviewers=1):
+        tmp = tempfile.mkdtemp()
+        config = make_config(tmp)
+        config["budget"] = dict(config["budget"])
+        config["budget"]["max_iterations"] = 2
+        config["budget"]["max_tokens"] = 1000000
+        config["orchestration"] = {
+            "parallel_workers": workers,
+            "reviewers": reviewers,
+            "review_mode": "all",
+        }
+        engine = LoopEngine(config, provider=provider)
+        result = engine.run(
+            "写一份说明",
+            [{"id": "c1", "desc": "内容够好", "check": {"type": "contains", "arg": "正文"}}],
+        )
+        return result, engine
+
+    def test_a_failure_before_the_winner_is_charged(self):
+        provider = self._Plan(workers={"direct": ("fail", 700)})
+        result, _engine = self._run(provider, workers=2)
+        self.assertEqual(provider.spent, result.tokens_used)
+
+    def test_a_failure_after_the_winner_is_charged_too(self):
+        # The pool is the same, only the angle that fails differs: one
+        # failed member before the winner, one after it. Before the fix
+        # the second run booked less than it spent.
+        provider = self._Plan(workers={"thorough": ("fail", 700)})
+        result, _engine = self._run(provider, workers=2)
+        self.assertEqual(
+            provider.spent, result.tokens_used,
+            "a failed candidate after the winner must still be charged",
+        )
+
+    def test_the_two_orders_book_the_same_amount(self):
+        before = self._Plan(workers={"direct": ("fail", 700)})
+        after = self._Plan(workers={"thorough": ("fail", 700)})
+        first, _ = self._run(before, workers=2)
+        second, _ = self._run(after, workers=2)
+        self.assertEqual(first.tokens_used, second.tokens_used)
+
+    def test_a_truncated_pool_charges_the_failed_member_too(self):
+        # The pool is invalidated by the truncation, so every member is
+        # thrown away - including the one that failed outright. All of
+        # them were billed.
+        provider = self._Plan(workers={
+            "direct": ("fail", 700),
+            "thorough": ("trunc", 900),
+        })
+        result, _engine = self._run(provider, workers=2)
+        self.assertEqual(
+            provider.spent, result.tokens_used,
+            "the failed member of a discarded pool must be charged",
+        )
+
+    def test_a_failed_reviewer_is_charged_when_another_one_truncated(self):
+        provider = self._Plan(reviewers={
+            "strict": ("fail", 500),
+            "skeptic": ("trunc", 900),
+        })
+        result, _engine = self._run(provider, workers=1, reviewers=2)
+        self.assertEqual(
+            provider.spent, result.tokens_used,
+            "the failed reviewer of a discarded round must be charged",
+        )
+
+
 class TokenCeilingTest(unittest.TestCase):
     """The token ceiling must hold even when every answer is truncated."""
 

@@ -24,6 +24,7 @@ Three concerns live here so the engine stays readable:
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
 import threading
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -130,6 +131,17 @@ class ParallelFailure:
 
     def __repr__(self) -> str:  # pragma: no cover - debug helper
         return f"<ParallelFailure {self.index} {self.message}>"
+
+
+def _usage_of(exc: BaseException) -> int:
+    """The tokens a failed call really spent, if it reported any."""
+    usage = getattr(exc, "usage", None)
+    if not isinstance(usage, dict):
+        return 0
+    try:
+        return int(usage.get("total_tokens", 0) or 0)
+    except (AttributeError, TypeError, ValueError):
+        return 0
 
 
 def _guard(task: Callable[[int], Any], index: int) -> Any:
@@ -311,15 +323,35 @@ class ProviderChain:
         if not self.providers:
             raise RuntimeError("provider chain is empty")
         last_error: Optional[BaseException] = None
+        # The backends that failed before the successful one also spent
+        # money - a broken backend that was billed before it broke is
+        # part of the cost of the run. The total travels with the
+        # answer so the engine can charge the whole chain.
+        spent: Dict[str, int] = {"total_tokens": 0}
         for provider in self.providers:
             try:
                 response = provider.complete(**kwargs)
             except BaseException as exc:  # noqa: BLE001 - try the next backend
                 last_error = exc
+                spent["total_tokens"] += _usage_of(exc)
                 continue
             with self._lock:
                 self.calls += 1
             response.setdefault("provider_used", provider.name)
             response.setdefault("model_used", provider.model)
+            if spent["total_tokens"]:
+                # The failover spend is added on top of the winning
+                # backend's own usage.
+                usage = dict(response.get("usage") or {})
+                usage["total_tokens"] = int(
+                    usage.get("total_tokens", 0) or 0
+                ) + spent["total_tokens"]
+                usage["failover_tokens"] = spent["total_tokens"]
+                response["usage"] = usage
             return response
+        if last_error is not None and spent["total_tokens"]:
+            # Every backend failed - the chain's total spend still has
+            # to reach the caller.
+            with contextlib.suppress(AttributeError):
+                last_error.usage = dict(last_error.usage or {})
         raise last_error if last_error else RuntimeError("all providers failed")

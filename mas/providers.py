@@ -29,7 +29,26 @@ from mas.orchestration import ProviderChain
 
 
 class ProviderError(RuntimeError):
-    """Raised when a provider call cannot be completed."""
+    """Raised when a provider call cannot be completed.
+
+    A failed call is not a free call. The endpoint may have generated
+    the answer and billed for it before the answer turned out to be
+    unusable - a broken response shape, a stream that failed halfway
+    through. The usage is carried along so the engine can charge the
+    run for what it really spent, instead of reporting a call that cost
+    money as if it never happened.
+    """
+
+    def __init__(self, message: str, *, usage: Dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.usage = usage or {}
+
+    @property
+    def tokens(self) -> int:
+        try:
+            return int(self.usage.get("total_tokens", 0) or 0)
+        except (AttributeError, TypeError, ValueError):
+            return 0
 
 
 class TruncatedAnswer(ProviderError):
@@ -224,7 +243,14 @@ class _HttpProvider(Provider):
             if etype in ("response.failed", "error"):
                 error = (event.get("response") or {}).get("error") or event.get("error") or {}
                 message = error.get("message") if isinstance(error, dict) else str(error)
-                raise ProviderError(f"stream failed: {message or etype}")
+                # The stream carried a usage report before it failed -
+                # those tokens were generated and billed.
+                raw_usage = (event.get("response") or {}).get("usage") or {}
+                raise ProviderError(
+                    f"stream failed: {message or etype}",
+                    usage=_HttpProvider._normalize_usage(raw_usage)
+                    if isinstance(raw_usage, dict) else {},
+                )
             if etype == "response.output_text.delta" and isinstance(event.get("delta"), str):
                 parts.append(event["delta"])
             if etype in ("response.completed", "response.in_progress", "response.created"):
@@ -413,12 +439,18 @@ class OpenAICompatProvider(_HttpProvider):
                 data = self._post_json(url, payload, headers)
             except ProviderError as retry_exc:
                 raise exc from retry_exc
+        usage = self._normalize_usage(data.get("usage") or {})
         try:
             raw_text = data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
-            raise ProviderError(f"unexpected response shape: {str(data)[:200]}") from exc
+            # The endpoint answered and billed us; only the shape was
+            # wrong. The usage travels with the error so the run is
+            # charged for the tokens it really spent.
+            raise ProviderError(
+                f"unexpected response shape: {str(data)[:200]}",
+                usage=usage,
+            ) from exc
         text = sanitize_gateway_text(self._flatten_content(raw_text))
-        usage = self._normalize_usage(data.get("usage") or {})
         self.calls += 1
         if is_truncated(data):
             # The answer is incomplete. Handing it back as a normal answer

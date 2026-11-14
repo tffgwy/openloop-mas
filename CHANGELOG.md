@@ -4,6 +4,46 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.29] - 2026-11-14
+
+### Fixed
+
+The accounting of a *failed* call, and the pool that threw it away.
+
+* **A failed candidate was charged only if it happened to fail before
+  the winner.** The spend of the pool members that failed was flushed
+  when the winner was reached, so a candidate that failed *after* the
+  winner in the list was never charged. The same pool cost a different
+  amount depending on which member happened to finish first - and a
+  budget that depends on the race is not a budget. The spend is now
+  collected in the same pre-pass as the truncation and charged once,
+  after the ranking, so the total no longer depends on the order.
+
+* **A discarded pool did not charge the member that failed.** When a
+  truncation invalidated the whole pool, the truncated member and the
+  members that had finished were charged - but the one that failed
+  outright was not. Every member of a pool that is thrown away was
+  billed, and all of them are charged now.
+
+* **A discarded review round did not charge the reviewer that failed.**
+  The same rule for the review panel: when a truncation threw the round
+  away, the reviewer that failed outright was left out of the charge.
+  It is charged now, in the first review round and in the re-ask round.
+
+* **A failed call that was billed did not say so.** `ProviderError` now
+  carries the usage of the call that failed, so a broken response
+  shape, a stream that died halfway, or a failover chain that fell over
+  to the next backend reaches the engine with its cost attached. A run
+  that died on a provider error used to report a spend of zero for work
+  it had already paid for.
+
+### Changed
+
+* The invariant sweep now covers 50 pool shapes - from a single worker
+  to four workers with three reviewers, across clean runs, truncated
+  answers, failed calls and mixtures of both. Every one of them books
+  exactly what the endpoint charged.
+
 ## [0.7.28] - 2026-11-14
 
 ### Fixed

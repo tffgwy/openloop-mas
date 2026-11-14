@@ -752,7 +752,18 @@ class LoopEngine:
             except ProviderError as exc:
                 error = f"provider error: {exc}"
                 last_error = error
-                self._log(run_id, task_id, attempt, "error", {"error": error})
+                # The failed call was billed too. A provider that
+                # answered and then returned a broken shape - or a
+                # chain that fell over from one backend to the next -
+                # spent real tokens, and a run that reports a spend of
+                # zero for a call that cost money is a run whose budget
+                # was never a budget.
+                spent = int(getattr(exc, "tokens", 0) or 0)
+                tokens += spent
+                self._log(
+                    run_id, task_id, attempt, "error",
+                    {"error": error, "tokens": spent},
+                )
                 status = STATUS_ERROR
                 break
             except Exception as exc:  # noqa: BLE001 - the run must stay auditable
@@ -847,6 +858,7 @@ class LoopEngine:
         # under-reported the spend of a parallel run.
         truncated_tokens = 0
         pool_tokens = 0
+        failed_tokens = 0
         truncation: Optional[TruncatedAnswer] = None
         for item in results:
             if isinstance(item, ParallelFailure):
@@ -854,6 +866,14 @@ class LoopEngine:
                     truncated_tokens += int(getattr(item.error, "tokens", 0) or 0)
                     if truncation is None:
                         truncation = item.error
+                else:
+                    # A candidate that failed after the endpoint billed it
+                    # still cost money. The amount is collected here, in the
+                    # same pre-pass as the truncation, so it does not depend
+                    # on the order the pool happened to finish in.
+                    failed_tokens += int(
+                        getattr(item.error, "tokens", 0) or 0
+                    )
                 continue
             # The candidates that *did* finish also spent tokens - the
             # endpoint generated them before the pool was thrown away.
@@ -864,7 +884,9 @@ class LoopEngine:
             pool_tokens += int((item.get("usage") or {}).get("total_tokens", 0) or 0)
         if truncation is not None:
             truncation.usage = dict(truncation.usage or {})
-            truncation.usage["total_tokens"] = truncated_tokens + pool_tokens
+            truncation.usage["total_tokens"] = (
+                truncated_tokens + pool_tokens + failed_tokens
+            )
             raise truncation
         crits = [Criterion.from_raw(raw, i) for i, raw in enumerate(state.get("criteria") or [])]
         best_index = -1
@@ -879,6 +901,10 @@ class LoopEngine:
                 # whole pool is retried with a bigger output budget
                 # instead of being ranked as a pool of fragments.
                 errors.append(f"{angles[index]}: {item.message}")
+                # The spend of this candidate was already collected in the
+                # pre-pass above - it is added to the total once, after the
+                # ranking, so the accounting does not depend on the order
+                # in which the pool happened to finish.
                 summary.append({"angle": angles[index], "selected": False, "error": item.message})
                 continue
             # The reasoning block is not part of the deliverable. The
@@ -929,11 +955,22 @@ class LoopEngine:
                 best_rank = rank
                 best_index = index
 
+        # A candidate that failed in the same pool was billed as well.
+        # The winner is what gets delivered, but the money spent on the
+        # losers is part of the run's cost - a pool that lost two members
+        # did not cost one candidate's worth. It is added once, after the
+        # ranking, so the total does not depend on the finishing order.
+        tokens += failed_tokens
         if best_index < 0:
             # Every candidate failed - keep the first error so the caller
             # reports a provider problem rather than an empty artifact.
+            # The candidates that failed were still billed, so the
+            # error carries their combined spend: a pool that lost all
+            # of its members cost money, and the run must say so.
             raise ProviderError(
-                "all parallel candidates failed: " + ("; ".join(errors) or "no candidates produced")
+                "all parallel candidates failed: "
+                + ("; ".join(errors) or "no candidates produced"),
+                usage={"total_tokens": failed_tokens},
             )
 
         summary[best_index]["selected"] = True
@@ -1037,9 +1074,17 @@ class LoopEngine:
         tokens = 0
         truncation: Optional[TruncatedAnswer] = None
         truncated_tokens = 0
+        failed_tokens = 0
         for index, item in enumerate(results):
             if isinstance(item, ParallelFailure):
                 errors.append(f"{personas[index]}: {item.message}")
+                if not isinstance(item.error, TruncatedAnswer):
+                    # A reviewer that failed outright was still billed.
+                    # The panel continues without it - but the money is
+                    # part of the run's cost.
+                    failed_tokens += int(
+                        getattr(item.error, "tokens", 0) or 0
+                    )
                 if isinstance(item.error, TruncatedAnswer):
                     # A reviewer that ran out of output room did not
                     # *disagree* with the artifact - it never finished.
@@ -1059,15 +1104,19 @@ class LoopEngine:
             tokens += int(item["verdict"].get("_usage", {}).get("total_tokens", 0))
         if truncation is not None:
             # The reviewers that did answer also spent tokens, and this
-            # round is thrown away - so they are charged too.
+            # round is thrown away - so they are charged too. The ones
+            # that failed outright are charged as well: they were billed
+            # before they broke, and the round is lost either way.
             truncation.usage = dict(truncation.usage or {})
-            truncation.usage["total_tokens"] = truncated_tokens + tokens
+            truncation.usage["total_tokens"] = (
+                truncated_tokens + tokens + failed_tokens
+            )
             raise truncation
         reviews = [verdict for verdict in panel if verdict]
         aggregate = aggregate_reviews(
             reviews, mode=self.review_mode, expected=len(personas)
         )
-        aggregate["_usage"] = {"total_tokens": tokens}
+        aggregate["_usage"] = {"total_tokens": tokens + failed_tokens}
         aggregate["errors"] = errors
         aggregate["personas"] = personas
         # Kept so a targeted re-ask can merge into the same panel instead
@@ -1148,8 +1197,13 @@ class LoopEngine:
             tokens = 0
             truncation: Optional[TruncatedAnswer] = None
             truncated_tokens = 0
+            failed_tokens = 0
             for item in results:
                 if isinstance(item, ParallelFailure):
+                    if not isinstance(item.error, TruncatedAnswer):
+                        failed_tokens += int(
+                            getattr(item.error, "tokens", 0) or 0
+                        )
                     if isinstance(item.error, TruncatedAnswer):
                         # The same rule as in the first review round: a
                         # reviewer that ran out of room is retried, not
@@ -1162,8 +1216,14 @@ class LoopEngine:
                 reask.append(item["verdict"])
                 tokens += int(item["verdict"].get("_usage", {}).get("total_tokens", 0))
             if truncation is not None:
+                # Same rule as the first review round: the re-ask that
+                # was thrown away is charged in full - the truncated
+                # reviewers, the ones that answered, and the ones that
+                # failed outright.
                 truncation.usage = dict(truncation.usage or {})
-                truncation.usage["total_tokens"] = truncated_tokens + tokens
+                truncation.usage["total_tokens"] = (
+                    truncated_tokens + tokens + failed_tokens
+                )
                 raise truncation
 
             # Every member keeps its own answers. The re-ask only fills
@@ -1201,7 +1261,7 @@ class LoopEngine:
                 mode=self.review_mode,
                 expected=len(merged_panel),
             )
-            rebuilt["_usage"] = {"total_tokens": tokens}
+            rebuilt["_usage"] = {"total_tokens": tokens + failed_tokens}
             rebuilt["errors"] = verdict.get("errors", [])
             rebuilt["personas"] = verdict.get("personas", personas)
             rebuilt["_panel"] = merged_panel

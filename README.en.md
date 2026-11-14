@@ -7,6 +7,37 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.29 adds** (fixing three "a failed call was not charged" defects):
+
+- **A failed candidate was charged only if it happened to fail before the
+  winner.** The spend of the failed pool members was flushed when the winner
+  was reached, so a candidate that failed *after* the winner in the list was
+  never charged. The same pool cost a different amount depending on which
+  member happened to finish first - and a budget that depends on the race is
+  not a budget. The spend is now collected in the same pre-pass as the
+  truncation and charged once, after the ranking, so the total no longer
+  depends on the order.
+- **A discarded pool did not charge the member that failed.** When a
+  truncation invalidated the whole pool, the truncated member and the ones
+  that had finished were charged - the one that failed outright was not.
+  Every member of a pool that is thrown away was billed, and all of them are
+  charged now.
+- **A discarded review round did not charge the reviewer that failed.** The
+  same rule for the review panel: when a truncation threw the round away,
+  the reviewer that failed outright was left out of the bill. It is charged
+  now, in the first review round and in the re-ask round.
+- **A failed call that was billed did not say so.** `ProviderError` now
+  carries the usage of the call that failed, so a broken response shape, a
+  stream that died halfway, or a failover chain that fell over to the next
+  backend reaches the engine with its cost attached. A run that died on a
+  provider error used to report a spend of zero for work it had already paid
+  for.
+- Five regression tests. Verified: reverting each fix one at a time makes
+  the corresponding test fail. The invariant sweep now covers 50 pool
+  shapes - from one worker to four workers with three reviewers, across
+  clean runs, truncated answers, failed calls and mixtures of both - and
+  every one of them books exactly what the endpoint charged.
+
 **What v0.7.28 adds** (fixing three "the budget ledger lied" defects and one
 "the loop could never close" defect):
 
