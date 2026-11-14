@@ -36,7 +36,7 @@ from mas.filechecks import (
     file_check_problem,
     workspace_root,
 )
-from mas.filewrite import apply_write_blocks, write_instruction
+from mas.filewrite import apply_write_blocks, plan_writes, write_instruction
 from mas.ledger import Ledger
 from mas.orchestration import (
     ParallelFailure,
@@ -284,6 +284,7 @@ def evaluate_check(
     criterion: Criterion,
     artifact: str,
     config: Optional[Dict[str, Any]] = None,
+    overlay: Optional[Dict[str, bytes]] = None,
 ) -> Dict[str, Any]:
     """Evaluate the machine check of a criterion against an artifact.
 
@@ -291,6 +292,11 @@ def evaluate_check(
     resolve their paths against the configured workspace. When it is
     omitted the current working directory is used, so the existing
     call sites keep working unchanged.
+
+    ``overlay`` maps absolute paths to the bytes a candidate *would*
+    write there. The parallel candidate ranking passes it so a candidate
+    is scored against the file it would actually produce - see
+    ``mas.filewrite.plan_writes``.
     """
     check = criterion.check
     if not check:
@@ -365,7 +371,7 @@ def evaluate_check(
             # artifact string. It is evaluated here - by this module - so
             # the verdict is reproducible and does not depend on the
             # model's willingness to describe what it "did".
-            outcome = evaluate_file_check(kind, arg, workspace_root(config))
+            outcome = evaluate_file_check(kind, arg, workspace_root(config), overlay)
             outcome["id"] = criterion.id
             return outcome
         else:
@@ -745,6 +751,19 @@ class LoopEngine:
                 continue
             artifact = item["text"]
             tokens += int(item["usage"].get("total_tokens", 0))
+            # The file level checks read the real disk, but at ranking
+            # time this candidate has not written its file yet. Scoring
+            # it against the old disk state made every file level check
+            # fail for every candidate - the file rules had no influence
+            # on the choice at all, and the winner was picked by length.
+            # The candidate is therefore scored against the files it
+            # *would* write, through an overlay that never touches the
+            # disk. Only the winning candidate is written afterwards.
+            overlay: Dict[str, bytes] = {}
+            if state.get("write_paths"):
+                plan = plan_writes(artifact, self._write_workspace())
+                for planned in plan["planned"]:
+                    overlay[planned["absolute"]] = planned["content"].encode("utf-8")
             passed_count = 0
             for crit in crits:
                 # The configuration carries the workspace, and the file
@@ -755,7 +774,7 @@ class LoopEngine:
                 # candidate ranking would be decided by the wrong
                 # evidence. The winner is picked on this ranking, so a
                 # wrong workspace meant the *wrong candidate* won.
-                outcome = evaluate_check(crit, artifact, self.config)
+                outcome = evaluate_check(crit, artifact, self.config, overlay)
                 if outcome.get("pass"):
                     passed_count += 1
             summary.append(

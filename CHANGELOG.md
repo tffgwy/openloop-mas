@@ -4,6 +4,48 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.21] - 2026-11-14
+
+### Fixed
+
+The parallel candidate ranking compared the candidates against the *old*
+contents of the workspace. The file level checks read the real disk, and
+at ranking time no candidate had written its file yet - so every file
+level check failed for every candidate, and the file rules had no
+influence on the choice at all.
+
+* **The winner was picked by length, not by the rules.** With every
+  candidate scoring zero on the file rules, the tie was broken by the
+  length of the artifact. A candidate that would write a file violating
+  the rule could win the race, and the loop would then fail - or worse,
+  close on a file that a different candidate had produced. The single
+  worker path was never affected: it writes first and checks second, in
+  the right order. Only the parallel path checked before it wrote.
+
+* **The ranking now scores a candidate against the file it would
+  produce.** A candidate's write blocks are parsed into a *plan* without
+  touching the disk, and the file checks read that plan through an
+  overlay. The winner is then written to disk as before - and only the
+  winner. The disk state during the ranking is never modified, so the
+  candidates cannot see each other's output.
+
+* `mas.filewrite.plan_writes` and the `overlay` argument of
+  `mas.filechecks.evaluate_file_check` are the two new building blocks.
+  An overlay is a plain mapping from absolute path to bytes; it changes
+  what a check *reads* and nothing else.
+
+### Added
+
+* Regression tests for the write order: three candidates write different
+  contents to the same file, the wrong ones deliberately *longer*, and
+  the test asserts that the winner is the one whose file satisfies the
+  rule and that the disk holds that winner's content. With the overlay
+  removed the test fails - the long wrong candidate wins and the right
+  one is discarded - so the test provably catches the defect.
+* Tests for the overlay itself: it replaces the file contents, it makes
+  a missing file exist, and a path outside the overlay is still read
+  from the disk.
+
 ## [0.7.20] - 2026-11-14
 
 ### Fixed

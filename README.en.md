@@ -7,6 +7,34 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.21 adds** (fixing the defect that made parallel mode pick the
+wrong candidate):
+
+- **The candidate ranking read the *old* contents of the workspace.**
+  The file level checks read the real disk, and at ranking time no
+  candidate had written its file yet - so **every candidate scored zero
+  on the file rules**, and the ranking degenerated into "pick by length":
+  a candidate that would write a file violating the rule could win the
+  race, and even a candidate whose *rival* had written the correct file
+  could be discarded. The single worker path was never affected: it
+  writes first and checks second, in the right order. Only the parallel
+  path checked before it wrote.
+- **A candidate is now scored against the file it would produce.** Its
+  write blocks are parsed into a *plan* without touching the disk, and
+  the file checks read that plan through an **overlay**. The winner is
+  then written to disk as before - and only the winner. The disk state
+  during the ranking is never modified, so the candidates cannot see
+  each other's output.
+- Two new building blocks: `mas.filewrite.plan_writes` and the
+  `overlay` argument of `mas.filechecks.evaluate_file_check`. An overlay
+  is a plain mapping from absolute path to bytes; it changes what a
+  check *reads* and nothing else.
+- The regression test has three candidates write the same file, the two
+  wrong ones deliberately *longer*, and asserts that the winner is the
+  one whose file satisfies the rule and that the disk holds the winner's
+  content. Verified: with the overlay removed the test fails - the long
+  wrong candidate wins and the right one is discarded.
+
 **What v0.7.20 adds** (fixing the defect that decided *which* candidate won):
 
 - **The parallel candidate ranking scored the wrong directory.** The ranking

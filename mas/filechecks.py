@@ -224,12 +224,23 @@ def file_check_problem(kind: str, arg: Any) -> str:
     return ""
 
 
-def evaluate_file_check(kind: str, arg: Any, root: Path) -> Dict[str, Any]:
+def evaluate_file_check(
+    kind: str,
+    arg: Any,
+    root: Path,
+    overlay: Optional[Dict[str, bytes]] = None,
+) -> Dict[str, Any]:
     """Evaluate one file check against the real filesystem.
 
     Returns a dict shaped like the text checks: ``id`` is filled in by the
     caller, ``pass`` is True/False/None, plus ``note`` and ``source``.
     ``None`` means *unjudged* - the check could not decide.
+
+    ``overlay`` maps an absolute path to the bytes a *candidate* would
+    write there. The parallel candidate ranking uses it to score a
+    candidate against the file it would actually produce, instead of
+    against the old contents of the workspace. The overlay never writes
+    anything; it only changes what this check reads.
     """
     try:
         raw_path, value = parse_file_check_arg(arg)
@@ -238,33 +249,48 @@ def evaluate_file_check(kind: str, arg: Any, root: Path) -> Dict[str, Any]:
         return {"pass": None, "note": str(exc), "source": "invalid"}
 
     kind = str(kind).lower()
+    overlay = overlay or {}
+    overlay_key = str(path)
+
+    def _overlay_bytes() -> Optional[bytes]:
+        if overlay_key in overlay:
+            return overlay[overlay_key]
+        return None
 
     if kind in {"file_exists", "file_missing"}:
-        exists = path.exists()
-        if exists and not path.is_file():
+        virtual = _overlay_bytes()
+        exists = True if virtual is not None else path.exists()
+        if exists and not path.is_file() and virtual is None:
             note = "path exists but is not a file"
             passed = False if kind == "file_exists" else None
             return {"pass": passed, "note": note, "source": "file"}
         if kind == "file_exists":
+            if virtual is not None:
+                return {"pass": True, "note": f"file exists: {raw_path}", "source": "file"}
             if exists:
                 return {"pass": True, "note": f"file exists: {raw_path}", "source": "file"}
             # The file is not there. "file_exists" must fail here - a
             # missing file is the exact case this check exists for, and
             # passing it would close the loop on a file nobody wrote.
             return {"pass": False, "note": f"file not found: {raw_path}", "source": "file"}
+        if virtual is not None:
+            return {"pass": False, "note": f"file still exists: {raw_path}", "source": "file"}
         if exists:
             return {"pass": False, "note": f"file still exists: {raw_path}", "source": "file"}
         return {"pass": True, "note": f"file is gone: {raw_path}", "source": "file"}
 
-    if not path.exists():
+    virtual = _overlay_bytes()
+    if virtual is not None:
+        data = virtual
+    elif not path.exists():
         return {"pass": False, "note": f"file not found: {raw_path}", "source": "file"}
-    if not path.is_file():
+    elif not path.is_file():
         return {"pass": None, "note": f"path is not a file: {raw_path}", "source": "file"}
-
-    try:
-        data = _read_bytes(path)
-    except FileCheckError as exc:
-        return {"pass": None, "note": str(exc), "source": "invalid"}
+    else:
+        try:
+            data = _read_bytes(path)
+        except FileCheckError as exc:
+            return {"pass": None, "note": str(exc), "source": "invalid"}
 
     if kind == "file_min_bytes":
         limit = int(value)
@@ -295,7 +321,14 @@ def evaluate_file_check(kind: str, arg: Any, root: Path) -> Dict[str, Any]:
         }
     if kind == "file_mtime_newer":
         stamp = _parse_timestamp(value)
-        mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        if virtual is not None:
+            # The overlay is a file that does not exist on disk yet, so
+            # it has no mtime. A candidate that would create the file
+            # makes it newer than anything in the past, which is the
+            # only defensible answer: the file is being written now.
+            mtime = datetime.now(tz=timezone.utc)
+        else:
+            mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
         passed = mtime > stamp
         return {
             "pass": passed,

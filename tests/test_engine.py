@@ -17,10 +17,12 @@ import json
 import os
 import tempfile
 import unittest
+from pathlib import Path
 
 from mas.config import DEFAULT_CONFIG
 from mas.demo import StaticProvider
 from mas.engine import Criterion, LoopEngine, evaluate_check, validate_criteria
+from mas.filechecks import evaluate_file_check
 from mas.teams import load_team
 
 
@@ -146,6 +148,146 @@ class ParallelCandidateWorkspaceTest(unittest.TestCase):
             # which could select the "TOO SHORT" candidate.
             self.assertEqual(chosen[0]["passed"], 1, candidates)
             self.assertNotEqual(chosen[0]["angle"], "concise", candidates)
+
+
+class ParallelCandidateWriteOrderTest(unittest.TestCase):
+    """The candidate ranking must see the files a candidate would write.
+
+    The file level checks read the real disk. At ranking time the
+    candidate has not written its file yet, so ranking against the old
+    disk state made every file level check fail for every candidate:
+    the file rules had no influence on the choice at all, and the
+    winner was picked by length - which could be the candidate whose
+    file would never satisfy the rule.
+    """
+
+    class _WriteProvider:
+        """The "concise" angle writes the correct file, the others do not."""
+
+        name = "writer"
+
+        def __init__(self) -> None:
+            self.model = "writer-1"
+            self.calls = 0
+
+        def complete(self, *, system, prompt, role="worker",
+                     expect_json=False, max_tokens=4000):
+            self.calls += 1
+            if role == "worker":
+                if "concise" in prompt.lower():
+                    content = "GOOD CONTENT WITH NEEDLE_TOKEN"
+                else:
+                    # The wrong candidates are *longer*, so a ranking
+                    # that cannot see the file would prefer them.
+                    content = "BAD CONTENT WITHOUT THE TOKEN " * 10
+                text = (
+                    '<<<MAS:FILE path="out.md">>>>\n'
+                    + content
+                    + "\n<<<MAS:END FILE>>>\n"
+                )
+            elif role == "verifier":
+                text = json.dumps({"verdict": "pass", "scores": [], "issues": []})
+            elif role == "planner":
+                text = json.dumps({"summary": "plan", "plan": ["step"], "risks": []})
+            else:
+                text = json.dumps({"decision": "close", "reason": "ok"})
+            return {
+                "text": text,
+                "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
+                "raw": {},
+            }
+
+        def describe(self):
+            return {"provider": self.name, "model": self.model, "calls": self.calls}
+
+    def test_the_ranking_sees_the_file_the_candidate_would_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = os.path.join(tmp, "ws")
+            os.makedirs(workspace, exist_ok=True)
+
+            config = make_config(tmp)
+            config["workspace"] = workspace
+            config["orchestration"] = {
+                "parallel_workers": 3,
+                "reviewers": 1,
+                "review_mode": "all",
+            }
+            engine = LoopEngine(config, provider=self._WriteProvider())
+            result = engine.run(
+                "把结论写进 out.md",
+                [
+                    {
+                        "id": "c1",
+                        "desc": "文件含 NEEDLE_TOKEN",
+                        "check": {
+                            "type": "file_contains",
+                            "arg": {"path": "out.md", "value": "NEEDLE_TOKEN"},
+                        },
+                    }
+                ],
+            )
+            rows = [r for r in engine.ledger.entries() if r.get("role") == "candidates"]
+            self.assertTrue(rows, "the candidate ranking was not written to the ledger")
+            candidates = rows[-1]["candidates"]
+            chosen = [c for c in candidates if c.get("selected")]
+            self.assertEqual(len(chosen), 1, candidates)
+            self.assertEqual(chosen[0]["passed"], 1, candidates)
+            self.assertEqual(chosen[0]["angle"], "concise", candidates)
+            # The winner's file is the one on the disk - the loop closed
+            # on the file it actually produced.
+            with open(os.path.join(workspace, "out.md"), encoding="utf-8") as handle:
+                content = handle.read()
+            self.assertIn("NEEDLE_TOKEN", content)
+            self.assertTrue(result.closed, result.status)
+
+
+class WriteOverlayTest(unittest.TestCase):
+    """The overlay changes what a file check reads - and nothing else."""
+
+    def test_the_overlay_replaces_the_file_contents(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = os.path.join(tmp, "ws")
+            os.makedirs(workspace, exist_ok=True)
+            target = os.path.join(workspace, "out.md")
+            with open(target, "w", encoding="utf-8") as handle:
+                handle.write("OLD CONTENT")
+
+            overlay = {str(Path(target).resolve()): b"NEW CONTENT"}
+            outcome = evaluate_file_check(
+                "file_contains",
+                {"path": "out.md", "value": "NEW CONTENT"},
+                Path(workspace),
+                overlay,
+            )
+            self.assertTrue(outcome["pass"], outcome)
+            # The disk is untouched by the overlay.
+            with open(target, encoding="utf-8") as handle:
+                self.assertEqual(handle.read(), "OLD CONTENT")
+
+    def test_the_overlay_makes_a_missing_file_exist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = os.path.join(tmp, "ws")
+            os.makedirs(workspace, exist_ok=True)
+            overlay = {str(Path(workspace).resolve() / "out.md"): b"content"}
+            outcome = evaluate_file_check(
+                "file_exists", {"path": "out.md"}, Path(workspace), overlay
+            )
+            self.assertTrue(outcome["pass"], outcome)
+
+    def test_a_path_outside_the_overlay_is_still_read_from_disk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = os.path.join(tmp, "ws")
+            os.makedirs(workspace, exist_ok=True)
+            with open(os.path.join(workspace, "other.md"), "w", encoding="utf-8") as handle:
+                handle.write("ON DISK")
+            overlay = {str(Path(workspace).resolve() / "out.md"): b"VIRTUAL"}
+            outcome = evaluate_file_check(
+                "file_contains",
+                {"path": "other.md", "value": "ON DISK"},
+                Path(workspace),
+                overlay,
+            )
+            self.assertTrue(outcome["pass"], outcome)
 
 
 class TestLoopClosure(unittest.TestCase):

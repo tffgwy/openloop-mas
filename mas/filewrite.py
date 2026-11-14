@@ -216,6 +216,56 @@ def apply_write_blocks(
     return {"artifact": artifact, "written": written, "errors": errors, "skipped": skipped}
 
 
+def plan_writes(text: str, root: Path) -> Dict[str, Any]:
+    """Work out *what would be written* without touching the disk.
+
+    The parallel candidate ranking has to compare candidates against the
+    file level checks, but the checks read the real filesystem - and at
+    ranking time the candidate has not written its file yet. Ranking the
+    candidates against the *old* disk state made every file level check
+    fail for every candidate, so the file rules had no influence on the
+    choice at all: the winner was picked by length, and it could be a
+    candidate whose file would never satisfy the rule.
+
+    This function returns the writes a candidate *would* perform, with
+    their resolved target and content, so the caller can evaluate the
+    file checks against the candidate's own output without writing it.
+    Nothing is written here - the winning candidate is still written by
+    the engine, and only that one.
+    """
+    text, placeholders = _strip_placeholders(text)
+    artifact, writes = parse_write_blocks(text)
+    root = Path(root)
+    planned: List[Dict[str, Any]] = []
+    errors: List[str] = []
+    skipped: List[Dict[str, Any]] = [
+        {"path": path, "reason": "placeholder path from the template"} for path in placeholders
+    ]
+
+    for request in writes:
+        raw_path = request["path"]
+        content = request["content"]
+        try:
+            target = _safe_target(root, raw_path)
+            data = content.encode("utf-8")
+            if len(data) > MAX_WRITE_BYTES:
+                raise FileWriteError(
+                    f"refusing to write {len(data)} bytes (limit {MAX_WRITE_BYTES})"
+                )
+            planned.append(
+                {
+                    "path": raw_path,
+                    "absolute": str(target),
+                    "content": content,
+                    "bytes": len(data),
+                }
+            )
+        except (FileWriteError, OSError) as exc:
+            errors.append(str(exc))
+
+    return {"artifact": artifact, "planned": planned, "errors": errors, "skipped": skipped}
+
+
 def write_instruction(paths: List[str]) -> str:
     """Build the instruction that tells a worker how to write a file."""
     if not paths:
