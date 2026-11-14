@@ -7,6 +7,28 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.23 adds** (fixing two more ways the scratchpad leaked out):
+
+- **An unclosed reasoning block was delivered whole.** When a model
+  runs out of tokens in the middle of its scratchpad, the closing tag
+  never arrives - the answer is a `<think>` that never ends. The old
+  stripper matched only `<think>...</think>`, so the whole truncated
+  scratchpad was delivered as the artifact, counted in the length tie
+  break, and written into the workspace files. An opening tag that is
+  never closed now drops everything from the tag on: there is no
+  deliverable behind an unclosed one.
+- **The tag is spelled differently on other gateways.** `<think>` and
+  `<thinking>` were already handled; `<reasoning>`, `<scratchpad>` and
+  `<reflection>` were not, so on those endpoints the scratchpad reached
+  the deliverable unchanged. All five spellings are recognised now, both
+  closed and unclosed.
+- The closed case is still handled first, so a closed block is never
+  mistaken for an opening one and the real answer behind it survives.
+- Nine regression tests cover the unclosed block, every tag spelling,
+  the closed/unclosed interaction and the plain text case. Verified:
+  with the unclosed rule removed two tests fail, and with the extra
+  spellings removed three more fail.
+
 **What v0.7.22 adds** (fixing the defect that delivered the model's scratchpad):
 
 - **The parallel path forgot to strip the reasoning block.** Models wrap

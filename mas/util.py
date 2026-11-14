@@ -12,7 +12,22 @@ import sys
 from typing import Any, Dict, List, Optional
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
-_THINK_RE = re.compile(r"<think(?:ing)?>.*?</think(?:ing)?>", re.DOTALL | re.IGNORECASE)
+# The tags a reasoning model may use for its scratchpad. ``<think>`` and
+# ``<thinking>`` are the common ones; ``<reasoning>`` and ``<scratchpad>``
+# show up on other gateways.
+_THINK_TAGS = ("think", "thinking", "reasoning", "scratchpad", "reflection")
+# A *closed* reasoning block: the whole thing is dropped.
+_THINK_RE = re.compile(
+    r"<\s*(?:" + "|".join(_THINK_TAGS) + r")\s*>.*?<\s*/\s*(?:" + "|".join(_THINK_TAGS) + r")\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+# An *unclosed* reasoning block: the model ran out of tokens in the middle
+# of its scratchpad. Everything from the opening tag on is scratchpad, so
+# the whole tail is dropped.
+_THINK_OPEN_RE = re.compile(
+    r"<\s*(?:" + "|".join(_THINK_TAGS) + r")\s*>.*\Z",
+    re.DOTALL | re.IGNORECASE,
+)
 
 
 # --------------------------------------------------------------------------
@@ -151,10 +166,27 @@ def strip_reasoning(text: str) -> str:
     Claude-style reasoning models wrap their scratchpad in ``<think>...</think>``.
     That scratchpad is not part of the deliverable, so it must not reach the
     acceptance checks, the artifact preview or the ledger.
+
+    Two shapes have to be handled:
+
+    * the **closed** block - ``<think>...</think>`` - which is dropped as a
+      whole;
+    * the **unclosed** block - the model ran out of tokens in the middle of
+      its scratchpad, so the closing tag never arrives. Everything from the
+      opening tag on is scratchpad, so the whole tail is dropped. Without
+      this the truncated scratchpad was delivered as the artifact.
+
+    The tag names differ between gateways, so ``<think>``, ``<thinking>``,
+    ``<reasoning>``, ``<scratchpad>`` and ``<reflection>`` are all
+    recognised.
     """
     if not text:
         return text
-    return _THINK_RE.sub("", text).strip()
+    cleaned = _THINK_RE.sub("", text)
+    # The unclosed case runs second: a closed block must not be mistaken
+    # for an opening one.
+    cleaned = _THINK_OPEN_RE.sub("", cleaned)
+    return cleaned.strip()
 
 
 def force_utf8_output() -> None:

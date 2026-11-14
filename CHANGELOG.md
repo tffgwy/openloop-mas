@@ -4,6 +4,38 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.23] - 2026-11-14
+
+### Fixed
+
+The reasoning stripper only understood the *closed* shape of a
+reasoning block, and only the `<think>` spelling of it. Two real cases
+slipped through and the scratchpad was delivered again.
+
+* **An unclosed reasoning block was delivered whole.** When a model
+  runs out of tokens in the middle of its scratchpad, the closing tag
+  never arrives - the answer is a `<think>` that never ends. The stripper
+  matched only `<think>...</think>`, so the whole truncated scratchpad
+  was delivered as the artifact, was counted in the length tie break and
+  was written into the workspace files. An unclosed block now drops
+  everything from the opening tag on: there is no deliverable after an
+  opening tag that was never closed.
+
+* **Other gateways spell the tag differently.** `<thinking>` was
+  already handled; `<reasoning>`, `<scratchpad>` and `<reflection>` were
+  not, so on those endpoints the scratchpad reached the deliverable
+  unchanged. All five spellings are recognised now, closed and unclosed.
+
+* The closed case is still handled first, so a *closed* block is never
+  mistaken for an opening one and the real answer behind it survives.
+
+### Added
+
+* Nine regression tests covering the unclosed block, every tag
+  spelling, the closed-block-after-open interaction and the plain text
+  case. Verified: with the unclosed rule removed two tests fail, and
+  with the extra spellings removed three more fail.
+
 ## [0.7.22] - 2026-11-14
 
 ### Fixed

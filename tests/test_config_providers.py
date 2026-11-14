@@ -209,6 +209,42 @@ class TestStripReasoning(unittest.TestCase):
     def test_keeps_plain_text(self):
         self.assertEqual(strip_reasoning("# 交付物"), "# 交付物")
 
+    def test_removes_an_unclosed_think_block(self):
+        # The model ran out of tokens in the middle of its scratchpad, so
+        # the closing tag never arrives. Everything from the opening tag
+        # on is scratchpad - it must not reach the deliverable.
+        text = "<think>先想一下，然后还没想完就"
+        self.assertEqual(strip_reasoning(text), "")
+
+    def test_an_unclosed_block_does_not_eat_a_later_closed_one(self):
+        # Two scratchpads: the first one unclosed because the model was
+        # cut off, the second one complete. The whole text is scratchpad.
+        text = "<think>first</think><think>second</think>"
+        self.assertEqual(strip_reasoning(text), "")
+
+    def test_removes_the_thinking_spelling(self):
+        self.assertEqual(strip_reasoning("<thinking>x</thinking>正文"), "正文")
+
+    def test_removes_the_reasoning_spelling(self):
+        # Other gateways use a different tag for the same scratchpad.
+        self.assertEqual(strip_reasoning("<reasoning>x</reasoning>正文"), "正文")
+
+    def test_removes_the_scratchpad_spelling(self):
+        self.assertEqual(strip_reasoning("<scratchpad>x</scratchpad>正文"), "正文")
+
+    def test_removes_an_unclosed_reasoning_block(self):
+        self.assertEqual(strip_reasoning("<reasoning>还在想"), "")
+
+    def test_a_closed_block_is_not_treated_as_an_opening_one(self):
+        # The unclosed rule must not fire on a *closed* block: the text
+        # after it is the deliverable and has to survive.
+        text = "<think>x</think>正文"
+        self.assertEqual(strip_reasoning(text), "正文")
+
+    def test_the_real_answer_after_a_closed_block_survives(self):
+        text = "<think>x</think>\n\n# 交付物\n正文"
+        self.assertEqual(strip_reasoning(text), "# 交付物\n正文")
+
 
 class TestUtf8OutputSafety(unittest.TestCase):
     def test_force_utf8_output_is_idempotent_and_safe(self):
