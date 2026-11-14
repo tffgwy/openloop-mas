@@ -7,6 +7,58 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.36 adds** (the deadline is now a real ceiling, and the
+self-check no longer sits silent for minutes):
+
+- **`deadline_sec` was not a ceiling, it was a sentence in the docs.**
+  The wall-clock budget was only checked *between* iterations. A single
+  provider call that overran the budget - a slow endpoint, a long
+  answer - was allowed to finish, and the run still reported a
+  successful closed loop. Measured: a 1 second deadline against a 3
+  second provider returned after 9.0 seconds and reported success; a
+  real run with a 180 second deadline returned after 185.26 seconds and
+  reported success. The number in your configuration was documentation,
+  not enforcement.
+  Every provider call now carries the remaining wall-clock budget as a
+  hard ceiling. The HTTP layer takes the smaller of the configured
+  timeout and the remaining budget, recomputes it on every retry, and
+  raises a dedicated `BudgetExceeded` when the budget is gone - a
+  deliberate stop, not a broken endpoint, and it is reported as such.
+  The closure decision itself is checked against the clock: a
+  deliverable that passes every machine check but arrives after the
+  deadline is escalated, not closed, with the reason spelled out. A
+  more subtle bug went with it: the engine used to return
+  unconditionally once the checks passed, so an `escalate` verdict it
+  had decided was thrown away.
+- **The self-check sat silent for minutes.** A measured real run took
+  460.5 seconds with no output at all, which looks exactly like a hung
+  process. `mas verify` now announces every slow step before it
+  happens - the endpoint handshake, the instruction probe, the closed
+  loop - and reports the elapsed time when the loop ends. The progress
+  goes to stderr, so the `--json` contract stays machine readable.
+- **The self-check judged a configuration the user never ran.** The
+  verify run overrode the user's own wall-clock budget with a hardcoded
+  180 seconds. The measured real run took 342 seconds against the
+  user's 900 second budget and was reported as "not closed" - the check
+  failed a configuration that would have run fine. The self-check now
+  uses the budget the user actually configured (capped at 900 seconds so
+  it cannot sit silent for a quarter of an hour either).
+- **"Not closed" hid which half of the system failed.** A run whose
+  deliverable passed every machine check but which overran its budget
+  was reported exactly like a run whose deliverable was garbage. The
+  user went looking for a broken answer that did not exist while the
+  real problem - the clock - stayed unnamed. The engine now tracks the
+  two facts separately: `deliverable_ok` says whether the artifact
+  passed the checks, `status` says whether the run closed, and the
+  self-check says which one it was: "the deliverable passed every
+  machine check, but the run exceeded its time budget" names the clock
+  and tells the user what to change.
+- The ceiling travels to the provider through a thread-local call
+  context instead of a new keyword argument on `Provider.complete`, so
+  every existing custom provider and plugin keeps working unchanged.
+  Parallel workers inherit it explicitly, because a thread pool does
+  not inherit thread-local state.
+
 **What v0.7.35 adds** (the self-check now diagnoses *your* configuration
 instead of an illusion):
 

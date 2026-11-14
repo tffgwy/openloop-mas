@@ -353,21 +353,44 @@ $env:MAS_STATE_DIR = $InstallDir
 $env:MAS_CONFIG_PATH = Join-Path $InstallDir "config.json"
 $env:PYTHONPATH = $AppDir
 $masMain = Join-Path $AppDir "mas\__main__.py"
-& $pythonExe $masMain doctor
-$doctorExit = $LASTEXITCODE
+
+# A native command that writes to stderr raises a terminating error under
+# ``$ErrorActionPreference = "Stop"`` on Windows PowerShell 5.1 - the
+# pipeline stops and the installer dies half way through. The self-check
+# writes its progress to stderr *on purpose* (the ``--json`` contract of
+# the command has to stay machine readable), so the naive
+# ``& $pythonExe $masMain verify`` call aborts the installation the
+# moment the check announces its first step. The beginner sees a red
+# NativeCommandError and no working install.
+#
+# The fix is to run the check with a relaxed preference and to merge the
+# two streams into the visible output. The exit code is still the exit
+# code of the real command, so the summary at the end stays honest.
+function Invoke-MasStep {
+    param([string[]]$MasArgs)
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $pythonExe $masMain @MasArgs 2>&1 | ForEach-Object {
+            Write-Host "      $_" -ForegroundColor DarkGray
+        }
+        return $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+}
+
+$doctorExit = Invoke-MasStep @("doctor")
 
 if (-not $SkipDemo) {
     Write-Step "Running the offline demo (no API key needed)"
-    & $pythonExe $masMain demo
-    $demoExit = $LASTEXITCODE
+    $demoExit = Invoke-MasStep @("demo")
 
     Write-Step "Running the offline benchmark"
-    & $pythonExe $masMain bench --repeats 1
-    $benchExit = $LASTEXITCODE
+    $benchExit = Invoke-MasStep @("bench", "--repeats", "1")
 
     Write-Step "Running the closure self-check"
-    & $pythonExe $masMain verify
-    $verifyExit = $LASTEXITCODE
+    $verifyExit = Invoke-MasStep @("verify")
 } else {
     $demoExit = 0
     $benchExit = 0

@@ -543,6 +543,142 @@ class TestVerifyHandshakeUsesTheRealCredential(unittest.TestCase):
         self.assertTrue(result["ok"], result["checks"])
 
 
+class TestVerifyProgressFeedback(unittest.TestCase):
+    """A self-check that prints nothing for minutes looks like a hang.
+
+    A real endpoint can take minutes to answer - a measured run took
+    460s - so the self-check says what it is doing before every slow
+    step. The progress goes to stderr: the ``--json`` contract of the
+    command has to stay machine readable.
+    """
+
+    def test_progress_is_reported_for_the_slow_steps(self):
+        config = json.loads(json.dumps(DEFAULT_CONFIG))
+        config["state_dir"] = tempfile.mkdtemp()
+        config["provider"] = "mock"
+        messages = []
+        run_verify(config, progress=messages.append)
+        self.assertTrue(messages, "verify must report its progress")
+        joined = "\n".join(messages)
+        # Every slow step must announce itself *before* it runs, and the
+        # announcement must be distinguishable: "闭环结束" is a
+        # completion notice, not the "a closed loop is running now"
+        # notice. A single loose keyword check would pass even if the
+        # step that matters had been deleted.
+        self.assertIn("正在跑一次真实闭环", joined)
+        # The completion notice must come last, so a beginner watching
+        # stderr can tell "still working" from "done".
+        self.assertIn("闭环结束", joined)
+        self.assertLess(joined.index("正在跑一次真实闭环"), joined.index("闭环结束"))
+
+    def test_the_slow_endpoint_steps_announce_themselves_too(self):
+        # The handshake and the instruction probe are the two slowest
+        # steps of a real self-check, and they only run against a real
+        # endpoint. The endpoint here is deliberately dead so the test
+        # stays offline: the point is that the *announcement* happens
+        # before the slow attempt, not that the probe succeeds.
+        config = json.loads(json.dumps(DEFAULT_CONFIG))
+        config["state_dir"] = tempfile.mkdtemp()
+        config["provider"] = "openai_compat"
+        config["base_url"] = "http://127.0.0.1:1/v1"
+        config["model"] = "no-such-model"
+        messages = []
+        run_verify(config, progress=messages.append)
+        joined = "\n".join(messages)
+        self.assertIn("正在与端点握手", joined)
+        self.assertIn("正在校验角色指令", joined)
+        # The handshake notice comes before the loop notice.
+        self.assertLess(joined.index("正在与端点握手"), joined.index("正在跑一次真实闭环"))
+
+    def test_a_broken_progress_sink_does_not_break_the_check(self):
+        config = json.loads(json.dumps(DEFAULT_CONFIG))
+        config["state_dir"] = tempfile.mkdtemp()
+        config["provider"] = "mock"
+
+        def broken(_message):
+            raise RuntimeError("sink is gone")
+
+        result = run_verify(config, progress=broken)
+        self.assertTrue(result["ok"], result["checks"])
+
+
+
+class TestVerifyTellsTheTwoFailuresApart(unittest.TestCase):
+    """A perfect deliverable that ran out of time is not a broken deliverable.
+
+    The self-check used to answer "not closed" for both situations. The
+    user then went looking for a broken answer that did not exist, while
+    the real problem - the clock - stayed unnamed. The check has to say
+    which half of the system failed.
+    """
+
+    def test_the_report_names_the_budget_when_the_deliverable_is_fine(self):
+        import mas.setup as setup
+
+        class _Ledger:
+            def entries(self):
+                return [{"role": "planner"}, {"role": "closure"}]
+
+        class _Engine:
+            def __init__(self, *a, **k):
+                self.ledger = _Ledger()
+
+            def run(self, *a, **k):
+                class _R:
+                    closed = False
+                    status = "escalated"
+                    iterations = 2
+                    tokens_used = 10
+                    deliverable_ok = True
+                    error = "budget: exceeded deadline_sec=5"
+                return _R()
+
+        original = setup.LoopEngine
+        setup.LoopEngine = _Engine
+        try:
+            result = setup.run_verify({"provider": "mock", "state_dir": "x"})
+        finally:
+            setup.LoopEngine = original
+        rows = {row["check"]: row for row in result["checks"]}
+        closure = rows["closure"]
+        self.assertEqual(closure["status"], "fail")
+        self.assertIn("已通过全部机检", closure["detail"])
+        self.assertIn("时间预算", closure["detail"])
+
+    def test_a_broken_deliverable_is_still_reported_as_broken(self):
+        import mas.setup as setup
+
+        class _Ledger:
+            def entries(self):
+                return [{"role": "planner"}, {"role": "closure"}]
+
+        class _Engine:
+            def __init__(self, *a, **k):
+                self.ledger = _Ledger()
+
+            def run(self, *a, **k):
+                class _R:
+                    closed = False
+                    status = "escalated"
+                    iterations = 2
+                    tokens_used = 10
+                    deliverable_ok = False
+                    error = "the deliverable did not contain the marker"
+                return _R()
+
+        original = setup.LoopEngine
+        setup.LoopEngine = _Engine
+        try:
+            result = setup.run_verify({"provider": "mock", "state_dir": "x"})
+        finally:
+            setup.LoopEngine = original
+        rows = {row["check"]: row for row in result["checks"]}
+        closure = rows["closure"]
+        self.assertEqual(closure["status"], "fail")
+        self.assertNotIn("已通过全部机检", closure["detail"])
+        self.assertIn("did not contain the marker", closure["detail"])
+
+
 if __name__ == "__main__":
     unittest.main()
 

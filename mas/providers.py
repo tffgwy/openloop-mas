@@ -25,6 +25,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict, List
 
+from mas.ceiling import current_call_ceiling
 from mas.orchestration import ProviderChain
 
 
@@ -49,6 +50,21 @@ class ProviderError(RuntimeError):
             return int(self.usage.get("total_tokens", 0) or 0)
         except (AttributeError, TypeError, ValueError):
             return 0
+
+
+class BudgetExceeded(ProviderError):
+    """Raised when the run's wall-clock budget ran out during a call.
+
+    A timeout that is really the *run's* budget has to be told apart
+    from a broken endpoint. They lead to different outcomes: a broken
+    endpoint is an error, an exhausted budget is a stop-loss mechanism
+    that fires on purpose. A ledger that cannot tell them apart reports
+    a run that was stopped on purpose as a run whose backend died.
+
+    It is a :class:`ProviderError` so that the fallback chain still
+    treats it like a failed call - a budget that ran out will not be
+    rescued by another backend, but the chain must not crash on it.
+    """
 
 
 class TruncatedAnswer(ProviderError):
@@ -174,13 +190,35 @@ def sanitize_gateway_text(text: str) -> str:
 
 
 class _HttpProvider(Provider):
-    def _post_json(self, url: str, payload: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
+    def _post_json(
+        self,
+        url: str,
+        payload: Dict[str, Any],
+        headers: Dict[str, str],
+    ) -> Dict[str, Any]:
         body = json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(url, data=body, headers=headers, method="POST")
         timeout = float(self.options.get("timeout_sec", 120))
+        ceiling = current_call_ceiling()
+        if ceiling is not None:
+            # The tighter of the two ceilings wins. The call ceiling
+            # comes from the run's remaining wall-clock budget; the
+            # configured one is the per-request default. A retry must
+            # not push the whole call past the budget either, so the
+            # remaining time is recomputed after every failed attempt.
+            timeout = min(timeout, ceiling)
+        timeout = max(timeout, 1.0)
         retries = int(self.options.get("max_retries", 2))
         last_error: Exception | None = None
+        deadline = time.monotonic() + timeout if ceiling is not None else None
         for attempt in range(retries + 1):
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise BudgetExceeded(
+                        f"wall-clock budget exhausted after {timeout:.0f}s"
+                    )
+                timeout = max(remaining, 1.0)
             try:
                 with urllib.request.urlopen(request, timeout=timeout) as response:
                     raw = response.read().decode("utf-8", "replace")
@@ -200,6 +238,14 @@ class _HttpProvider(Provider):
                 if exc.code in (400, 401, 403, 404):
                     break
             except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:  # pragma: no cover
+                if deadline is not None and time.monotonic() >= deadline:
+                    # The call ran out of wall-clock budget rather than
+                    # the endpoint misbehaving. The two have to be told
+                    # apart: one is a stop-loss mechanism firing on
+                    # purpose, the other is a broken backend.
+                    raise BudgetExceeded(
+                        f"wall-clock budget exhausted after {timeout:.0f}s"
+                    ) from exc
                 last_error = ProviderError(str(exc))
             if attempt < retries:
                 time.sleep(min(2 ** attempt, 8))

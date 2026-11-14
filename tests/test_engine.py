@@ -17,14 +17,16 @@ import json
 import os
 import re
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
+from mas.ceiling import current_call_ceiling
 from mas.config import DEFAULT_CONFIG
 from mas.demo import StaticProvider
 from mas.engine import Criterion, LoopEngine, evaluate_check, validate_criteria
 from mas.filechecks import evaluate_file_check
-from mas.providers import ProviderError, TruncatedAnswer
+from mas.providers import Provider, ProviderError, TruncatedAnswer
 from mas.teams import load_team
 
 
@@ -1201,6 +1203,164 @@ class DegenerateArgumentTest(unittest.TestCase):
             # A rejected standard must not leave a half-finished run behind.
             self.assertEqual(len(engine.ledger.entries()), 0)
 
+
+
+class TestWallClockDeadlineIsACeiling(unittest.TestCase):
+    """``budget.deadline_sec`` has to be a ceiling, not a suggestion.
+
+    The README lists the wall-clock budget as one of the four stop-loss
+    mechanisms. It used to be checked only at the top of the loop, so a
+    single slow call could overrun it by minutes - and a run that
+    overran its budget still reported "closed". A measured run took 185s
+    against a 180s deadline and closed with success.
+    """
+
+    class _SlowProvider(Provider):
+        """A provider that ignores the timeout on purpose.
+
+        A provider that honours ``timeout_sec`` proves only that the
+        parameter is passed along. This one ignores it, so the engine
+        itself has to notice the overrun - which is the case that used
+        to be reported as a success.
+        """
+
+        name = "slow"
+
+        def __init__(self, delay: float) -> None:
+            super().__init__(model="m")
+            self.delay = delay
+            self.seen_timeouts = []
+
+        def complete(self, *, system, prompt, role="worker", expect_json=False,
+                     max_tokens=4000):
+            # The ceiling travels through the thread context, so the
+            # provider reads it there - exactly like the built-in HTTP
+            # providers do.
+            self.seen_timeouts.append(current_call_ceiling())
+            time.sleep(self.delay)
+            if role == "planner":
+                return {"text": '{"steps": ["do it"]}', "usage": {"total_tokens": 10}, "raw": {}}
+            if role == "verifier":
+                return {
+                    "text": '{"passed": true, "scores": [{"id": "c1", "passed": true, "detail": "ok"}]}',
+                    "usage": {"total_tokens": 10},
+                    "raw": {},
+                }
+            return {
+                "text": "MAS_VERIFY_OK " + "x" * 200,
+                "usage": {"total_tokens": 10},
+                "raw": {},
+            }
+
+    def _run(self, tmp, **budget):
+        config = make_config(tmp, budget=budget)
+        engine = LoopEngine(config)
+        provider = self._SlowProvider(0.35)
+        engine.provider = provider
+        result = engine.run(
+            "goal",
+            [{"id": "c1", "desc": "含标记", "check": {"type": "contains", "arg": "MAS_VERIFY_OK"}}],
+        )
+        return result, provider
+
+    def test_a_run_that_overruns_the_deadline_does_not_close(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result, _ = self._run(tmp, max_iterations=3, deadline_sec=0.05, max_tokens=100000)
+        self.assertFalse(result.closed, result.to_dict())
+        self.assertEqual(result.status, "escalated", result.error)
+        self.assertIn("deadline", result.error)
+
+    def test_the_remaining_budget_is_handed_to_every_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, provider = self._run(tmp, max_iterations=3, deadline_sec=60, max_tokens=100000)
+        self.assertTrue(provider.seen_timeouts)
+        for value in provider.seen_timeouts:
+            self.assertIsNotNone(value, "every call must carry a budget ceiling")
+            self.assertGreater(value, 0)
+
+    def test_a_run_inside_its_deadline_still_closes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result, _ = self._run(tmp, max_iterations=3, deadline_sec=120, max_tokens=100000)
+        self.assertTrue(result.closed, result.to_dict())
+        self.assertEqual(result.status, "closed")
+
+
+
+class TestDeliverableIsSeparateFromClosure(unittest.TestCase):
+    """A perfect deliverable that ran out of time is still a perfect deliverable.
+
+    The engine has to report two independent facts: did the artifact pass
+    every machine check, and did the run close. Collapsing them into one
+    word ("not closed") hides which half of the system failed.
+    """
+
+    def test_a_run_over_its_deadline_reports_a_fine_deliverable(self):
+        class _SlowProvider(Provider):
+            name = "slow"
+
+            def __init__(self, delay):
+                super().__init__(model="m")
+                self.delay = delay
+                self.seen = []
+
+            def complete(self, *, system, prompt, role="worker",
+                         expect_json=False, max_tokens=4000):
+                self.seen.append(current_call_ceiling())
+                time.sleep(self.delay)
+                if role == "planner":
+                    text = json.dumps({"summary": "p", "plan": ["one"], "risks": []})
+                elif role == "verifier":
+                    text = json.dumps(
+                        {"passed": True,
+                         "scores": [{"id": "c1", "passed": True, "detail": "ok"}]}
+                    )
+                else:
+                    text = "MAS_VERIFY_OK " + ("x" * 200)
+                return {"text": text,
+                        "usage": {"total_tokens": 10},
+                        "raw": {}}
+
+        config = make_config(tempfile.mkdtemp())
+        config["budget"]["deadline_sec"] = 0.05
+        config["budget"]["max_iterations"] = 3
+        provider = _SlowProvider(0.35)
+        engine = LoopEngine(config, team=load_team("default"))
+        engine.provider = provider
+        result = engine.run(
+            "产出交付物",
+            [{"id": "c1", "desc": "包含验收标记",
+              "check": {"type": "contains", "arg": "MAS_VERIFY_OK"}}],
+        )
+        self.assertFalse(result.closed)
+        self.assertTrue(
+            result.deliverable_ok,
+            "the deliverable passed the check; only the clock failed",
+        )
+        self.assertIn("budget", result.error)
+
+    def test_a_normal_closed_run_reports_a_fine_deliverable(self):
+        config = make_config(tempfile.mkdtemp())
+        engine = LoopEngine(config, team=load_team("default"))
+        engine.provider = StaticProvider("MAS_VERIFY_OK " + ("x" * 200))
+        result = engine.run(
+            "产出交付物",
+            [{"id": "c1", "desc": "包含验收标记",
+              "check": {"type": "contains", "arg": "MAS_VERIFY_OK"}}],
+        )
+        self.assertTrue(result.closed)
+        self.assertTrue(result.deliverable_ok)
+
+    def test_the_result_dict_carries_the_flag(self):
+        config = make_config(tempfile.mkdtemp())
+        engine = LoopEngine(config, team=load_team("default"))
+        engine.provider = StaticProvider("MAS_VERIFY_OK")
+        result = engine.run(
+            "产出交付物",
+            [{"id": "c1", "desc": "包含验收标记",
+              "check": {"type": "contains", "arg": "MAS_VERIFY_OK"}}],
+        )
+        self.assertIn("deliverable_ok", result.to_dict())
+        self.assertTrue(result.to_dict()["deliverable_ok"])
 
 
 if __name__ == "__main__":

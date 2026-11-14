@@ -4,6 +4,81 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.36] - 2026-11-14
+
+### Fixed
+
+The self-check a beginner runs right after the one-click install could
+take minutes without a single word, and the deadline it was given was
+not a deadline at all.
+
+* **``deadline_sec`` was not a ceiling.** The wall-clock budget was
+  only checked *between* iterations. A single provider call that
+  overran the budget - a slow endpoint, a long answer - was allowed to
+  finish, and the run still reported a successful closed loop. Measured
+  on a real endpoint: a run with a 1 second deadline against a 3 second
+  provider returned after 9.0 seconds and reported success; a run with
+  a 180 second deadline returned after 185.26 seconds and reported
+  success. The number in the configuration was documentation, not
+  enforcement.
+
+  Every provider call now carries the remaining wall-clock budget as a
+  hard ceiling. The HTTP layer takes the smaller of the configured
+  timeout and the remaining budget, recomputes it on every retry, and
+  raises a distinct ``BudgetExceeded`` when the budget is gone - which
+  is a deliberate stop, not a broken endpoint, and is reported as such.
+  The closure decision itself is checked against the clock: a deliverable
+  that passes every machine check but arrives after the deadline is
+  escalated, not closed, with the reason spelled out. The engine also
+  no longer swallows an ``escalate`` verdict just because the checks
+  passed - previously the "everything passed" branch returned
+  unconditionally, so an escalation could be decided and then discarded.
+
+* **The self-check was silent for minutes.** A measured real run took
+  460.5 seconds with no output at all, which looks exactly like a hung
+  process. ``mas verify`` now announces every slow step before it
+  happens - the endpoint handshake, the instruction probe, the closed
+  loop - and reports the elapsed time when the loop ends. The progress
+  goes to stderr, so the ``--json`` contract of the command stays
+  machine readable.
+
+* **The self-check judged a configuration the user did not run.** The
+  verify run overrode the user's own wall-clock budget with a hardcoded
+  180 seconds. The measured real run took 342 seconds against the
+  user's 900 second budget and was reported as "not closed" - the check
+  failed a configuration that would have run fine. The self-check now
+  uses the budget the user actually configured (capped at 900 seconds so
+  it cannot sit silent for a quarter of an hour either).
+
+* **"Not closed" hid which half of the system failed.** A run whose
+  deliverable passed every machine check but which overran its budget
+  was reported exactly like a run whose deliverable was garbage. The
+  user went looking for a broken answer that did not exist while the
+  real problem - the clock - stayed unnamed. The engine now tracks the
+  two facts separately: `deliverable_ok` says whether the artifact
+  passed the checks, `status` says whether the run closed. The self
+  check says which one it was: "the deliverable passed every machine
+  check, but the run exceeded its time budget" names the clock and
+  tells the user what to change.
+
+### Added
+
+* ``mas/ceiling.py`` - a thread-local call ceiling. The budget is
+  passed to the provider through the call context rather than through a
+  new keyword argument on ``Provider.complete``, so every existing
+  custom provider and plugin keeps working unchanged. The ceiling is
+  carried explicitly into parallel workers, because a thread pool does
+  not inherit thread-local state.
+
+### Tests
+
+* ``tests/test_engine.py::TestWallClockDeadlineIsACeiling`` - a run that
+  overruns its deadline must not close; the remaining budget must reach
+  every provider call; a run inside its deadline must still close.
+* ``tests/test_setup_bench.py::TestVerifyProgressFeedback`` - the slow
+  steps must announce themselves before they run, the completion notice
+  must come last, and a broken progress sink must not break the check.
+
 ## [0.7.35] - 2026-11-14
 
 ### Fixed

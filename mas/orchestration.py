@@ -28,6 +28,7 @@ import contextlib
 import threading
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from mas.ceiling import call_ceiling, current_call_ceiling
 from mas.util import _as_bool
 
 # Angles used to diversify parallel workers. The worker prompt gets one of
@@ -106,12 +107,24 @@ def run_parallel(
     items = list(tasks)
     if not items:
         return []
+    # A worker thread does not inherit the caller's thread-local state,
+    # so the wall-clock ceiling of the run has to be carried into the
+    # pool explicitly. Without it a parallel candidate could outlive
+    # the deadline of the run it belongs to - the deadline would hold
+    # for the main thread and be invisible to every candidate racing
+    # next to it.
+    ceiling = current_call_ceiling()
+
+    def _guarded(task: Callable[[int], Any], index: int) -> Any:
+        with call_ceiling(ceiling):
+            return _guard(task, index)
+
     if len(items) == 1:
-        return [_guard(items[0], 0)]
+        return [_guarded(items[0], 0)]
     max_workers = workers or min(len(items), 8)
     results: List[Any] = [None] * len(items)
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(_guard, task, index): index for index, task in enumerate(items)}
+        futures = {pool.submit(_guarded, task, index): index for index, task in enumerate(items)}
         for future in concurrent.futures.as_completed(futures):
             index = futures[future]
             results[index] = future.result()

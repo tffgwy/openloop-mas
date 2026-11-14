@@ -9,11 +9,12 @@ whether the files exist.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import tempfile
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from mas.config import (
     DEFAULT_CONFIG,
@@ -178,16 +179,31 @@ def run_wizard(current: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     return config
 
 
-def run_verify(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def run_verify(
+    config: Optional[Dict[str, Any]] = None,
+    progress: Optional[Callable[[str], None]] = None,
+) -> Dict[str, Any]:
     """Run a real closed loop and report whether it closed.
 
     The check is deliberately end to end: a synthetic task with machine
     checkable criteria is executed with the *current* provider
     configuration. A mock backend always closes; a real backend only
     closes if the whole chain - planning, working, verification - works.
+
+    ``progress`` is called with a short line before every step that can
+    take a long time. A real endpoint may take minutes to answer - a
+    measured run took 460s - and a self-check that prints nothing for
+    four minutes looks exactly like a hung process. The callback writes
+    to stderr, so the ``--json`` contract of the command is untouched.
     """
     config = config or load_config()
     checks: List[Dict[str, Any]] = []
+
+    def note(message: str) -> None:
+        if progress is None:
+            return
+        with contextlib.suppress(Exception):  # a broken progress sink must not fail the check
+            progress(message)
 
     def add(name: str, ok: bool, detail: str, level: str = "ok") -> None:
         checks.append({"check": name, "status": "ok" if ok else level, "detail": detail})
@@ -215,6 +231,7 @@ def run_verify(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     add("provider", True, provider_detail)
 
     if provider_name != "mock" and base_url:
+        note("正在与端点握手…（这一步会真的发一次请求，慢端点可能要等一会儿）")
         try:
             handshake = probe_from_config(config)
         except Exception as exc:  # pragma: no cover - defensive
@@ -232,6 +249,7 @@ def run_verify(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         # check said "ok" and every role contract in the loop was
         # silently discarded. The echo probe asks the model to repeat a
         # token only the system instruction mentions.
+        note("正在校验角色指令是否真的到达模型…")
         try:
             echo = probe_instruction_echo(
                 provider=provider_name,
@@ -254,13 +272,25 @@ def run_verify(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         add("instruction", False, "未配置 base_url，无法校验角色指令", "fail")
 
     started = time.time()
+    note("正在跑一次真实闭环（规划 → 执行 → 验证）…")
     state_dir = tempfile.mkdtemp(prefix="mas-verify-")
     local = json.loads(json.dumps(config))
     local["state_dir"] = state_dir
     # The verify run gets its own budget so it never eats the user's budget.
     local["budget"] = dict(local.get("budget") or {})
     local["budget"]["max_iterations"] = min(2, int(local["budget"].get("max_iterations", 2)))
-    local["budget"]["deadline_sec"] = 180
+    # The self-check gets the *user's* wall-clock budget, not a number
+    # invented here. A hardcoded 180 seconds meant the self-check could
+    # fail a configuration that would have run fine - the measured real
+    # run took 342 seconds against the user's own 900 second budget and
+    # was reported as "not closed". The check has to exercise the
+    # configuration the user actually has.
+    deadline = float(local["budget"].get("deadline_sec", 900) or 900)
+    # ...but it must not sit silent for a quarter of an hour either.
+    # Cap it, and say so out loud, so a beginner learns the real number.
+    if deadline > 900:
+        deadline = 900
+    local["budget"]["deadline_sec"] = deadline
 
     team = load_team(local.get("team"))
     engine = LoopEngine(local, team=team)
@@ -270,9 +300,23 @@ def run_verify(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     ]
     result = engine.run("输出一段包含 MAS_VERIFY_OK 的短文，用于验证闭环是否真的能跑通。", criteria)
     elapsed = round(time.time() - started, 2)
+    note("闭环结束，用时 %ss" % elapsed)
 
     if result.closed:
         add("closure", True, f"闭环成功，迭代 {result.iterations} 次，用时 {elapsed}s")
+    elif getattr(result, "deliverable_ok", False):
+        # The deliverable passed every machine check, but the run broke
+        # its budget. "Not closed" alone would make the user hunt for a
+        # broken deliverable that does not exist; the real problem is
+        # the clock, and the fix is a bigger deadline - or a faster
+        # endpoint. Say which one it is.
+        add(
+            "closure",
+            False,
+            f"交付物已通过全部机检，但本次运行超出时间预算（用时 {elapsed}s，"
+            f"死线 {deadline:.0f}s），因此未判定为闭合：{result.error or '无'}",
+            "fail",
+        )
     else:
         add(
             "closure",

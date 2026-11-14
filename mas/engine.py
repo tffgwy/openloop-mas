@@ -30,6 +30,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+from mas.ceiling import call_ceiling
 from mas.filechecks import (
     FILE_CHECK_TYPES,
     FileCheckError,
@@ -49,7 +50,13 @@ from mas.orchestration import (
     pick_personas,
     run_parallel,
 )
-from mas.providers import Provider, ProviderError, TruncatedAnswer, build_provider_chain
+from mas.providers import (
+    BudgetExceeded,
+    Provider,
+    ProviderError,
+    TruncatedAnswer,
+    build_provider_chain,
+)
 from mas.roles import Roles
 from mas.tickets import TicketStore
 from mas.util import (
@@ -147,6 +154,13 @@ class RunResult:
     started_at: str = ""
     finished_at: str = ""
     error: str = ""
+    # Whether the deliverable itself passed every machine check. This is
+    # not the same question as "did the run close": a run can produce a
+    # perfect deliverable and still not close, because it broke its
+    # wall-clock budget or its token budget. Reporting those two
+    # situations with the same word - "not closed" - hides from the user
+    # which half of the system failed.
+    deliverable_ok: bool = False
 
     @property
     def closed(self) -> bool:
@@ -170,6 +184,7 @@ class RunResult:
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "error": self.error,
+            "deliverable_ok": self.deliverable_ok,
         }
 
 
@@ -484,6 +499,11 @@ class LoopEngine:
 
         started_at = now_iso()
         start = self.clock()
+        # The wall-clock budget of this run, remembered so that every
+        # provider call can be given the *remaining* time as its own
+        # timeout. See ``_remaining_budget_sec``.
+        self._deadline_sec = deadline_sec
+        self._run_started_at = start
         tokens = 0
         attempt = 0
         issues: List[str] = []
@@ -493,6 +513,11 @@ class LoopEngine:
         ticket_id: Optional[str] = None
         status = STATUS_BUDGET
         error = ""
+        # Whether the deliverable itself passed every machine check.
+        # A run can produce a perfect deliverable and still not close
+        # because it broke its budget - the two facts have to stay
+        # separate, or the report hides which half of the system failed.
+        deliverable_ok = False
         # ``error`` describes *this* run's outcome. ``last_error`` keeps
         # the last transient failure - a truncation that was retried, a
         # provider that the fallback chain recovered from - so an
@@ -725,7 +750,24 @@ class LoopEngine:
                 if tokens >= max_tokens:
                     decision = "escalate"
                     error = f"budget: tokens {tokens} >= {max_tokens}"
+                # The wall-clock deadline is a ceiling, so it is checked
+                # at the moment the closure is decided - not only at the
+                # top of the loop. A run whose last call overran the
+                # deadline used to close anyway and report success: the
+                # measured case took 185s against a 180s deadline. The
+                # deliverable was fine, the run was not: it broke the
+                # budget the user set, and the ledger has to say so.
+                if decision == "close":
+                    remaining = self._remaining_budget_sec()
+                    if remaining is not None and remaining <= 0:
+                        decision = "escalate"
+                        error = (
+                            f"budget: exceeded deadline_sec={deadline_sec:.0f} "
+                            "(the deliverable passed the checks, but the run "
+                            "overran its wall-clock budget)"
+                        )
 
+                deliverable_ok = bool(passed)
                 closure = {
                     "artifact_sha": art_sha,
                     "verdict": "pass" if passed else "fail",
@@ -757,7 +799,13 @@ class LoopEngine:
                     }
                 )
 
-                if passed:
+                # A run that overran its wall-clock budget is not a
+                # closed run, even when the deliverable passed every
+                # check. The check ordering matters: "passed" used to
+                # break out of the loop unconditionally, so a run that
+                # broke its budget was reported as a success and the
+                # budget the user set was never a budget at all.
+                if passed and decision != "escalate":
                     status = STATUS_CLOSED
                     # The run closed. Any error left over from an earlier
                     # iteration - a truncation that was retried, a failed
@@ -827,6 +875,22 @@ class LoopEngine:
                 artifact = ""
                 last_sha = ""
                 continue
+            except BudgetExceeded as exc:
+                # The wall-clock budget ran out *inside* a provider call.
+                # This is a stop-loss mechanism firing on purpose, not a
+                # broken backend: the run ends as budget_exhausted and
+                # says so, instead of reporting a provider error for a
+                # run that was stopped exactly as the user asked.
+                error = f"budget: {exc}"
+                last_error = error
+                spent = int(getattr(exc, "tokens", 0) or 0)
+                tokens += spent
+                self._log(
+                    run_id, task_id, attempt, "error",
+                    {"error": error, "kind": "budget", "tokens": spent},
+                )
+                status = STATUS_BUDGET
+                break
             except ProviderError as exc:
                 error = f"provider error: {exc}"
                 last_error = error
@@ -878,6 +942,7 @@ class LoopEngine:
                 "error": error,
                 "iterations": attempt,
                 "closed": status == STATUS_CLOSED,
+                "deliverable_ok": deliverable_ok,
                 "artifact_sha": sha256_text(artifact) if artifact else "",
                 "issues": list(issues),
                 "tokens_total": int(tokens),
@@ -900,6 +965,7 @@ class LoopEngine:
             started_at=started_at,
             finished_at=now_iso(),
             error=error,
+            deliverable_ok=deliverable_ok,
         )
 
     # ------------------------------------------------- parallel candidates
@@ -1559,23 +1625,49 @@ class LoopEngine:
         grown = base * (2 ** max(0, attempt - 1))
         return min(grown, 32000)
 
+    def _remaining_budget_sec(self) -> Optional[float]:
+        """How much wall-clock budget this run has left, if it has one.
+
+        The deadline is one of the four stop-loss mechanisms the project
+        promises, so it has to be a *ceiling* and not a value that is
+        merely checked between iterations. It used to be checked only at
+        the top of the loop: one slow provider call could overrun it by
+        minutes and the run still reported success - a measured run took
+        185s against a 180s deadline and closed with "预算已用尽" never
+        appearing anywhere.
+
+        The remaining time is handed to every provider call as the
+        per-call timeout, so a call that starts just before the deadline
+        cannot outlive it by another full request timeout.
+        """
+        deadline = getattr(self, "_deadline_sec", None)
+        started = getattr(self, "_run_started_at", None)
+        if deadline is None or started is None:
+            return None
+        remaining = float(deadline) - (self.clock() - float(started))
+        if remaining <= 0:
+            return 0.0
+        return remaining
+
     def _call_text(self, role: str, state: Dict[str, Any], extra: str = "") -> Dict[str, Any]:
-        return self.provider.complete(
-            system=self.roles.system(role),
-            prompt=self.roles.prompt(role, state, extra=extra),
-            role=role,
-            expect_json=False,
-            max_tokens=self._output_budget(role, int(state.get("attempt") or 1)),
-        )
+        with call_ceiling(self._remaining_budget_sec()):
+            return self.provider.complete(
+                system=self.roles.system(role),
+                prompt=self.roles.prompt(role, state, extra=extra),
+                role=role,
+                expect_json=False,
+                max_tokens=self._output_budget(role, int(state.get("attempt") or 1)),
+            )
 
     def _call_json(self, role: str, state: Dict[str, Any], extra: str = "") -> Dict[str, Any]:
-        response = self.provider.complete(
-            system=self.roles.system(role),
-            prompt=self.roles.prompt(role, state, extra=extra),
-            role=role,
-            expect_json=True,
-            max_tokens=self._output_budget(role, int(state.get("attempt") or 1)),
-        )
+        with call_ceiling(self._remaining_budget_sec()):
+            response = self.provider.complete(
+                system=self.roles.system(role),
+                prompt=self.roles.prompt(role, state, extra=extra),
+                role=role,
+                expect_json=True,
+                max_tokens=self._output_budget(role, int(state.get("attempt") or 1)),
+            )
         data = parse_json_loose(response["text"]) or {}
         if role == "verifier":
             # A model that answers with its own JSON shape must not silently

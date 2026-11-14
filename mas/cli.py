@@ -373,7 +373,14 @@ def cmd_export(args: argparse.Namespace) -> int:
 def cmd_verify(args: argparse.Namespace) -> int:
     """Run a real closed loop and report whether it closes."""
     config = load_config()
-    result = run_verify(config)
+
+    def progress(message: str) -> None:
+        # stderr, so that ``--json`` still emits nothing but JSON on
+        # stdout. A beginner watching a three minute self-check needs
+        # to see that something is happening.
+        print(f"... {message}", file=sys.stderr, flush=True)
+
+    result = run_verify(config, progress=progress)
     if args.json:
         _print(result, True)
     else:
