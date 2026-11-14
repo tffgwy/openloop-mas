@@ -347,6 +347,11 @@ def cmd_artifacts(args: argparse.Namespace) -> int:
         items.append(
             {
                 "run_id": summary["run_id"],
+                # The task this deliverable came from. A list of run
+                # ids and paths is not a list the user can act on: they
+                # would have to open each file to find out what it is.
+                "title": summary.get("title") or "",
+                "goal": summary.get("goal") or "",
                 "status": summary["status"],
                 "path": path,
                 "exists": target.exists(),
@@ -365,10 +370,14 @@ def cmd_artifacts(args: argparse.Namespace) -> int:
     print(f"共 {len(items)} 份交付物：")
     for item in items:
         flag = "OK " if item["exists"] else "缺失"
+        # The task first: the path is long and the task is short, and
+        # the task is what the reader is looking for.
+        label = item["title"] or item["goal"] or "-"
         print(
-            f"  [{flag}] {item['run_id']}  {item['status']:<12} "
-            f"{item['chars']:>6} 字  {item['iterations']} 轮  {item['path']}"
+            f"  [{flag}] {label}  {item['status']:<12} "
+            f"{item['chars']:>6} 字  {item['iterations']} 轮"
         )
+        print(f"        {item['run_id']}  {item['path']}")
     missing = [i for i in items if not i["exists"]]
     if missing:
         print()

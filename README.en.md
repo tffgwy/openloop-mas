@@ -7,6 +7,22 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.46 adds** (the ledger knows what each run was about):
+
+- **The ledger recorded everything about a run except the one thing a
+  human needs.** Measured against the live model: the ledger held no
+  trace of the task. A replay could say "a run closed, 241 characters,
+  sha fe8848013b" and the reader had no way to learn whether it was the
+  onboarding guide or the Q3 report. The mock backend had hidden this,
+  because its planner summary happens to echo the goal.
+- **The run's end entry now books ``goal`` and ``title``**, the summary
+  reads them back, the report's overview table gained a "任务" column,
+  and every run section opens with "- 任务：<goal>".
+- **``mas artifacts`` names the task too** - the listing shows the goal
+  above the path and the JSON rows carry ``title`` and ``goal``.
+- Eleven new regression tests, seven layers counter-proven by reverting
+  each on its own.
+
 **What v0.7.45 adds** (the user can find the deliverable):
 
 - **The deliverable survived, but nobody could find it.** v0.7.44 made the

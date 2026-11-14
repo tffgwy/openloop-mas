@@ -362,6 +362,10 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         # something a human can open. Now the report names the file.
         "artifact_path": str(end.get("artifact_path") or "") if end else "",
         "artifact_chars": int(end.get("artifact_chars") or 0) if end else 0,
+        # What this run was about. Without it a reader sees a run id
+        # and a hash and has to guess which task they are looking at.
+        "goal": str(end.get("goal") or "") if end else "",
+        "title": str(end.get("title") or "") if end else "",
         "verdict": last_verdict,
         "decision": decision,
         # The end entry is the engine's own account of the run, so it
@@ -453,13 +457,19 @@ def render_markdown(report: Dict[str, Any]) -> str:
 
     lines.append("## 运行概览")
     lines.append("")
-    lines.append("| 运行 ID | 状态 | 决策 | 迭代 | 停滞 | 产物 SHA | 条目 | token |")
-    lines.append("|---|---|---|---|---|---|---|---|")
+    lines.append("| 运行 ID | 任务 | 状态 | 决策 | 迭代 | 停滞 | 产物 SHA | 条目 | token |")
+    lines.append("|---|---|---|---|---|---|---|---|---|")
     for run in runs:
         status = str(run.get("status") or "-")
         icon = STATUS_ICON.get(status, "-")
+        # The task the run was about. A table of run ids and hashes is
+        # an audit log; a table that also says what was being done is
+        # a report a human can read.
+        goal = str(run.get("goal") or run.get("title") or "").replace("|", "\\|")
+        goal = goal[:40] + ("…" if len(goal) > 40 else "")
         lines.append(
-            f"| `{run.get('run_id')}` | {icon} {status} | {run.get('decision') or '-'} | "
+            f"| `{run.get('run_id')}` | {goal or '-'} | {icon} {status} | "
+            f"{run.get('decision') or '-'} | "
             f"{run.get('iterations', 0)} | {int(run.get('stagnation') or 0)} | "
             f"`{(run.get('artifact_sha') or '')[:12]}` | "
             f"{run.get('entries', 0)} | {int(run.get('tokens') or 0)} |"
@@ -469,6 +479,13 @@ def render_markdown(report: Dict[str, Any]) -> str:
     for run in runs:
         lines.append(f"## 运行 `{run.get('run_id')}`")
         lines.append("")
+        # Say what this run was about, before the dates. A reader who
+        # opens a report of forty runs needs the task before the
+        # timestamps.
+        if run.get("goal"):
+            lines.append(f"- 任务：{run.get('goal')}")
+        if run.get("title") and run.get("title") != run.get("goal"):
+            lines.append(f"- 标题：{run.get('title')}")
         lines.append(f"- 开始：{run.get('started_at') or '-'}")
         lines.append(f"- 结束：{run.get('finished_at') or '-'}")
         lines.append(f"- 花费：{int(run.get('tokens') or 0)} token")

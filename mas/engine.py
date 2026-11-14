@@ -1020,6 +1020,16 @@ class LoopEngine:
                 # hand, resume - was written in the engine and never
                 # reached the report.
                 "ticket_id": ticket_id or "",
+                # What this run was *about*. The ledger used to record
+                # everything about a run except the one thing a human
+                # needs: which task produced these results. A replay
+                # could say "a run closed, 241 characters, sha
+                # fe8848013b" and the reader had no way to learn
+                # whether it was the onboarding guide or the Q3 report.
+                # A ledger that cannot name its own work is a log of
+                # calls, not a record of work.
+                "goal": goal,
+                "title": title or goal[:40],
                 "artifact_sha": sha256_text(artifact) if artifact else "",
                 # Where the deliverable was written. Without it the
                 # report can only print a hash, and a hash is not

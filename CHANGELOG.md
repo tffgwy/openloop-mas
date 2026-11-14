@@ -4,6 +4,52 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.46] - 2026-11-15
+
+### Added
+
+v0.7.45 made the deliverable findable. v0.7.46 makes it *legible*.
+The gap was measured against the live model, not guessed: **the ledger
+recorded everything about a run except the one thing a human needs -
+which task produced these results**. A replay could say "a run closed,
+241 characters, sha fe8848013b" and the reader had no way to learn
+whether it was the onboarding guide or the Q3 report.
+
+The mock backend had hidden this, because its planner summary happens
+to echo the goal - so the gap only appears against a real model.
+
+* **The run's end entry books the task.** It now carries ``goal`` and
+  ``title``. A ledger that cannot name its own work is a log of calls,
+  not a record of work.
+
+* **The summary reads it back.** ``run_summary`` exposes ``goal`` and
+  ``title``, so every consumer of the ledger - the report, the CLI,
+  the JSON output - can say what a run was about.
+
+* **The report names the task.** The overview table gained a "任务"
+  column, and each run's section now opens with "- 任务：<goal>".
+  A table of run ids and hashes is an audit log; a table that also says
+  what was being done is a report a human can read.
+
+* **``mas artifacts`` names the task.** The listing shows the goal
+  above the path, and the JSON rows carry ``title`` and ``goal``. A
+  list of paths is not a list the user can act on: they would have to
+  open every file to find out what it is.
+
+* **A pipe in the goal does not break the table.** The overview cell
+  escapes ``|``, so a goal like "写 A | B" cannot split the row.
+
+### Tests
+
+Eleven new tests in ``tests/test_run_task_recorded.py`` cover the
+chain: the end entry books the goal and the title, the title falls back
+to the goal, the summary carries both, the report names the task in the
+overview and in the run section, the overview table has a task column,
+a pipe in the goal is escaped, and the artifacts listing and its JSON
+output name the task and tell two runs apart. Seven layers were
+counter-proven by reverting each on its own and confirming the matching
+tests fail.
+
 ## [0.7.45] - 2026-11-15
 
 ### Added
