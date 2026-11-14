@@ -7,6 +7,41 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.34 adds** (the self-check tells the truth - and the key you
+set actually reaches the model):
+
+- **The key you set was never sent.** The setup wizard tells you to put
+  it into `OPENAI_API_KEY` (or `ANTHROPIC_API_KEY`, or any name you
+  choose) and records only the *name* in the configuration, so that no
+  secret is ever written to disk. That is right. But the provider
+  builder only ever read the literal `api_key` field of the
+  configuration - and that field is deliberately empty. A user who had
+  configured everything exactly as documented talked to the endpoint
+  with an empty `Authorization` header and got 401s. The key is now
+  resolved the way the configuration always promised, and the
+  resolution is covered by a regression test.
+- **A fallback backend inherited the primary backend's secret.** A
+  fallback that declared its own key variable still received the
+  primary's literal key. Sending the primary's credential to a
+  different endpoint is both wrong and a leak; a fallback that names
+  its own credential drops the inherited one now.
+- **The provider line of `mas verify` was a rubber stamp.** It printed
+  the configured strings and reported "ok" whenever they *looked*
+  plausible - no network call, no key lookup at all. A user with a dead
+  endpoint got a green provider line and a red closure line, with
+  nothing in between naming the real cause. The provider line now
+  states the endpoint and whether the key was found, and two real
+  checks sit next to it: an endpoint handshake (the same one `mas
+  doctor` uses, so both commands agree on what "reachable" means) and
+  an instruction check that proves the system instruction really
+  reaches the model. A dead endpoint now says so by name.
+- The mock backend stays completely offline: no handshake, no
+  instruction probe, no network call at all.
+- Ten regression tests. Verified: `mas verify` against the local real
+  endpoint -> handshake ok, instruction ok, closure ok, five ledger
+  entries; against a dead port -> the endpoint line names the
+  connection failure.
+
 **What v0.7.33 adds** (making the replay readable - and killing the
 "None puzzle" of the default configuration):
 

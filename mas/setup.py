@@ -15,8 +15,15 @@ import tempfile
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from mas.config import DEFAULT_CONFIG, load_config, load_persisted_config, save_config
+from mas.config import (
+    DEFAULT_CONFIG,
+    load_config,
+    load_persisted_config,
+    resolve_api_key,
+    save_config,
+)
 from mas.engine import LoopEngine
+from mas.probe import probe_from_config, probe_instruction_echo
 from mas.teams import load_team
 
 BACKENDS: List[Dict[str, str]] = [
@@ -186,7 +193,65 @@ def run_verify(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         checks.append({"check": name, "status": "ok" if ok else level, "detail": detail})
 
     provider_name = str(config.get("provider") or "mock")
-    add("provider", True, f"{provider_name} / {config.get('model')}")
+
+    # The provider check used to be a rubber stamp: it printed the
+    # configured provider and model and reported "ok" as long as the
+    # *string* looked plausible. A user whose endpoint was dead, whose
+    # key was never picked up, or whose gateway spoke the wrong dialect
+    # saw a green provider line and a red closure line - with nothing
+    # in between to say which of the two was the real problem.
+    #
+    # Now the provider line reports what is actually known: the
+    # configuration says X, the key is present or missing, and the
+    # endpoint answered (or did not). The endpoint handshake is the same
+    # one ``mas doctor`` uses, so both commands agree on what
+    # "reachable" means.
+    key_present = bool(resolve_api_key(config))
+    base_url = str(config.get("base_url") or "")
+    provider_detail = f"{provider_name} / {config.get('model')}"
+    if provider_name != "mock":
+        provider_detail += f" @ {base_url}" if base_url else "（未配置 base_url）"
+        provider_detail += "，密钥已就绪" if key_present else "，未找到密钥"
+    add("provider", True, provider_detail)
+
+    if provider_name != "mock" and base_url:
+        try:
+            handshake = probe_from_config(config)
+        except Exception as exc:  # pragma: no cover - defensive
+            handshake = {"status": "warn", "detail": f"握手探测异常: {exc}"}
+        hs_status = str(handshake.get("status") or "warn")
+        add(
+            "endpoint",
+            hs_status == "ok",
+            str(handshake.get("detail") or ""),
+            "fail" if hs_status == "fail" else "warn",
+        )
+        # A reachable endpoint is not necessarily a usable one. On a
+        # Responses-style gateway the system instruction used to be
+        # dropped while the endpoint answered normally - the endpoint
+        # check said "ok" and every role contract in the loop was
+        # silently discarded. The echo probe asks the model to repeat a
+        # token only the system instruction mentions.
+        try:
+            echo = probe_instruction_echo(
+                provider=provider_name,
+                base_url=base_url,
+                model=str(config.get("model") or ""),
+                api_key=resolve_api_key(config),
+                timeout_sec=float(config.get("timeout_sec", 20) or 20),
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            echo = {"status": "warn", "detail": f"指令校验异常: {exc}"}
+        echo_status = str(echo.get("status") or "warn")
+        add(
+            "instruction",
+            echo_status == "ok",
+            str(echo.get("detail") or ""),
+            "fail" if echo_status == "fail" else "warn",
+        )
+    elif provider_name != "mock":
+        add("endpoint", False, "未配置 base_url，无法握手探测", "fail")
+        add("instruction", False, "未配置 base_url，无法校验角色指令", "fail")
 
     started = time.time()
     state_dir = tempfile.mkdtemp(prefix="mas-verify-")

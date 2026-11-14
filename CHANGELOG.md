@@ -4,6 +4,62 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.34] - 2026-11-14
+
+### Fixed
+
+The self-check that a beginner runs right after the one-click install
+could not tell them what was actually wrong, and the key they were told
+to set was never sent to the model.
+
+* **The key from the environment variable was never used.** The setup
+  wizard tells the user to put the key into ``OPENAI_API_KEY`` (or
+  ``ANTHROPIC_API_KEY``, or whatever name they choose) and records that
+  *name* in the configuration - so that no secret is ever written to
+  disk. But the provider builder only ever read the literal ``api_key``
+  field of the configuration, and that field is deliberately empty. The
+  result: a user who had configured everything exactly as documented
+  talked to the endpoint with an empty ``Authorization`` header and got
+  401s. The key is now resolved through the same environment lookup the
+  rest of the configuration already promises, and the resolution is
+  tested.
+
+* **A fallback backend inherited the primary backend's secret.** A
+  fallback that declared its own key variable still received the
+  primary's literal key. Sending the primary's credential to a
+  different endpoint is both wrong and a leak; a fallback that names its
+  own credential now drops the inherited one, and a fallback that names
+  none keeps the shared one.
+
+* **The provider line of ``mas verify`` was a rubber stamp.** It
+  printed the configured provider and model and reported "ok" whenever
+  the *strings* looked plausible - no network call, no key lookup. A
+  user with a dead endpoint got a green provider line and a red closure
+  line, with nothing in between naming the real cause. The provider line
+  now states the endpoint and whether the key was found, and two real
+  checks were added next to it: an endpoint handshake (the same one
+  ``mas doctor`` uses, so both commands agree on what "reachable" means)
+  and an instruction check that proves the system instruction actually
+  reaches the model. A dead endpoint now says so by name.
+
+### Changed
+
+* The provider check in ``mas verify`` also reports whether the key was
+  found, so "my key is not being read" is a diagnosis the user can read
+  off the self-check instead of having to guess.
+
+* The mock backend stays completely offline: no handshake, no
+  instruction probe, no network call at all.
+
+### Tests
+
+* The broken-backend test of ``mas verify`` used to define a broken
+  provider and never use it - it ran the mock backend and only checked
+  that a check named "closure" existed. The one thing a beginner relies
+  on after a one-click install had no regression protection at all. It
+  is now a real test: a backend that raises ``ProviderError("endpoint
+  down")`` has to be reported as a failure, with the reason attached.
+
 ## [0.7.33] - 2026-11-14
 
 ### Fixed

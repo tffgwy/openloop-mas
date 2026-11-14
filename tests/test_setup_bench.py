@@ -109,6 +109,243 @@ class TestWizard(unittest.TestCase):
             self.assertEqual(config["api_key_env"], "MAS_API_KEY")
 
 
+class TestVerifyProviderHonesty(unittest.TestCase):
+    """``mas verify`` must not rubber-stamp a broken configuration.
+
+    The provider line used to print the configured strings and report
+    "ok" no matter what. A beginner with a dead endpoint or a key that
+    was never picked up saw a green provider line and no explanation.
+    """
+
+    def test_verify_reports_a_dead_endpoint_as_a_failure(self):
+        config = json.loads(json.dumps(DEFAULT_CONFIG))
+        config["state_dir"] = tempfile.mkdtemp()
+        config["provider"] = "openai_compat"
+        config["model"] = "gpt-4o-mini"
+        # Nothing listens on port 9.
+        config["base_url"] = "http://127.0.0.1:9/v1"
+        config["api_key_env"] = "MAS_TEST_DEAD_KEY"
+        os.environ["MAS_TEST_DEAD_KEY"] = "k"
+        try:
+            result = run_verify(config)
+        finally:
+            os.environ.pop("MAS_TEST_DEAD_KEY", None)
+        checks = {row["check"]: row for row in result["checks"]}
+        self.assertIn("endpoint", checks)
+        self.assertEqual(checks["endpoint"]["status"], "fail")
+        # The detail has to be the *real* handshake failure. Without this
+        # the test would also pass if the handshake were skipped and some
+        # other branch reported "fail" - which is exactly the rubber
+        # stamp this check is supposed to eliminate.
+        self.assertNotIn("未配置 base_url", checks["endpoint"]["detail"])
+        self.assertTrue(
+            checks["endpoint"]["detail"].strip(),
+            "the endpoint check has to say what actually happened",
+        )
+        self.assertFalse(result["ok"])
+
+    def test_verify_actually_handshakes_with_the_endpoint(self):
+        """The endpoint check has to be a real request, not a string.
+
+        The provider line used to report "ok" for any plausible-looking
+        configuration. A test that only asserts the *status* cannot tell
+        a real handshake from a hard-coded verdict, so this one counts
+        the requests the probe actually made.
+        """
+        from mas import setup as setup_module
+
+        calls = []
+        original = setup_module.probe_from_config
+
+        def counting_probe(config, *args, **kwargs):
+            calls.append(dict(config))
+            return {"status": "ok", "dialect": "openai-chat-completions",
+                    "detail": "端点可用，协议方言 = openai-chat-completions"}
+
+        setup_module.probe_from_config = counting_probe
+        try:
+            config = json.loads(json.dumps(DEFAULT_CONFIG))
+            config["state_dir"] = tempfile.mkdtemp()
+            config["provider"] = "openai_compat"
+            config["model"] = "gpt-4o-mini"
+            config["base_url"] = "https://example.invalid/v1"
+            config["api_key_env"] = "MAS_TEST_HANDSHAKE_KEY"
+            os.environ["MAS_TEST_HANDSHAKE_KEY"] = "k"
+            try:
+                result = run_verify(config)
+            finally:
+                os.environ.pop("MAS_TEST_HANDSHAKE_KEY", None)
+        finally:
+            setup_module.probe_from_config = original
+
+        self.assertTrue(calls, "mas verify must talk to the endpoint")
+        self.assertEqual(calls[0]["base_url"], "https://example.invalid/v1")
+        checks = {row["check"]: row for row in result["checks"]}
+        self.assertEqual(checks["endpoint"]["status"], "ok")
+
+    def test_verify_checks_that_the_instruction_reaches_the_model(self):
+        """A reachable endpoint that drops the system prompt is not usable.
+
+        On a Responses-style gateway the system instruction used to be
+        dropped while the endpoint answered normally - the endpoint
+        check said "ok" and every role contract in the loop was
+        silently discarded.
+        """
+        from mas import setup as setup_module
+
+        echoed = []
+        original = setup_module.probe_instruction_echo
+
+        def fake_echo(**kwargs):
+            echoed.append(kwargs)
+            return {"status": "warn",
+                    "detail": "端点可用但未采纳系统指令"}
+
+        setup_module.probe_instruction_echo = fake_echo
+        try:
+            config = json.loads(json.dumps(DEFAULT_CONFIG))
+            config["state_dir"] = tempfile.mkdtemp()
+            config["provider"] = "openai_compat"
+            config["model"] = "gpt-4o-mini"
+            config["base_url"] = "https://example.invalid/v1"
+            config["api_key_env"] = "MAS_TEST_ECHO_KEY"
+            os.environ["MAS_TEST_ECHO_KEY"] = "secret-value"
+            try:
+                result = run_verify(config)
+            finally:
+                os.environ.pop("MAS_TEST_ECHO_KEY", None)
+        finally:
+            setup_module.probe_instruction_echo = original
+
+        self.assertTrue(echoed, "the instruction check has to run")
+        self.assertEqual(echoed[0]["api_key"], "secret-value")
+        checks = {row["check"]: row for row in result["checks"]}
+        self.assertEqual(checks["instruction"]["status"], "warn")
+
+    def test_verify_says_when_the_key_is_missing(self):
+        config = json.loads(json.dumps(DEFAULT_CONFIG))
+        config["state_dir"] = tempfile.mkdtemp()
+        config["provider"] = "openai_compat"
+        config["model"] = "gpt-4o-mini"
+        config["base_url"] = ""
+        config["api_key"] = ""
+        config["api_key_env"] = "MAS_TEST_ABSENT_KEY"
+        os.environ.pop("MAS_TEST_ABSENT_KEY", None)
+        result = run_verify(config)
+        checks = {row["check"]: row for row in result["checks"]}
+        self.assertIn("未找到密钥", checks["provider"]["detail"])
+        self.assertEqual(checks["endpoint"]["status"], "fail")
+
+    def test_verify_says_when_the_key_is_present(self):
+        config = json.loads(json.dumps(DEFAULT_CONFIG))
+        config["state_dir"] = tempfile.mkdtemp()
+        config["provider"] = "openai_compat"
+        config["model"] = "gpt-4o-mini"
+        config["base_url"] = ""
+        config["api_key"] = ""
+        config["api_key_env"] = "MAS_TEST_PRESENT_KEY"
+        os.environ["MAS_TEST_PRESENT_KEY"] = "k"
+        try:
+            result = run_verify(config)
+        finally:
+            os.environ.pop("MAS_TEST_PRESENT_KEY", None)
+        checks = {row["check"]: row for row in result["checks"]}
+        self.assertIn("密钥已就绪", checks["provider"]["detail"])
+
+    def test_mock_mode_never_touches_the_network(self):
+        config = json.loads(json.dumps(DEFAULT_CONFIG))
+        config["state_dir"] = tempfile.mkdtemp()
+        result = run_verify(config)
+        names = [row["check"] for row in result["checks"]]
+        self.assertNotIn("endpoint", names)
+        self.assertNotIn("instruction", names)
+
+
+class TestApiKeyEnvIsHonoured(unittest.TestCase):
+    """The key must come from the environment variable the user named.
+
+    The wizard points the user at ``OPENAI_API_KEY`` / ``ANTHROPIC_API_KEY``
+    and records that name in the configuration. The provider used to
+    read only the *literal* ``api_key`` field, so the documented setup
+    produced an empty Authorization header and a 401.
+    """
+
+    def test_provider_uses_the_key_from_the_named_env_var(self):
+        from mas.providers import build_provider
+
+        config = json.loads(json.dumps(DEFAULT_CONFIG))
+        config["provider"] = "openai_compat"
+        config["model"] = "gpt-4o-mini"
+        config["base_url"] = "https://api.openai.com/v1"
+        config["api_key"] = ""
+        config["api_key_env"] = "MAS_TEST_ENV_KEY"
+        os.environ["MAS_TEST_ENV_KEY"] = "sk-from-env"
+        try:
+            provider = build_provider(config)
+        finally:
+            os.environ.pop("MAS_TEST_ENV_KEY", None)
+        self.assertEqual(provider.options.get("api_key"), "sk-from-env")
+
+    def test_provider_prefers_a_literal_key_over_the_env_var(self):
+        from mas.providers import build_provider
+
+        config = json.loads(json.dumps(DEFAULT_CONFIG))
+        config["provider"] = "openai_compat"
+        config["model"] = "gpt-4o-mini"
+        config["base_url"] = "https://api.openai.com/v1"
+        config["api_key"] = "literal-key"
+        config["api_key_env"] = "MAS_TEST_ENV_KEY2"
+        os.environ["MAS_TEST_ENV_KEY2"] = "sk-from-env"
+        try:
+            provider = build_provider(config)
+        finally:
+            os.environ.pop("MAS_TEST_ENV_KEY2", None)
+        self.assertEqual(provider.options.get("api_key"), "literal-key")
+
+    def test_a_fallback_does_not_inherit_the_primary_key(self):
+        from mas.providers import build_provider_chain
+
+        config = json.loads(json.dumps(DEFAULT_CONFIG))
+        config["provider"] = "openai_compat"
+        config["model"] = "gpt-4o-mini"
+        config["base_url"] = "https://primary.example.com/v1"
+        config["api_key"] = "primary-secret"
+        config["fallbacks"] = [
+            {
+                "provider": "openai_compat",
+                "model": "backup-model",
+                "base_url": "https://backup.example.com/v1",
+                "api_key_env": "MAS_TEST_BACKUP_KEY",
+            }
+        ]
+        os.environ["MAS_TEST_BACKUP_KEY"] = "backup-secret"
+        try:
+            chain = build_provider_chain(config)
+        finally:
+            os.environ.pop("MAS_TEST_BACKUP_KEY", None)
+        backup = chain.providers[1]
+        self.assertNotEqual(backup.options.get("api_key"), "primary-secret")
+        self.assertEqual(backup.options.get("api_key"), "backup-secret")
+
+    def test_a_fallback_without_its_own_key_keeps_the_primary_one(self):
+        from mas.providers import build_provider_chain
+
+        config = json.loads(json.dumps(DEFAULT_CONFIG))
+        config["provider"] = "openai_compat"
+        config["model"] = "gpt-4o-mini"
+        config["base_url"] = "https://primary.example.com/v1"
+        config["api_key"] = "primary-secret"
+        config["fallbacks"] = [
+            {
+                "provider": "openai_compat",
+                "model": "backup-model",
+                "base_url": "https://backup.example.com/v1",
+            }
+        ]
+        chain = build_provider_chain(config)
+        self.assertEqual(chain.providers[1].options.get("api_key"), "primary-secret")
+
+
 class TestVerify(unittest.TestCase):
     def test_verify_closes_with_the_mock_backend(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -122,23 +359,68 @@ class TestVerify(unittest.TestCase):
             self.assertIn("ledger", names)
 
     def test_verify_reports_a_failing_backend(self):
+        """A broken backend has to be reported, not swallowed.
+
+        The test used to define a ``BrokenProvider`` and never use it:
+        it ran the *mock* backend and only checked that a check named
+        "closure" exists. So the one thing a beginner relies on after
+        a one-click install - "does the self-check notice that my
+        backend is dead?" - had no regression protection at all.
+        """
+        from mas import engine as engine_module
+        from mas.providers import ProviderError
+
         class BrokenProvider:
             name = "broken"
             model = "broken-1"
 
             def complete(self, **kwargs):
-                from mas.providers import ProviderError
-
                 raise ProviderError("endpoint down")
+
+            def describe(self):
+                return {"provider": self.name, "model": self.model}
+
+        original_init = engine_module.LoopEngine.__init__
+
+        def patched_init(self, *args, **kwargs):
+            kwargs.pop("provider", None)
+            original_init(self, *args, **kwargs)
+            self.provider = BrokenProvider()
 
         with tempfile.TemporaryDirectory() as tmp:
             config = json.loads(json.dumps(DEFAULT_CONFIG))
             config["state_dir"] = tmp
-            config["provider"] = "mock"
-            # A mock backend always closes; the point of the test is that a
-            # broken backend is reported as a failure, not swallowed.
+            engine_module.LoopEngine.__init__ = patched_init
+            try:
+                result = run_verify(config)
+            finally:
+                engine_module.LoopEngine.__init__ = original_init
+
+            self.assertFalse(result["ok"], "a dead backend must not verify")
+            checks = {row["check"]: row for row in result["checks"]}
+            self.assertIn("closure", checks)
+            self.assertEqual(checks["closure"]["status"], "fail")
+            self.assertIn("endpoint down", checks["closure"]["detail"])
+            self.assertGreaterEqual(result["counts"]["fail"], 1)
+
+    def test_verify_passes_with_a_healthy_backend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = json.loads(json.dumps(DEFAULT_CONFIG))
+            config["state_dir"] = tmp
             result = run_verify(config)
-            self.assertIn("closure", [row["check"] for row in result["checks"]])
+            self.assertTrue(result["ok"], result)
+            checks = {row["check"]: row for row in result["checks"]}
+            self.assertEqual(checks["closure"]["status"], "ok")
+
+    def test_verify_reports_the_spend_of_the_check_run(self):
+        # The self-check spends the user's money. The report has to say
+        # how much, or the check is not auditable.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = json.loads(json.dumps(DEFAULT_CONFIG))
+            config["state_dir"] = tmp
+            result = run_verify(config)
+            self.assertIn("token_usage", result)
+            self.assertGreaterEqual(result["token_usage"], 0)
 
 
 class TestBench(unittest.TestCase):

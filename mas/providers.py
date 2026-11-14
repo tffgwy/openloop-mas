@@ -682,6 +682,26 @@ class MockProvider(Provider):
         return "\n".join(lines)
 
 
+def _resolved_key(config: Dict[str, Any]) -> str:
+    """Read the API key from the environment or from the config itself.
+
+    The import is local so that ``mas.providers`` keeps no import-time
+    dependency on ``mas.config`` (the config module reaches providers
+    indirectly through the engine).
+    """
+    literal = str(config.get("api_key") or "")
+    if literal:
+        return literal
+    try:
+        from mas.config import resolve_api_key
+
+        return resolve_api_key(config)
+    except Exception:  # pragma: no cover - defensive
+        import os
+
+        return os.environ.get(str(config.get("api_key_env") or "MAS_API_KEY"), "")
+
+
 def build_provider_chain(config: Dict[str, Any]) -> ProviderChain:
     """Build the primary provider plus its failover backends.
 
@@ -718,6 +738,17 @@ def build_provider_chain(config: Dict[str, Any]) -> ProviderChain:
         # overridden per fallback: a backup backend usually lives on a
         # different network with a different latency profile, so forcing
         # it to reuse the primary's timeout and retry count was wrong.
+        #
+        # The credential needs one extra rule. A fallback that names its
+        # *own* key variable must not silently keep the primary's literal
+        # key: the primary key belongs to the primary endpoint, and
+        # sending it to the backup is both wrong and a leak. So a
+        # fallback that declares its own credential drops the inherited
+        # one.
+        if "api_key" in spec:
+            merged["api_key"] = spec["api_key"]
+        elif "api_key_env" in spec and spec["api_key_env"] != config.get("api_key_env"):
+            merged["api_key"] = ""
         for key in (
             "provider",
             "model",
@@ -742,12 +773,23 @@ def build_provider_chain(config: Dict[str, Any]) -> ProviderChain:
 
 
 def build_provider(config: Dict[str, Any]) -> Provider:
-    """Instantiate the provider described by the configuration."""
+    """Instantiate the provider described by the configuration.
+
+    The API key is resolved through :func:`mas.config.resolve_api_key`, so
+    a key that lives in the environment variable named by ``api_key_env``
+    is actually used. Before v0.7.34 this function only ever read
+    ``config["api_key"]`` - the *literal* value - which made the whole
+    ``api_key_env`` contract a decoration: the setup wizard points the
+    user at ``OPENAI_API_KEY`` / ``ANTHROPIC_API_KEY``, the configuration
+    file records that name, and the provider then talked to the endpoint
+    with an empty key. The user had configured everything correctly and
+    still got 401s.
+    """
     kind = str(config.get("provider") or "mock").lower()
     model = str(config.get("model") or "")
     options = {
         "base_url": config.get("base_url") or "",
-        "api_key": config.get("api_key") or "",
+        "api_key": _resolved_key(config),
         "timeout_sec": config.get("timeout_sec", 120),
         "max_retries": config.get("max_retries", 2),
         "extra_headers": config.get("extra_headers") or {},
