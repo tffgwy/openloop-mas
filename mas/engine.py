@@ -553,7 +553,27 @@ class LoopEngine:
             try:
                 if attempt == 1:
                     plan_payload = self._call_json("planner", state)
-                    self._log(run_id, task_id, attempt, "planner", {"plan": plan_payload})
+                    # The planner really spent tokens. A call that
+                    # produced no artifact is still a paid call, so it
+                    # belongs to the budget.
+                    plan_usage = dict(plan_payload.get("_usage") or {})
+                    tokens += int(plan_usage.get("total_tokens", 0) or 0)
+                    # The internal bookkeeping never leaves the engine.
+                    # The plan goes into the state of every later
+                    # prompt, so the raw provider text would ride along
+                    # with it and pollute the worker's brief.
+                    plan_payload = {
+                        key: value
+                        for key, value in plan_payload.items()
+                        if key not in ("_usage", "_raw")
+                    }
+                    # The ledger still shows what the planner call cost -
+                    # the audit trail has to carry the spend of every
+                    # call, not only the ones that produced an artifact.
+                    self._log(
+                        run_id, task_id, attempt, "planner",
+                        {"plan": plan_payload, "usage": plan_usage},
+                    )
 
                 candidates = self._produce_candidates(state)
                 artifact = candidates["artifact"]
@@ -611,6 +631,15 @@ class LoopEngine:
                     reflect_state = dict(state)
                     reflect_state["issues"] = issues
                     reflection = self._call_json("reflector", reflect_state)
+                    # The reflection cost tokens as well, and the raw
+                    # provider text has no business in the history.
+                    reflect_usage = dict(reflection.get("_usage") or {})
+                    tokens += int(reflect_usage.get("total_tokens", 0) or 0)
+                    reflection = {
+                        key: value
+                        for key, value in reflection.items()
+                        if key not in ("_usage", "_raw")
+                    }
                 else:
                     # The previous iteration's issues are resolved. Keeping
                     # them would make a closed run look like it still failed.
@@ -817,15 +846,25 @@ class LoopEngine:
         # really did spend their budget. Counting only the re-raised one
         # under-reported the spend of a parallel run.
         truncated_tokens = 0
+        pool_tokens = 0
         truncation: Optional[TruncatedAnswer] = None
         for item in results:
-            if isinstance(item, ParallelFailure) and isinstance(item.error, TruncatedAnswer):
-                truncated_tokens += int(getattr(item.error, "tokens", 0) or 0)
-                if truncation is None:
-                    truncation = item.error
+            if isinstance(item, ParallelFailure):
+                if isinstance(item.error, TruncatedAnswer):
+                    truncated_tokens += int(getattr(item.error, "tokens", 0) or 0)
+                    if truncation is None:
+                        truncation = item.error
+                continue
+            # The candidates that *did* finish also spent tokens - the
+            # endpoint generated them before the pool was thrown away.
+            # Only the truncated ones were counted, so a pool that lost
+            # the race reported the cost of one candidate instead of the
+            # cost of the whole pool, and the token ceiling was
+            # systematically too generous.
+            pool_tokens += int((item.get("usage") or {}).get("total_tokens", 0) or 0)
         if truncation is not None:
             truncation.usage = dict(truncation.usage or {})
-            truncation.usage["total_tokens"] = truncated_tokens
+            truncation.usage["total_tokens"] = truncated_tokens + pool_tokens
             raise truncation
         crits = [Criterion.from_raw(raw, i) for i, raw in enumerate(state.get("criteria") or [])]
         best_index = -1
@@ -996,13 +1035,34 @@ class LoopEngine:
         panel: List[Optional[Dict[str, Any]]] = []
         errors: List[str] = []
         tokens = 0
+        truncation: Optional[TruncatedAnswer] = None
+        truncated_tokens = 0
         for index, item in enumerate(results):
             if isinstance(item, ParallelFailure):
                 errors.append(f"{personas[index]}: {item.message}")
+                if isinstance(item.error, TruncatedAnswer):
+                    # A reviewer that ran out of output room did not
+                    # *disagree* with the artifact - it never finished.
+                    # Counting it as an absent voter made the strict
+                    # panel unclosable, so every iteration burned the
+                    # budget until the run escalated for a reason that
+                    # was one more retry away. A truncation is reported
+                    # as a retryable failure of the review, with a
+                    # bigger output budget on the next attempt - the
+                    # same treatment the worker path already gets.
+                    truncated_tokens += int(getattr(item.error, "tokens", 0) or 0)
+                    if truncation is None:
+                        truncation = item.error
                 panel.append(None)
                 continue
             panel.append(item["verdict"])
             tokens += int(item["verdict"].get("_usage", {}).get("total_tokens", 0))
+        if truncation is not None:
+            # The reviewers that did answer also spent tokens, and this
+            # round is thrown away - so they are charged too.
+            truncation.usage = dict(truncation.usage or {})
+            truncation.usage["total_tokens"] = truncated_tokens + tokens
+            raise truncation
         reviews = [verdict for verdict in panel if verdict]
         aggregate = aggregate_reviews(
             reviews, mode=self.review_mode, expected=len(personas)
@@ -1086,12 +1146,25 @@ class LoopEngine:
             )
             reask: List[Optional[Dict[str, Any]]] = []
             tokens = 0
+            truncation: Optional[TruncatedAnswer] = None
+            truncated_tokens = 0
             for item in results:
                 if isinstance(item, ParallelFailure):
+                    if isinstance(item.error, TruncatedAnswer):
+                        # The same rule as in the first review round: a
+                        # reviewer that ran out of room is retried, not
+                        # counted as an absent voter.
+                        truncated_tokens += int(getattr(item.error, "tokens", 0) or 0)
+                        if truncation is None:
+                            truncation = item.error
                     reask.append(None)
                     continue
                 reask.append(item["verdict"])
                 tokens += int(item["verdict"].get("_usage", {}).get("total_tokens", 0))
+            if truncation is not None:
+                truncation.usage = dict(truncation.usage or {})
+                truncation.usage["total_tokens"] = truncated_tokens + tokens
+                raise truncation
 
             # Every member keeps its own answers. The re-ask only fills
             # the criteria that member left open - a single reviewer's

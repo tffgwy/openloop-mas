@@ -7,6 +7,33 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.28 adds** (fixing three "the budget ledger lied" defects and one
+"the loop could never close" defect):
+
+- **A discarded candidate pool was charged as if it were free.** When one
+  candidate in a parallel pool was cut off by the output limit, the whole
+  pool was discarded and retried - but only the *truncated* candidate was
+  charged. The candidates that had already finished cost nothing. Measured
+  on the real endpoint: the ledger reported 6,000 tokens for a run that had
+  actually spent 16,010. The token ceiling was systematically too generous,
+  so the budget was not a budget. The pool now charges every candidate,
+  finished or cut off - the number on the ledger is the endpoint's bill.
+- **The planner and the reflector were never charged at all.** Both are paid
+  calls: the planner on the first iteration, the reflector after every
+  failed one. Measured: a run that planned, wrote, failed, reflected and
+  reviewed reported 922 tokens for 1,033 tokens of real spend. Both are
+  charged now, and the ledger shows what the planner call cost.
+- **A reviewer that ran out of output room was counted as an absent
+  voter.** A truncated reviewer is not a reviewer who disagreed - it is a
+  reviewer that never finished. The strict panel counted it as a missing
+  vote, so the loop could never close: every iteration burned the whole
+  budget and the run ended in an escalation for a reason that was one more
+  retry away. A truncation in the review panel is now a retryable failure
+  with a bigger output budget on the next attempt - the same treatment the
+  worker path already got. The re-ask round follows the same rule.
+- Ten regression tests. Verified: reverting each fix one at a time makes
+  the corresponding test fail.
+
 **What v0.7.27 adds** (fixing three "the loop closed wrong" defects):
 
 - **A list-shaped file check could never close the loop.** When the engine

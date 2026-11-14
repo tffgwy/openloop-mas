@@ -4,6 +4,46 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.28] - 2026-11-14
+
+### Fixed
+
+Three holes in the token accounting, and one loop that could never close.
+
+* **A thrown-away candidate pool was charged as if it had cost nothing.**
+  When one candidate in a parallel pool was cut off by the output limit,
+  the whole pool was discarded and retried - but only the *truncated*
+  candidate was charged. The candidates that had already finished were
+  free. Measured on the real endpoint: the ledger reported 6,000 tokens
+  for a run that had actually spent 16,010. The token ceiling was
+  systematically too generous, and the budget was not a budget. The
+  pool now charges every candidate, finished or cut off.
+
+* **The planner and the reflector were never charged at all.** Both are
+  paid calls whose cost never reached the budget - the planner on the
+  first iteration, the reflector on every failed one. A run that
+  planned, wrote, failed, reflected and reviewed reported 922 tokens for
+  1,033 tokens of real spend. Both are charged now, and the ledger shows
+  what the planner call cost.
+
+* **A reviewer that ran out of output room was counted as an absent
+  voter.** A truncated reviewer is not a reviewer who disagreed - it is a
+  reviewer that never finished. The strict panel counted it as a
+  missing vote, so the loop could never close: every iteration burned
+  the whole budget and the run ended in an escalation for a reason that
+  was one more retry away. A truncation in the review panel is now a
+  retryable failure with a bigger output budget on the next attempt -
+  the same treatment the worker path already got. The re-ask round gets
+  the same rule.
+
+### Added
+
+* Ten regression tests: four on the token accounting (planner, reflector,
+  discarded pool, ledger) and six on the truncated reviewer (retry,
+  bigger budget, ledger entry, absent-vote semantics, budget charge,
+  and a panel that never answers still ending the run with a clear
+  reason).
+
 ## [0.7.27] - 2026-11-14
 
 ### Fixed

@@ -1502,6 +1502,269 @@ class RecoveredRunErrorTest(unittest.TestCase):
             self.assertTrue(rows, "the truncation was not recorded")
 
 
+class PoolTokenAccountingTest(unittest.TestCase):
+    """Every call the engine makes must be charged to the budget.
+
+    Found on the real endpoint: a parallel candidate pool where one
+    candidate was cut off by the output limit. The pool was thrown away
+    and retried, but only the *truncated* candidate was charged - the
+    candidates that had already finished were free. The ledger
+    under-reported the real spend of the run, and the token ceiling was
+    systematically too generous. The same hole was in the planner and
+    the reflector: they are paid calls whose cost never reached the
+    budget at all.
+    """
+
+    class _SpendProvider:
+        """Records what every call really costs."""
+
+        name = "spender"
+
+        def __init__(self, truncate_angle=None):
+            self.model = "spender-1"
+            self.spend = []
+            self.truncate_angle = truncate_angle
+
+        def complete(self, *, system, prompt, role="worker", expect_json=False,
+                     max_tokens=4000):
+            if role == "planner":
+                self.spend.append(("planner", 111))
+                return {"text": json.dumps({"summary": "s", "plan": [], "risks": []}),
+                        "usage": {"total_tokens": 111}, "raw": {}}
+            if role == "reflector":
+                self.spend.append(("reflector", 333))
+                return {"text": json.dumps({"summary": "r", "issues": [], "next_action": "revise"}),
+                        "usage": {"total_tokens": 333}, "raw": {}}
+            if role == "worker":
+                if self.truncate_angle and self.truncate_angle in prompt:
+                    self.spend.append(("worker-truncated", 3000))
+                    raise TruncatedAnswer(
+                        "the model stopped at the output token limit",
+                        usage={"total_tokens": 3000},
+                    )
+                self.spend.append(("worker", 700))
+                return {"text": "交付物 正文", "usage": {"total_tokens": 700}, "raw": {}}
+            if role == "verifier":
+                self.spend.append(("verifier", 222))
+                return {
+                    "text": json.dumps({"verdict": "pass",
+                                        "scores": [{"id": "c1", "pass": True, "note": "ok"}]}),
+                    "usage": {"total_tokens": 222},
+                    "raw": {},
+                }
+            self.spend.append((role, 10))
+            return {"text": "{}", "usage": {"total_tokens": 10}, "raw": {}}
+
+        def describe(self):
+            return {"provider": self.name, "model": self.model}
+
+    def _config(self, tmp, workers=1, iterations=3):
+        config = make_config(tmp)
+        config["budget"] = dict(config["budget"])
+        config["budget"]["max_iterations"] = iterations
+        config["budget"]["max_tokens"] = 1000000
+        config["orchestration"] = {
+            "parallel_workers": workers,
+            "reviewers": 1,
+            "review_mode": "all",
+        }
+        return config
+
+    def _run(self, provider, workers=1, iterations=3):
+        # The directory is kept alive: the ledger is the evidence these
+        # tests read, and a deleted state dir would delete the evidence.
+        tmp = tempfile.mkdtemp()
+        engine = LoopEngine(self._config(tmp, workers, iterations), provider=provider)
+        result = engine.run(
+            "写一份说明",
+            [{"id": "c1", "desc": "内容够好"}],
+        )
+        return result, engine
+
+    def test_the_planner_call_is_charged_to_the_budget(self):
+        provider = self._SpendProvider()
+        result, _engine = self._run(provider)
+        self.assertGreaterEqual(
+            result.tokens_used, 111,
+            "the planner call was paid for and must be charged",
+        )
+
+    def test_the_reflector_call_is_charged_to_the_budget(self):
+        # The reflector only runs when a criterion failed, so the
+        # provider has to fail one first.
+        class _Failing(PoolTokenAccountingTest._SpendProvider):
+            def complete(self, *, system, prompt, role="worker", expect_json=False,
+                         max_tokens=4000):
+                if role == "verifier":
+                    self.spend.append(("verifier", 222))
+                    return {
+                        "text": json.dumps({"verdict": "fail",
+                                            "scores": [{"id": "c1", "pass": False, "note": "no"}]}),
+                        "usage": {"total_tokens": 222},
+                        "raw": {},
+                    }
+                return super().complete(system=system, prompt=prompt, role=role,
+                                        expect_json=expect_json, max_tokens=max_tokens)
+
+        provider = _Failing()
+        result, _engine = self._run(provider, iterations=2)
+        self.assertGreaterEqual(
+            result.tokens_used, 333,
+            "the reflector call was paid for and must be charged",
+        )
+
+    def test_a_thrown_away_pool_charges_every_candidate(self):
+        # Two candidates finish, one is cut off. The pool is discarded
+        # and retried - so the two finished candidates were paid for and
+        # must be charged.
+        provider = self._SpendProvider(truncate_angle="追求完整与严谨")
+        result, _engine = self._run(provider, workers=3, iterations=2)
+        spent = sum(value for _name, value in provider.spend)
+        self.assertEqual(
+            result.tokens_used, spent,
+            "the ledger under-reported the real spend of the run",
+        )
+
+    def test_the_ledger_shows_the_planner_cost(self):
+        provider = self._SpendProvider()
+        _result, engine = self._run(provider)
+        rows = [r for r in engine.ledger.entries() if r.get("role") == "planner"]
+        self.assertTrue(rows)
+        self.assertGreater(
+            int((rows[0].get("usage") or {}).get("total_tokens", 0) or 0),
+            0,
+            "the ledger must show what the planner call cost",
+        )
+
+
+class TruncatedReviewerRetryTest(unittest.TestCase):
+    """A reviewer that ran out of room must be retried, not counted as absent.
+
+    Found on the real endpoint: one member of a review panel was cut off
+    by the output limit. The panel counted it as a missing vote, so the
+    strict reading could never close - every iteration burned the whole
+    budget and the run ended in an escalation for a reason that was one
+    more retry away. A truncation is not a disagreement, and the worker
+    path already treats it as a retryable failure.
+    """
+
+    class _Panel:
+        name = "panel"
+
+        def __init__(self, truncate_first=1, always=False):
+            self.model = "panel-1"
+            self.calls = 0
+            self.truncate_first = truncate_first
+            self.always = always
+            self.budgets = []
+            self.persona_calls = {}
+
+        def complete(self, *, system, prompt, role="worker", expect_json=False,
+                     max_tokens=4000):
+            self.calls += 1
+            if role == "worker":
+                return {"text": "交付物正文", "usage": {"total_tokens": 100}, "raw": {}}
+            if role == "planner":
+                return {"text": json.dumps({"summary": "s", "plan": [], "risks": []}),
+                        "usage": {"total_tokens": 10}, "raw": {}}
+            if role == "verifier":
+                self.budgets.append(max_tokens)
+                persona = ""
+                for candidate in ("strict", "skeptic", "completeness", "reader"):
+                    if candidate in prompt:
+                        persona = candidate
+                        break
+                self.persona_calls[persona] = self.persona_calls.get(persona, 0) + 1
+                truncating = persona == "skeptic" and (
+                    self.always or self.persona_calls[persona] <= self.truncate_first
+                )
+                if truncating:
+                    raise TruncatedAnswer(
+                        "the model stopped at the output token limit",
+                        usage={"total_tokens": 4000},
+                    )
+                return {
+                    "text": json.dumps({"verdict": "pass",
+                                        "scores": [{"id": "c1", "pass": True, "note": "ok"}]}),
+                    "usage": {"total_tokens": 100},
+                    "raw": {},
+                }
+            return {"text": "{}", "usage": {"total_tokens": 10}, "raw": {}}
+
+        def describe(self):
+            return {"provider": self.name, "model": self.model}
+
+    def _run(self, provider, reviewers=2, mode="all"):
+        # The state dir outlives the run: the ledger is the evidence.
+        tmp = tempfile.mkdtemp()
+        config = make_config(tmp)
+        config["budget"] = dict(config["budget"])
+        config["budget"]["max_iterations"] = 4
+        config["budget"]["max_tokens"] = 1000000
+        config["orchestration"] = {
+            "parallel_workers": 1,
+            "reviewers": reviewers,
+            "review_mode": mode,
+        }
+        engine = LoopEngine(config, provider=provider)
+        result = engine.run(
+            "写一段说明",
+            [{"id": "c1", "desc": "内容够好"}],
+            reviewers=reviewers,
+            review_mode=mode,
+        )
+        return result, engine
+
+    def test_a_truncated_reviewer_is_retried_and_the_loop_closes(self):
+        provider = self._Panel(truncate_first=1)
+        result, _engine = self._run(provider)
+        self.assertTrue(
+            result.closed,
+            "a truncation is a retryable failure, not a missing vote: "
+            + result.status + " / " + str(result.error),
+        )
+
+    def test_the_retry_gets_a_bigger_output_budget(self):
+        provider = self._Panel(truncate_first=1)
+        _result, _engine = self._run(provider)
+        self.assertGreaterEqual(len(provider.budgets), 2)
+        self.assertGreater(
+            provider.budgets[-1], provider.budgets[0],
+            "the retry must get more room than the attempt that was cut off",
+        )
+
+    def test_the_truncation_is_recorded_in_the_ledger(self):
+        provider = self._Panel(truncate_first=1)
+        _result, engine = self._run(provider)
+        rows = [r for r in engine.ledger.entries() if r.get("role") == "truncated"]
+        self.assertTrue(rows, "the truncation must be visible in the ledger")
+
+    def test_the_truncated_reviewer_is_not_counted_as_an_absent_vote(self):
+        provider = self._Panel(truncate_first=1)
+        _result, engine = self._run(provider)
+        rows = [r for r in engine.ledger.entries() if r.get("role") == "review"]
+        self.assertTrue(rows)
+        score = rows[-1]["scores"][0]
+        self.assertEqual(score.get("absent_votes"), 0)
+        self.assertEqual(score.get("votes"), "2/2")
+
+    def test_the_truncated_reviewer_call_is_charged_to_the_budget(self):
+        provider = self._Panel(truncate_first=1)
+        result, _engine = self._run(provider)
+        # The truncated reviewer really spent 4000 tokens, and the
+        # reviewer that did answer spent 100.
+        self.assertGreaterEqual(result.tokens_used, 4000)
+
+    def test_a_permanently_truncating_panel_still_ends_the_run(self):
+        # The retry cannot save a reviewer that never answers - but the
+        # run must still end with a clear reason instead of pretending
+        # the panel voted unanimously.
+        provider = self._Panel(always=True)
+        result, _engine = self._run(provider, reviewers=2)
+        self.assertFalse(result.closed)
+        self.assertGreaterEqual(result.iterations, 2)
+
+
 class TokenCeilingTest(unittest.TestCase):
     """The token ceiling must hold even when every answer is truncated."""
 
