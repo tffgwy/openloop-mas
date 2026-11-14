@@ -21,6 +21,7 @@ except ImportError:  # loaded as a top-level module (unittest -s tests)
 
 
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -143,11 +144,15 @@ class InstallerTest(unittest.TestCase):
         block = installer._codex_block_text(sys.executable)
         env = installer._codex_block_env(block)
         # The TOML table carries forward slashes: a backslash is an escape
-        # character inside a TOML basic string.
-        self.assertEqual(
-            env.get("PYTHONPATH", "").replace("/", "\\"),
-            str(installer.package_root().parent),
-        )
+        # character inside a TOML basic string. Only a Windows path has
+        # backslashes to begin with - on POSIX the path already uses forward
+        # slashes, and turning them into backslashes would name a file that
+        # does not exist.
+        expected = str(installer.package_root().parent)
+        found = env.get("PYTHONPATH", "")
+        if os.name == "nt":
+            found = found.replace("/", "\\")
+        self.assertEqual(found, expected)
         self.assertTrue(env.get("MAS_CONFIG_PATH", "").endswith("config.json"))
         self.assertEqual(len(env), 3, env)
 

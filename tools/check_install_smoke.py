@@ -19,6 +19,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -37,12 +38,17 @@ def main(argv: list[str]) -> int:
         return 1
     print(f"[OK] runtime installed: {app}")
 
+    # The runtime is started through its package path, so the package
+    # directory has to be on sys.path - the same way the MCP registration
+    # does it.
+    env = dict(os.environ, PYTHONPATH=str(app))
     version = subprocess.run(
         [sys.executable, "-X", "utf8", str(entry), "--version"],
         capture_output=True,
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=env,
         timeout=120,
     )
     if version.returncode != 0:
