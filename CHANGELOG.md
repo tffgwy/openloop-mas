@@ -4,6 +4,54 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.32] - 2026-11-14
+
+### Fixed
+
+The report could not tell "stopped" from "failed" from "unfinished".
+The engine never wrote its final status into the ledger, so the report
+had to *guess* the status from the closure rows - and the guess was
+wrong for every run that did not end on a decision.
+
+* **A run that stopped on the budget ceiling was reported as "not
+  closed".** That reads as "still unfinished", which is a different
+  thing entirely: the loop stopped, on purpose, with a reason. The
+  report now says ``budget_exhausted``.
+
+* **A run that died on a provider error was reported as
+  "incomplete".** The error was nowhere in the report. A run that
+  failed cannot be mistaken for a run that was never finished.
+
+* **The artifact of a failed run was invisible.** The artifact hash
+  lived on the closure row, and a run that failed before it was ever
+  scored has no closure row - so the report showed an empty artifact
+  and the reader could not find out what was actually made.
+
+* **The reason for the end was not shown.** The report now carries the
+  engine's own account of the ending: the status, the decision, the
+  error, the issue list, the iteration count and the spend.
+
+### Added
+
+* **The ledger states how the run ended.** Every run now ends with a
+  ``run_end`` entry that carries the status, the decision, the error,
+  the number of iterations, the artifact hash, the unresolved issues
+  and the total spend. The report reads that entry instead of
+  guessing, and the raw ledger table names the ending of every run.
+
+* ``run_summary()`` gained ``error`` and ``ended_at``.
+
+### Changed
+
+* The end entry is the engine's own account of the run, so it wins
+  over the closure rows wherever both exist. Ledgers written by older
+  versions have no such entry and still read correctly - the report
+  falls back to the old behaviour for them.
+
+* ``run_end`` is not a charge. The spend of a run is summed over the
+  call entries; the end entry carries the running total as a
+  checkpoint, exactly like the ``closure`` entry does.
+
 ## [0.7.31] - 2026-11-14
 
 ### Fixed

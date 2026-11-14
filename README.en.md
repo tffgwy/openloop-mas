@@ -7,6 +7,29 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.32 adds** (the report now states the status the run actually
+ended with):
+
+- The engine never wrote its final status into the ledger, so the report
+  had to *guess* it from the closure rows - and the guess was wrong for
+  every run that did not end on a decision.
+- A run that stopped on the budget ceiling was reported as "not closed",
+  which reads as "merely unfinished"; it now says `budget_exhausted`.
+- A run that died on a provider error was reported as "incomplete" with
+  no reason attached; it now says `error` and shows the reason.
+- The artifact of a failed run was invisible: the hash lived on the
+  closure row, and a run that failed before it was ever scored has no
+  closure row at all, so the report showed an empty artifact.
+- Every run now ends with a `run_end` ledger entry carrying the status,
+  the decision, the error, the iteration count, the artifact hash, the
+  unresolved issues and the total spend. The report reads that entry
+  instead of guessing, and the raw ledger table names the ending of
+  every run. Ledgers written by older versions still read correctly.
+- Fifteen regression tests. Verified: reverting each fix one at a time
+  -> all five reverts are caught by the tests. A real run against the
+  local bridge closes the loop, the report states the same status as
+  the run, and engine = ledger = report agree on the spend to the token.
+
 **What v0.7.31 adds** (making the ledger answer "how much did this run
 spend" on its own):
 

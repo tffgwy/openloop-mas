@@ -502,6 +502,11 @@ class LoopEngine:
         stagnant = 0
         last_sha = ""
         plan_payload: Dict[str, Any] = {}
+        # The decision of the last scoring round. A run that never
+        # reached a scoring round - it hit the budget ceiling on its
+        # first iteration - still has to be described in the ledger, so
+        # the value starts out empty instead of being undefined.
+        decision = ""
 
         while True:
             if attempt >= max_iterations:
@@ -857,6 +862,27 @@ class LoopEngine:
                 )
                 status = STATUS_ERROR
                 break
+
+        # The ledger has to say how the run ended. Without this entry the
+        # report could only *guess* the status from the closure rows: a
+        # run that stopped on the budget ceiling looked like a run that
+        # simply had not closed yet, and a run that died on a provider
+        # error looked like a run that was still going. The replay could
+        # not tell "stopped", "failed" and "unfinished" apart - and a
+        # report that cannot tell them apart cannot explain a run.
+        self._log(
+            run_id, task_id, attempt, "run_end",
+            {
+                "status": status,
+                "decision": decision,
+                "error": error,
+                "iterations": attempt,
+                "closed": status == STATUS_CLOSED,
+                "artifact_sha": sha256_text(artifact) if artifact else "",
+                "issues": list(issues),
+                "tokens_total": int(tokens),
+            },
+        )
 
         return RunResult(
             run_id=run_id,

@@ -77,6 +77,7 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     planner = None
     candidates = None
     review = None
+    run_end = None
     errors: List[str] = []
     roles: Dict[str, int] = {}
     for row in rows:
@@ -90,6 +91,8 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             candidates = row
         elif role == "review":
             review = row
+        elif role == "run_end":
+            run_end = row
         elif role == "error":
             errors.append(str(row.get("error", "")))
 
@@ -113,7 +116,18 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     # stays available separately.
     last_verdict = str(closure.get("verdict") or "") if closure else ""
     decision = str(closure.get("decision") or "")
-    if not closure:
+    # The ledger states how the run ended. The report used to *guess*
+    # the status from the closure rows alone, and the guess was wrong
+    # for every run that did not end on a decision: a run that stopped
+    # on the budget ceiling was reported as "not closed" - as if it were
+    # merely unfinished - and a run that died on a provider error was
+    # reported as "incomplete". A replay that cannot tell "stopped",
+    # "failed" and "unfinished" apart cannot explain a run.
+    end = run_end or {}
+    if end:
+        status = str(end.get("status") or "")
+        decision = str(end.get("decision") or "") or decision
+    elif not closure:
         status = "incomplete"
     elif closure.get("closed"):
         status = "closed"
@@ -127,13 +141,20 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "status": status,
         "verdict": last_verdict,
         "decision": decision,
-        "closed": bool(closure.get("closed")),
+        # The end entry is the engine's own account of the run, so it
+        # wins over the closure rows wherever both exist. The closure
+        # row describes the last *scored* iteration; a run that died on
+        # a provider error after producing an artifact still has one,
+        # and a report that hides it cannot show what was actually made.
+        "closed": bool(end.get("closed")) if end else bool(closure.get("closed")),
         "iterations": closure.get("iteration") or rows[-1].get("iteration") if rows else 0,
-        "artifact_sha": str(closure.get("artifact_sha") or ""),
+        "artifact_sha": str(
+            (end.get("artifact_sha") if end else "") or closure.get("artifact_sha") or ""
+        ),
         "scores": scores,
         "failed": failed,
         "optional_failed": optional_failed,
-        "issues": list(closure.get("issues") or []),
+        "issues": list((end.get("issues") if end else None) or closure.get("issues") or []),
         "roles": roles,
         "plan": (planner or {}).get("plan") or {},
         "candidates": (candidates or {}).get("candidates") or [],
@@ -148,6 +169,9 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             "missing": (review or {}).get("missing"),
         },
         "errors": errors,
+        # Why the run ended the way it did - the engine's own account.
+        "error": str(end.get("error") or ""),
+        "ended_at": str(end.get("ts") or ""),
         # What the run cost. The report could not answer this before:
         # the figure only existed in the engine's memory, so a replay
         # of the ledger could not say how much a run spent.
@@ -325,6 +349,14 @@ def _short_detail(row: Dict[str, Any]) -> str:
         )
     if role == "error":
         return str(row.get("error", ""))[:300]
+    if role == "run_end":
+        # The ledger table must say how the run ended - the same
+        # sentence the report gives, so the two never contradict.
+        detail = f"status={row.get('status')} decision={row.get('decision') or '-'}"
+        reason = str(row.get("error") or "")
+        if reason:
+            detail += f" | {reason}"
+        return detail[:300]
     if role == "planner":
         plan = row.get("plan") or {}
         return str(plan.get("summary", ""))[:300]
