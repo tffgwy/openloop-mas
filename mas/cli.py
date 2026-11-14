@@ -25,7 +25,14 @@ from mas.installer import (
 )
 from mas.orchestration import CANDIDATE_ANGLES
 from mas.relay import serve_relay
-from mas.report import build_report, ledger_markdown, render_markdown, replay_trace
+from mas.report import (
+    build_report,
+    group_runs,
+    ledger_markdown,
+    render_markdown,
+    replay_trace,
+    run_summary,
+)
 from mas.setup import format_verify, run_verify, run_wizard
 from mas.teams import list_teams, load_team
 from mas.util import force_utf8_output, parse_criterion_shorthand
@@ -202,6 +209,11 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 0 if result.closed else 2
     print(f"状态：{result.status}（迭代 {result.iterations} 次，token {result.tokens_used}）")
     print(f"账本：{result.ledger_path}")
+    # Say where the deliverable landed. The preview below is a teaser;
+    # the file is the product, and the user has to be able to open it
+    # without going hunting through the state directory.
+    if result.artifact_path:
+        print(f"交付物：{result.artifact_path}")
     for score in result.scores:
         flag = "PASS" if score["pass"] else "FAIL"
         optional = "" if score.get("blocking", True) else "，可选"
@@ -295,6 +307,11 @@ def cmd_resume(args: argparse.Namespace) -> int:
         _print(result.to_dict(), True)
     else:
         print(f"状态：{result.status}（迭代 {result.iterations} 次）")
+        # A resumed loop is the expected path for an escalated run, so
+        # its result was the one most likely to be lost. Say where the
+        # deliverable is.
+        if result.artifact_path:
+            print(f"交付物：{result.artifact_path}")
         for score in result.scores:
             flag = "PASS" if score["pass"] else "FAIL"
             optional = "" if score.get("blocking", True) else "，可选"
@@ -304,6 +321,59 @@ def cmd_resume(args: argparse.Namespace) -> int:
             # knows the escalation did not disappear.
             print(f"工单 {args.ticket_id} 仍未解决，仍在人工队列里：mas tickets")
     return 0 if result.closed else 2
+
+
+def cmd_artifacts(args: argparse.Namespace) -> int:
+    """List the deliverables this machine has produced.
+
+    The state directory held the answers and no command could list
+    them. A user who closed the terminal had no way back to their own
+    results - the ledger was a log of calls, the report a review of a
+    run, and neither answered the only question that matters after a
+    while: "what did I actually get?"
+    """
+    config = load_config()
+    engine = _engine(config)
+    rows = engine.ledger.entries()
+    if args.run_id:
+        rows = [row for row in rows if row.get("run_id") == args.run_id]
+    items = []
+    for group in group_runs(rows):
+        summary = run_summary(group["run_id"], group["rows"])
+        path = str(summary.get("artifact_path") or "")
+        if not path:
+            continue
+        target = pathlib.Path(path)
+        items.append(
+            {
+                "run_id": summary["run_id"],
+                "status": summary["status"],
+                "path": path,
+                "exists": target.exists(),
+                "chars": int(summary.get("artifact_chars") or 0),
+                "tokens": int(summary.get("tokens") or 0),
+                "iterations": int(summary.get("iterations") or 0),
+                "finished_at": summary.get("finished_at") or "",
+            }
+        )
+    if args.json:
+        _print({"artifacts": items, "count": len(items)}, True)
+        return 0
+    if not items:
+        print("还没有任何交付物。跑一次 `mas run` 就会生成。")
+        return 0
+    print(f"共 {len(items)} 份交付物：")
+    for item in items:
+        flag = "OK " if item["exists"] else "缺失"
+        print(
+            f"  [{flag}] {item['run_id']}  {item['status']:<12} "
+            f"{item['chars']:>6} 字  {item['iterations']} 轮  {item['path']}"
+        )
+    missing = [i for i in items if not i["exists"]]
+    if missing:
+        print()
+        print(f"⚠ 有 {len(missing)} 份交付物文件已不在原处（可能被人删了或换了目录）。")
+    return 0
 
 
 def cmd_report(args: argparse.Namespace) -> int:
@@ -535,6 +605,11 @@ def build_parser() -> argparse.ArgumentParser:
     resume.add_argument("--note", default="")
     add_json(resume)
     resume.set_defaults(func=cmd_resume)
+
+    artifacts = sub.add_parser("artifacts", help="列出本机产出的交付物")
+    artifacts.add_argument("--run-id", help="只看某一次运行")
+    add_json(artifacts)
+    artifacts.set_defaults(func=cmd_artifacts)
 
     report = sub.add_parser("report", help="生成闭环复盘报告（Markdown）")
     report.add_argument("--run-id", help="只报告某一次运行")

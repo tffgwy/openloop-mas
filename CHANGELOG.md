@@ -4,6 +4,51 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.45] - 2026-11-15
+
+### Added
+
+v0.7.44 made the deliverable survive the process. v0.7.45 makes it
+*reachable*. The gap was measured, not guessed: the CLI printed a
+1500-character **preview** of the artifact and the ledger path - never
+the path of the file a human can actually open - and nothing at all
+could list the deliverables of previous runs. A beginner who ran one
+loop, closed the terminal and came back a week later had no way to ask
+the only question that matters then: "what did I actually get?"
+
+* **``mas run`` and ``mas resume`` name the file.** Both now print
+  ``交付物：<path>`` under the ledger line. ``resume`` matters most:
+  a resumed loop is the expected path for an escalated run, so its
+  result was the one most likely to be lost.
+
+* **``mas artifacts`` lists every deliverable this machine produced.**
+  New subcommand. It reads the ledger, groups the runs and prints one
+  line per deliverable: the run id, the status, the character count,
+  the number of rounds, the path, and whether the file is still there.
+  ``--run-id`` narrows it to a single run.
+
+* **``mas artifacts --json`` gives the same rows as data.**
+  ``{"artifacts": [...], "count": N}``, each row carrying ``run_id``,
+  ``status``, ``path``, ``exists``, ``chars``, ``tokens``,
+  ``iterations`` and ``finished_at``.
+
+* **A missing file is called out, not hidden.** If a deliverable was
+  deleted or moved, the listing says so - "缺失" next to the row and a
+  warning at the bottom. A listing that silently dropped the rows it
+  could not open would be a listing that lies about what exists.
+
+* **An empty state says what to do.** Instead of printing nothing, the
+  command says "还没有任何交付物。跑一次 `mas run` 就会生成。"
+
+### Tests
+
+Fifteen new tests in ``tests/test_artifacts_cli.py`` cover the path:
+the run announces the file, the announced file exists and is the one
+the report names, ``resume`` announces it too, the JSON output carries
+it, the listing counts, filters, reports missing files, and says what
+to do when there is nothing yet. Six layers were counter-proven by
+reverting each on its own and confirming the matching tests fail.
+
 ## [0.7.44] - 2026-11-15
 
 ### Added

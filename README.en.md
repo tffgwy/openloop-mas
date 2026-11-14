@@ -7,6 +7,27 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.45 adds** (the user can find the deliverable):
+
+- **The deliverable survived, but nobody could find it.** v0.7.44 made the
+  artifact outlive the process, but the CLI printed a 1500-character
+  *preview* and the ledger path - never the path of the file a human can
+  open - and nothing could list the deliverables of previous runs. A
+  beginner who came back a week later could not even ask "what did I
+  actually get?"
+- **`mas run` and `mas resume` name the file.** Both print
+  `交付物：<path>` under the ledger line. `resume` matters most: a
+  resumed loop is the expected path for an escalated run, so its result
+  was the one most likely to be lost.
+- **New `mas artifacts` subcommand**: lists every deliverable this
+  machine produced - one line each, with the run id, status, character
+  count, number of rounds, path, and whether the file is still there.
+  `--run-id` narrows it to one run.
+- **`--json` gives the same rows as data**, and a deleted deliverable
+  is called out ("缺失") instead of being silently dropped.
+- Fifteen new regression tests, six layers counter-proven by reverting
+  each on its own.
+
 **What v0.7.44 adds** (the deliverable actually survives the process):
 
 - **A closed loop left no deliverable behind.** The artifact lived in

@@ -91,6 +91,7 @@ mas run --goal "写一份发布说明" --criteria-file criteria.json \
 mas report              # 最近一次运行的 Markdown 报告
 mas replay <run_id>    # 按账本逐轮回放每一步输入输出
 mas export --format json   # 导出账本
+mas artifacts           # 列出本机产出的全部交付物（路径、字数、是否还在）
 ```
 
 HTTP/SSE 供外部系统接入：
