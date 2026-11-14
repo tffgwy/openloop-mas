@@ -24,6 +24,7 @@ check fall back to the model verifier's judgement.
 from __future__ import annotations
 
 import json
+import pathlib
 import re
 import time
 import uuid
@@ -150,6 +151,9 @@ class RunResult:
     ticket_id: Optional[str] = None
     tokens_used: int = 0
     ledger_path: str = ""
+    # Where the finished deliverable was written. Empty when the run
+    # produced no artifact at all.
+    artifact_path: str = ""
     history: List[Dict[str, Any]] = field(default_factory=list)
     started_at: str = ""
     finished_at: str = ""
@@ -180,6 +184,7 @@ class RunResult:
             "ticket_id": self.ticket_id,
             "tokens_used": self.tokens_used,
             "ledger_path": self.ledger_path,
+            "artifact_path": self.artifact_path,
             "history": self.history,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
@@ -454,6 +459,19 @@ class LoopEngine:
     @classmethod
     def tickets_dir(cls, config: Dict[str, Any]) -> str:
         return str(cls.state_root(config) / "tickets")
+
+    @classmethod
+    def artifacts_dir(cls, config: Dict[str, Any]) -> str:
+        """Where the finished deliverables live.
+
+        The deliverable used to exist only in the engine's memory: the
+        ledger booked its hash, the report printed its hash, and the
+        moment the process ended the work was gone. A closed loop is
+        supposed to hand something over, so the artifact is written to
+        disk next to the ledger and the path is booked on the run's end
+        entry.
+        """
+        return str(cls.state_root(config) / "artifacts")
 
     # ------------------------------------------------------------------- main
     def run(
@@ -979,6 +997,12 @@ class LoopEngine:
         # error looked like a run that was still going. The replay could
         # not tell "stopped", "failed" and "unfinished" apart - and a
         # report that cannot tell them apart cannot explain a run.
+        # Write the deliverable to disk before the run is booked as
+        # ended. A run that says "closed" has to leave something behind
+        # that the user can open - a green light with nothing behind it
+        # is not a handover.
+        artifact_path = self._save_artifact(run_id, artifact)
+
         self._log(
             run_id, task_id, attempt, "run_end",
             {
@@ -997,6 +1021,11 @@ class LoopEngine:
                 # reached the report.
                 "ticket_id": ticket_id or "",
                 "artifact_sha": sha256_text(artifact) if artifact else "",
+                # Where the deliverable was written. Without it the
+                # report can only print a hash, and a hash is not
+                # something a human can open.
+                "artifact_path": artifact_path,
+                "artifact_chars": len(artifact),
                 "issues": list(issues),
                 "tokens_total": int(tokens),
             },
@@ -1014,6 +1043,7 @@ class LoopEngine:
             ticket_id=ticket_id,
             tokens_used=tokens,
             ledger_path=str(self.ledger.path),
+            artifact_path=artifact_path,
             history=history,
             started_at=started_at,
             finished_at=now_iso(),
@@ -1645,6 +1675,34 @@ class LoopEngine:
 
 
     # --------------------------------------------------------------- helpers
+    def _save_artifact(self, run_id: str, artifact: str) -> str:
+        """Write the final deliverable to disk and return its path.
+
+        The artifact is the whole point of the loop. Keeping it in
+        memory only meant that a successful run left nothing behind
+        for the user to open - the report could point at a hash, and a
+        hash is not a deliverable. The file is written next to the
+        ledger, named after the run, so every run has its own.
+
+        A write that fails must not take the run down: the work is
+        done, the artifact is in memory, and a closed loop that loses
+        its file because of a permission problem would be reported as
+        a crash of the loop itself.
+        """
+        if not artifact:
+            return ""
+        try:
+            target_dir = pathlib.Path(self.artifacts_dir(self.config))
+            target_dir.mkdir(parents=True, exist_ok=True)
+            safe_run = "".join(
+                ch if (ch.isalnum() or ch in "-_") else "_" for ch in str(run_id)
+            )
+            target = target_dir / f"{safe_run}.md"
+            target.write_text(artifact, encoding="utf-8")
+            return str(target)
+        except OSError:
+            return ""
+
     def _log(self, run_id: str, task_id: str, iteration: int, role: str,
              payload: Dict[str, Any]) -> None:
         entry = {

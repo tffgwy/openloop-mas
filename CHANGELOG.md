@@ -4,6 +4,47 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.44] - 2026-11-15
+
+### Added
+
+A closed loop is supposed to hand something over. The deliverable
+lived in the engine's memory and nowhere else: the ledger booked its
+hash, the report printed its hash, and the moment the process ended the
+work was gone. A beginner who ran ``mas run``, saw a green light and
+closed the terminal had a verdict and no deliverable.
+
+* **The deliverable is written to disk.** Every run now saves its
+  final artifact under ``<state_dir>/artifacts/<run_id>.md``, next to
+  the ledger, named after the run. The engine writes it before the run
+  is booked as ended, so a run that says "closed" has always left a
+  file behind.
+
+* **The path is booked on the run's end entry.** The ledger carries
+  ``artifact_path`` and ``artifact_chars``, so a replay can find the
+  work without guessing. ``RunResult`` carries the path too, and the
+  JSON output of ``mas run`` includes it.
+
+* **The report names the file.** The report used to print a hash and
+  stop there - a hash is a fingerprint, not something a human can open.
+  It now says "交付物已保存：`<path>`（N 字，可直接打开取用）", so the
+  report points at the work and not only at its fingerprint.
+
+* **A failed write does not take the run down.** The work is done and
+  the artifact is in memory; a closed loop that lost its file to a
+  permission problem would be reported as a crash of the loop itself.
+  The write is best effort, and the run is unaffected.
+
+### Tests
+
+Nine new tests in ``tests/test_deliverable_persists.py`` cover the
+chain: the deliverable is written to disk, the file holds the whole
+artifact, it lives next to the ledger, the ledger books the path and
+its length, the report names the file, the result dict carries it, two
+runs get two different files, and a run that produced nothing invents
+no path. Six layers were counter-proven by reverting each on its own
+and confirming the matching tests fail.
+
 ## [0.7.43] - 2026-11-15
 
 ### Added

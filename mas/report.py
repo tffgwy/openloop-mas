@@ -357,6 +357,11 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         # a ticket number tells the human that something went wrong but
         # not where to act on it.
         "ticket_id": str(end.get("ticket_id") or "") if end else "",
+        # Where the deliverable was written. The report used to print
+        # the hash and stop there - a hash is a fingerprint, not
+        # something a human can open. Now the report names the file.
+        "artifact_path": str(end.get("artifact_path") or "") if end else "",
+        "artifact_chars": int(end.get("artifact_chars") or 0) if end else 0,
         "verdict": last_verdict,
         "decision": decision,
         # The end entry is the engine's own account of the run, so it
@@ -508,6 +513,16 @@ def render_markdown(report: Dict[str, Any]) -> str:
             lines.append(
                 f"- 人工工单：`{run.get('ticket_id')}`"
                 "（`mas tickets` 查看，`mas resume <工单号>` 从这里继续）"
+            )
+        # Where the work landed. The deliverable used to live only in
+        # the engine's memory: the report could print its hash and
+        # nothing else, so a closed run pointed at nothing the reader
+        # could open.
+        if run.get("artifact_path"):
+            chars = int(run.get("artifact_chars") or 0)
+            lines.append(
+                f"- 交付物已保存：`{run.get('artifact_path')}`"
+                f"（{chars} 字，可直接打开取用）"
             )
         # The loop, round by round. The verdict of the last round was
         # the only one the report showed, so a run that revised itself

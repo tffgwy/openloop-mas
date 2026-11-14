@@ -7,6 +7,27 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.44 adds** (the deliverable actually survives the process):
+
+- **A closed loop left no deliverable behind.** The artifact lived in
+  the engine's memory and nowhere else: the ledger booked its hash, the
+  report printed its hash, and the moment the process ended the work was
+  gone. A beginner who saw a green light and closed the terminal had a
+  verdict and no deliverable. Every run now saves its final artifact to
+  `<state_dir>/artifacts/<run_id>.md`, next to the ledger, named after
+  the run.
+- **The path is booked on the run's end entry** (`artifact_path` and
+  `artifact_chars`), so a replay can find the work, and `mas run --json`
+  carries it too.
+- **The report names the file** - "交付物已保存：`<path>`（N 字，可直接打开
+  取用）" - because a hash is a fingerprint, not something a human can
+  open.
+- **A failed write does not take the run down**: the work is done and the
+  artifact is in memory, so a lost file must not be reported as a crash
+  of the loop itself.
+- Nine new regression tests, six layers counter-proven by reverting each
+  on its own.
+
 **What v0.7.43 adds** (the report shows the loop, not only its last turn):
 
 - **Only the last round was shown.** The engine writes one closure row
