@@ -97,6 +97,27 @@ def user_config_path() -> pathlib.Path:
     return pathlib.Path(os.path.expanduser(DEFAULT_STATE_DIR)).resolve() / CONFIG_FILENAME
 
 
+def effective_config_path(config: Dict[str, Any] | None = None) -> pathlib.Path:
+    """The configuration file the runtime will *actually* read.
+
+    ``load_config`` prefers the well-known location but falls back to the
+    v0.1 location (next to the state directory) when the well-known file
+    does not exist. Anything that has to point a *different process* at
+    the same configuration - the MCP registration, for example - needs
+    that exact file, not the default one. Guessing wrong here means the
+    host starts a server that silently runs against another provider.
+    """
+    if config is None:
+        config = load_config()
+    well_known = user_config_path()
+    if well_known.exists():
+        return well_known
+    legacy = config_path(config)
+    if legacy.exists() and legacy != well_known:
+        return legacy
+    return well_known
+
+
 def load_config(
     path: str | os.PathLike | None = None,
     *,

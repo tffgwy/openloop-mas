@@ -61,7 +61,13 @@ class InstallerTest(unittest.TestCase):
         self.assertEqual(state, "registered")
         text = (self.home / ".codex" / "config.toml").read_text(encoding="utf-8")
         self.assertIn("[mcp_servers.mas_loop]", text)
-        self.assertIn('"-m", "mas", "serve"', text)
+        self.assertIn('"serve"', text)
+        # The entry point is named by absolute path, not as ``-m mas``:
+        # ``python -m`` puts the host's working directory first on
+        # ``sys.path``, and a directory containing a ``mas`` package
+        # would shadow the installed runtime.
+        self.assertNotIn('"-m", "mas"', text)
+        self.assertIn("__main__.py", text)
 
     def test_mcp_registration_is_idempotent(self):
         installer._register_codex(sys.executable)
@@ -75,7 +81,11 @@ class InstallerTest(unittest.TestCase):
         self.assertEqual(state, "registered")
         data = json.loads((self.home / ".claude.json").read_text(encoding="utf-8"))
         self.assertIn("mas_loop", data["mcpServers"])
-        self.assertEqual(data["mcpServers"]["mas_loop"]["args"], ["-m", "mas", "serve"])
+        args = data["mcpServers"]["mas_loop"]["args"]
+        self.assertEqual(len(args), 2)
+        self.assertEqual(args[1], "serve")
+        self.assertTrue(args[0].endswith("__main__.py"), args)
+        self.assertTrue(pathlib.Path(args[0]).exists(), args)
 
     def test_claude_registration_keeps_the_existing_config(self):
         config = self.home / ".claude.json"
@@ -99,6 +109,72 @@ class InstallerTest(unittest.TestCase):
         self.assertEqual(state, "registered")
         data = json.loads(config.read_text(encoding="utf-8"))
         self.assertIn("mas_loop", data["mcpServers"])
+
+    def test_the_registration_carries_the_configuration_location(self):
+        """The MCP server must read *this* installation's configuration.
+
+        Without MAS_CONFIG_PATH the server falls back to the well-known
+        ``~/.mas/config.json`` while the launcher reads the installation's
+        own file - the CLI and the agent would then use two different
+        providers.
+        """
+        state, _ = installer._register_codex(sys.executable)
+        self.assertEqual(state, "registered")
+        env = installer._codex_block_env(
+            (self.home / ".codex" / "config.toml").read_text(encoding="utf-8")
+        )
+        self.assertIn("PYTHONPATH", env)
+        self.assertIn("MAS_CONFIG_PATH", env)
+        self.assertTrue(env["MAS_CONFIG_PATH"].endswith("config.json"))
+
+    def test_the_claude_registration_carries_the_configuration_location(self):
+        installer._register_claude(sys.executable)
+        data = json.loads((self.home / ".claude.json").read_text(encoding="utf-8"))
+        env = data["mcpServers"]["mas_loop"]["env"]
+        self.assertIn("MAS_CONFIG_PATH", env)
+        self.assertIn("MAS_STATE_DIR", env)
+
+    def test_the_env_line_is_parsed_key_by_key(self):
+        """A multi-key env table must not swallow its own tail.
+
+        A greedy match produced a garbage PYTHONPATH, which made the
+        registration look dead and made every install rewrite it.
+        """
+        block = installer._codex_block_text(sys.executable)
+        env = installer._codex_block_env(block)
+        # The TOML table carries forward slashes: a backslash is an escape
+        # character inside a TOML basic string.
+        self.assertEqual(
+            env.get("PYTHONPATH", "").replace("/", "\\"),
+            str(installer.package_root().parent),
+        )
+        self.assertTrue(env.get("MAS_CONFIG_PATH", "").endswith("config.json"))
+        self.assertEqual(len(env), 3, env)
+
+    def test_an_old_registration_without_the_config_path_is_refreshed(self):
+        """A registration that only sets PYTHONPATH is refreshed.
+
+        It could still start the server, but it would read the wrong
+        configuration - "works" is not the same as "right".
+        """
+        config = self.home / ".codex" / "config.toml"
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(
+            "[mcp_servers.mas_loop]\n"
+            f'command = "{sys.executable}"\n'
+            'args = ["-m", "mas", "serve"]\n'
+            f'env = {{ PYTHONPATH = "{installer.package_root().parent}" }}\n',
+            encoding="utf-8",
+        )
+        state, _ = installer._register_codex(sys.executable)
+        self.assertEqual(state, "updated")
+        env = installer._codex_block_env(config.read_text(encoding="utf-8"))
+        self.assertIn("MAS_CONFIG_PATH", env)
+
+    def test_a_complete_registration_is_left_alone(self):
+        installer._register_codex(sys.executable)
+        state, _ = installer._register_codex(sys.executable)
+        self.assertEqual(state, "already")
 
     def test_run_install_reports_both_hosts(self):
         report = installer.run_install()
@@ -263,6 +339,38 @@ class SkillSyncTest(unittest.TestCase):
         report = installer.run_sync()
         self.assertTrue(report.get("backups"))
 
+    def test_a_crlf_copy_is_not_drift(self):
+        """Windows line endings must not read as a content change.
+
+        A checkout with ``core.autocrlf=true`` turns the packaged LF
+        files into CRLF. The text is identical, so the copy is *not*
+        drift - and a sync must not keep replacing it.
+        """
+        installer.install_skills()
+        target = self.home / ".codex" / "skills" / "mas-loop" / "SKILL.md"
+        raw = target.read_bytes().replace(b"\r\n", b"\n")
+        target.write_bytes(raw.replace(b"\n", b"\r\n"))
+        report = installer.skill_sync_report()
+        drifted = [r for r in report["rows"] if r["status"] == "drift"]
+        self.assertEqual(drifted, [], drifted)
+
+    def test_a_skill_backup_never_lands_in_the_skills_root(self):
+        """A backup inside a skills root looks like an installed skill.
+
+        Every host that scans its skills directory would offer the
+        backup as a skill, and the drift detector would see an unknown
+        copy. The backup therefore goes to ``~/.mas/backup/skills``.
+        """
+        installer.install_skills()
+        target = self.home / ".codex" / "skills" / "mas-loop" / "SKILL.md"
+        target.write_text("edited by hand\n", encoding="utf-8")
+        report = installer.run_sync()
+        self.assertTrue(report.get("backups"))
+        leftovers = list((self.home / ".codex" / "skills").glob("mas-loop.bak-*"))
+        self.assertEqual(leftovers, [], leftovers)
+        stored = list((self.home / ".mas" / "backup" / "skills").rglob("mas-loop.bak-*"))
+        self.assertTrue(stored, "the backup was not kept outside the skills root")
+
     def test_sync_on_a_fresh_install_is_a_no_op(self):
         installer.install_skills()
         report = installer.run_sync()
@@ -395,7 +503,12 @@ class UsableRegistrationTest(unittest.TestCase):
             encoding="utf-8",
         )
         state, _ = installer._register_codex(sys.executable)
-        self.assertEqual(state, "already", "a working registration must be kept")
+        # The registration can start the server, but it does not say which
+        # configuration to read. It is therefore refreshed - "works" is not
+        # the same as "works against the right configuration".
+        self.assertEqual(state, "updated")
+        env = installer._codex_block_env(config.read_text(encoding="utf-8"))
+        self.assertIn("MAS_CONFIG_PATH", env)
 
     def test_a_registration_without_a_package_path_falls_back_to_the_interpreter(self):
         # A pip-installed package needs no PYTHONPATH; the interpreter
@@ -409,7 +522,11 @@ class UsableRegistrationTest(unittest.TestCase):
             encoding="utf-8",
         )
         state, _ = installer._register_codex(sys.executable)
-        self.assertEqual(state, "already")
+        # A pip-installed package needs no PYTHONPATH - but the
+        # registration still has to name the configuration to read.
+        self.assertEqual(state, "updated")
+        env = installer._codex_block_env(config.read_text(encoding="utf-8"))
+        self.assertIn("MAS_CONFIG_PATH", env)
 
     def test_a_registration_pointing_at_a_missing_package_is_refreshed(self):
         config = self.home / ".codex" / "config.toml"

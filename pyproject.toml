@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openloop-mas"
-version = "0.7.16"
+version = "0.7.17"
 description = "A loop-engineering runtime for multi-agent systems: closure, verification, budgets and an auditable ledger."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -21,6 +21,13 @@ Issues = "https://github.com/tffgwy/openloop-mas/issues"
 mas = "mas.cli:main"
 mas-mcp = "mas.mcp_server:main"
 mas-http = "mas.http_server:main"
+
+[tool.pytest.ini_options]
+# Only the test package is a test suite. ``work/`` holds throwaway scripts
+# used while developing; pytest used to collect them and fail the run on
+# their import errors - a failure in a scratch file, not in the product.
+testpaths = ["tests"]
+norecursedirs = ["work", "build", "dist", "site", "outputs", ".git", "*.egg-info"]
 
 [tool.setuptools]
 # `mas.skills` and `mas.teams` hold data, not importable code, but

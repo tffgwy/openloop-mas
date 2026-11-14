@@ -19,6 +19,38 @@
 
 ## 1. 安装
 
+### 1.1 只下载一个脚本（初学者推荐）
+
+**不需要 git、不需要 pip、不需要编译工具**——把一个脚本文件下载到任意目录，
+执行它就行。脚本会自己从 GitHub Release 拉取已发布的 wheel 并装好。
+
+Windows：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+macOS / Linux：
+
+```bash
+bash install.sh
+```
+
+固定版本（默认装最新版）：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.17
+```
+
+```bash
+MAS_VERSION=0.7.17 bash install.sh
+```
+
+> 下载路径是「标准库优先、`curl` 兜底」，并会读 `HTTPS_PROXY` 与
+> Windows 系统代理设置——所以在公司网络或需要代理的机器上也能直接跑。
+
+### 1.2 从源码安装（适合开发）
+
 ```bash
 git clone https://github.com/tffgwy/openloop-mas.git
 cd openloop-mas
@@ -36,14 +68,28 @@ macOS / Linux：
 bash install.sh
 ```
 
-安装器做四件事：
+### 1.3 安装器做了什么
 
-1. 定位 Python ≥ 3.10；
-2. 把运行时拷到 `~/.mas/app`，在 `~/.mas/bin/mas.cmd`（Windows）生成启动器并加入用户 PATH；
-3. 把 `mas-loop` / `mas-review` / `mas-scaffold` 三个 Skill 装进本机找到的所有 skill 目录；
-4. 把 MCP 服务注册进 `~/.codex/config.toml` 与 `~/.claude.json`（注册前自动备份）。
+1. 定位 Python ≥ 3.10，并把解释器路径归一成绝对路径再写进注册；
+2. 把运行时放到 `~/.mas/app`——有源码就拷源码，没有源码就下载并解开已发布的
+   wheel；并在 `~/.mas/bin/`（Windows 是 `mas.cmd`）生成启动器、加入用户 PATH；
+3. 把 `mas-loop` / `mas-review` / `mas-scaffold` 三个 Skill 装进本机找到的所有
+   skill 目录；
+4. 把 MCP 服务注册进 `~/.codex/config.toml` 与 `~/.claude.json`（注册前自动备份），
+   注册里同时写明**运行时路径**和**配置文件位置**，宿主进程不会去读别人的配置。
 
-可选开关：`-SkipPath` / `-SkipMcp` / `-SkipSkills` / `-SkipDemo`；`-Python` 指定解释器；`-InstallDir` 指定安装根。
+可选开关：
+
+| 开关 | PowerShell | shell |
+| --- | --- | --- |
+| 不动 PATH | `-SkipPath` | `MAS_SKIP_PATH=1` |
+| 不注册 MCP | `-SkipMcp` | — |
+| 不装 Skill | `-SkipSkills` | — |
+| 跳过演示与自检 | `-SkipDemo` | — |
+| 指定解释器 | `-Python <路径>` | `MAS_PYTHON=<路径>` |
+| 指定安装根 | `-InstallDir <路径>` | `MAS_HOME=<路径>` |
+| 指定版本 | `-Version <版本>` | `MAS_VERSION=<版本>` |
+| 用本地 wheel | `-Wheel <路径>` | `MAS_WHEEL=<路径>` |
 
 验证：
 

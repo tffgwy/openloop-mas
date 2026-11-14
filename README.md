@@ -226,7 +226,38 @@ mas sync           # 把已安装的 skills 同步回包内版本
 
 > 想看它装了什么，加 `--json`。
 
-### 方式二：从源码安装
+### 方式二：只下载一个脚本（零依赖，最适合初学者）
+
+不用 clone、不用 pip、不用自己装任何东西——**下载一个脚本文件**，双击/执行它就行：
+
+```powershell
+# Windows：下载 install.ps1 到任意目录，然后执行
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+```bash
+# macOS / Linux：下载 install.sh 到任意目录，然后执行
+bash install.sh
+```
+
+脚本会自己从 GitHub Release 拉取已发布的 wheel、用标准库解开、装到
+`~/.mas/`，然后注册 MCP 服务器和 skills，最后跑一遍离线自检。
+**只需要机器上有 Python 3.10+，不需要 git，不需要 pip，不需要编译工具。**
+
+想装固定版本（而不是"最新版"）：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.17
+```
+
+```bash
+MAS_VERSION=0.7.17 bash install.sh
+```
+
+> 脚本默认会往 `PATH` 里加一条 `~/.mas/bin`（Windows 写当前用户的注册表）。
+> 不想动 `PATH` 就加 `-SkipPath`（Windows）或 `MAS_SKIP_PATH=1`（shell）。
+
+### 方式三：从源码安装（适合开发）
 
 ```bash
 git clone https://github.com/tffgwy/openloop-mas.git
@@ -242,7 +273,8 @@ mas demo
 ```
 
 > `install.ps1` / `install.sh` 与 `mas install` 做的是同一件事，
-> 前者适合从源码装（含开发环境），后者适合 pip 安装后的机器。
+> 前者适合从源码装（含开发环境）或「只下一个脚本」，
+> 后者适合 pip 安装后的机器。
 
 > 配置文件固定在 `~/.mas/config.json`（Windows：`%USERPROFILE%\.mas\config.json`）。
 > 运行账本另存在 `state_dir` 下，两者分开——换状态目录不会把配置弄丢。

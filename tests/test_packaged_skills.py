@@ -57,7 +57,14 @@ class PackagedSkillsTest(unittest.TestCase):
         # Both installers must call `mas install` instead of implementing
         # their own copy loop. Two implementations are two behaviours, and
         # they drift - which is exactly the bug this layout removes.
-        delegate = re.compile(r'"-m",\s*"mas",\s*"install"|-m mas install')
+        # The runtime is started through its package path rather than
+        # ``-m mas``: ``python -m`` puts the current working directory
+        # first on ``sys.path``, so a source checkout would shadow the
+        # freshly installed runtime and the download would be pointless.
+        delegate = re.compile(
+            r'"-m",\s*"mas",\s*"install"|-m mas install'
+            r'|__main__\.py[^\n]*install'
+        )
         second_source = re.compile(r'skills/\*|/skills"|"skills"')
         for script in ("install.sh", "install.ps1"):
             text = (_ROOT / script).read_text(encoding="utf-8")

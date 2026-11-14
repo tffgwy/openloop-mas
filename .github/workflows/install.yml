@@ -62,3 +62,141 @@ jobs:
       - name: Assert the fresh install is complete and working
         shell: bash
         run: python tools/verify_install.py "${{ runner.temp }}/fresh-home"
+
+  standalone:
+    name: standalone script (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os == 'macos-latest' }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+    steps:
+      # The "download one script and run it" path is the promise this project
+      # makes to beginners, and it is the path the checkout-based job above
+      # never exercises: there, the runtime is copied from the source tree.
+      #
+      # This job therefore copies *only* the installer scripts into an empty
+      # directory - no ``mas/`` package, no checkout - and runs them there.
+      # The installer then has to fetch the runtime from the published wheel,
+      # which is the only way that path can be verified.
+      - uses: actions/checkout@v4
+
+      - name: Stage the installer scripts alone
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${{ runner.temp }}/standalone"
+          cp install.ps1 install.sh "${{ runner.temp }}/standalone/"
+          ls -l "${{ runner.temp }}/standalone"
+
+      - name: Install with the standalone script (Linux)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOME="${{ runner.temp }}/standalone-home"
+          mkdir -p "$HOME"
+          export MAS_HOME="$HOME/.mas"
+          bash "${{ runner.temp }}/standalone/install.sh"
+
+      - name: Install with the standalone script (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:USERPROFILE = "${{ runner.temp }}\standalone-home"
+          New-Item -ItemType Directory -Force -Path $env:USERPROFILE | Out-Null
+          $env:MAS_HOME = "$env:USERPROFILE\.mas"
+          powershell -NoProfile -ExecutionPolicy Bypass `
+            -File "${{ runner.temp }}\standalone\install.ps1" `
+            -InstallDir $env:MAS_HOME -SkipPath
+
+      - name: Assert the standalone install is usable
+        # The wheel downloaded here is the *published* one, whose installer
+        # predates the current registration format. The strict contract is
+        # asserted by the standalone-build leg below, which installs a wheel
+        # built from this checkout; this leg only asserts that a published
+        # release is still usable after being fetched by the script alone.
+        shell: bash
+        run: python "${{ github.workspace }}/tools/check_install_smoke.py" "${{ runner.temp }}/standalone-home"
+
+  standalone-build:
+    name: standalone script with a locally built wheel
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os == 'macos-latest' }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+    steps:
+      # The download leg above proves that a beginner can fetch the published
+      # runtime. This leg proves the other half: that the installer installs
+      # *exactly* the build it was handed, and that the build in the
+      # repository is the one that ends up on disk.
+      #
+      # A published wheel cannot be used for that assertion - its version
+      # legitimately lags the repository until a release is cut - so the
+      # wheel is built here and handed to the installer explicitly.
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the wheel from this checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade build
+          python -m build --wheel --outdir "${{ runner.temp }}/wheel"
+          ls -l "${{ runner.temp }}/wheel"
+
+      - name: Stage the installer scripts alone
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${{ runner.temp }}/standalone"
+          cp install.ps1 install.sh "${{ runner.temp }}/standalone/"
+          cp tools/verify_install.py "${{ runner.temp }}/standalone/"
+          cp tools/check_install_smoke.py "${{ runner.temp }}/standalone/"
+
+      - name: Install the local wheel with the standalone script (Linux)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOME="${{ runner.temp }}/build-home"
+          mkdir -p "$HOME"
+          export MAS_HOME="$HOME/.mas"
+          export MAS_WHEEL="$(ls "${{ runner.temp }}"/wheel/openloop_mas-*.whl | head -1)"
+          bash "${{ runner.temp }}/standalone/install.sh"
+
+      - name: Install the local wheel with the standalone script (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:USERPROFILE = "${{ runner.temp }}\build-home"
+          New-Item -ItemType Directory -Force -Path $env:USERPROFILE | Out-Null
+          $env:MAS_HOME = "$env:USERPROFILE\.mas"
+          $wheel = (Get-ChildItem "${{ runner.temp }}\wheel\openloop_mas-*.whl" | Select-Object -First 1).FullName
+          powershell -NoProfile -ExecutionPolicy Bypass `
+            -File "${{ runner.temp }}\standalone\install.ps1" `
+            -InstallDir $env:MAS_HOME -SkipPath -Wheel $wheel
+
+      - name: Assert the standalone install is complete and working
+        shell: bash
+        run: python "${{ runner.temp }}/standalone/verify_install.py" "${{ runner.temp }}/build-home"
+
+      - name: Assert the installed runtime is the one from this checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          python "${{ github.workspace }}/tools/check_installed_version.py" \
+            "${{ runner.temp }}/build-home" "${{ github.workspace }}"

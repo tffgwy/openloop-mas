@@ -22,7 +22,9 @@ param(
     [switch]$SkipSkills,
     [switch]$SkipDemo,
     [switch]$InstallDshPlugin,
-    [string]$DshProfile = "desktop"
+    [string]$DshProfile = "desktop",
+    [string]$Version = "",
+    [string]$Wheel = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -78,20 +80,116 @@ if (-not $pythonExe) {
 $pyVersion = & $pythonExe -c "import sys; print('%d.%d.%d' % sys.version_info[:3])"
 Write-Ok "Python $pyVersion at $pythonExe"
 
+# The interpreter path is normalised to an absolute Windows path *before*
+# it is written into the MCP registration. The registration is read by a
+# host process (Codex / Claude Code), not by this script: a relative or
+# POSIX-style path would resolve against the host's working directory -
+# which is usually not the one the installer ran in.
+$pythonExe = (& $pythonExe -c "import sys; print(sys.executable)").Trim()
+
 # ---------------------------------------------------------------- app
 Write-Step "Installing runtime into $AppDir"
 New-Item -ItemType Directory -Force -Path $AppDir | Out-Null
-$pkgSource = Join-Path $SourceRoot "mas"
-if (-not (Test-Path $pkgSource)) {
-    Write-Fail "package source not found: $pkgSource"
-    exit 1
-}
 $pkgTarget = Join-Path $AppDir "mas"
-if (Test-Path $pkgTarget) { Remove-Item -Recurse -Force $pkgTarget }
-Copy-Item -Recurse -Force $pkgSource $pkgTarget
-Get-ChildItem -Path $pkgTarget -Directory -Filter "__pycache__" -Recurse -ErrorAction SilentlyContinue |
-    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-Write-Ok "runtime copied"
+$pkgSource = Join-Path $SourceRoot "mas"
+
+if (Test-Path $pkgSource) {
+    # A source checkout is available: copy the runtime from it.
+    if (Test-Path $pkgTarget) { Remove-Item -Recurse -Force $pkgTarget }
+    Copy-Item -Recurse -Force $pkgSource $pkgTarget
+    Get-ChildItem -Path $pkgTarget -Directory -Filter "__pycache__" -Recurse -ErrorAction SilentlyContinue |
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Ok "runtime copied from source checkout"
+} else {
+    # Standalone script: there is no package source next to this file, so the
+    # runtime is fetched from the published wheel and unpacked by hand.
+    # This is the path a beginner takes when they download install.ps1 alone,
+    # so it must work without git, pip, or a checkout.
+    Write-Step "No source checkout found - fetching the runtime wheel"
+    $wheelPath = Join-Path $InstallDir "openloop_mas.whl"
+    # The helper only exists on the download path, but the cleanup below
+    # runs on both paths - so the variable is declared here and the removal
+    # is guarded, rather than leaving a null path for the cmdlet to trip on.
+    $helperPath = Join-Path $InstallDir "_download_helper.py"
+    if ($Wheel) {
+        # A wheel was supplied explicitly. This is how the release pipeline
+        # and the CI install matrix exercise a build that has not been
+        # published yet. The download path is then never exercised, so the
+        # two paths have to stay behaviourally identical.
+        if (-not (Test-Path -LiteralPath $Wheel)) {
+            Write-Fail "wheel not found: $Wheel"
+            exit 1
+        }
+        Copy-Item -LiteralPath $Wheel -Destination $wheelPath -Force
+        Write-Ok "using the supplied wheel: $Wheel"
+    } else {
+        $repo = "tffgwy/openloop-mas"
+        if (-not $Version) { $Version = "latest" }
+
+        # The download goes through Python's urllib rather than
+        # Invoke-WebRequest or curl. Two reasons:
+        #
+        # * Windows PowerShell 5.1 does not read the HTTPS_PROXY environment
+        #   variable, and a large share of users reach GitHub only through a
+        #   local proxy. urllib reads HTTPS_PROXY *and* the Windows system
+        #   proxy settings, so the installer works with or without one.
+        # * curl is not installed on a default Windows machine, and the
+        #   installer promises to need nothing but Python.
+        # The download helper is written to disk and executed as a file.
+        # Passing a multi-line program to `python -c` is a quoting minefield
+        # in PowerShell: the mangling is silent, so the script keeps running
+        # and only the helper dies with a syntax error. A file has no such
+        # problem, and it is also what the error messages refer to.
+        Write-Utf8NoBom $helperPath ([System.Text.Encoding]::UTF8.GetString(
+            [System.Convert]::FromBase64String("IiIiRG93bmxvYWQgaGVscGVyIGZvciB0aGUgb25lLWNsaWNrIGluc3RhbGxlci4KClRocmVlIHRoaW5ncyBtYWtlIGEgbmFpdmUgZG93bmxvYWQgZmFpbCBvbiBhIHJlYWwgbWFjaGluZSwgc28gdGhlCmhlbHBlciB3b3JrcyBhcm91bmQgZWFjaCBvZiB0aGVtOgoKKiAqKlRMUyBpbnRlcmNlcHRpb24uKiogQSBjb3Jwb3JhdGUgb3IgcmVnaW9uYWwgcHJveHkgY2FuIGJyZWFrIHRoZQogIHN0YW5kYXJkIGxpYnJhcnkncyBUTFMgc3RhY2sgd2hpbGUgYGBjdXJsYGAgbmVnb3RpYXRlcyB0aGUgdmVyeSBzYW1lCiAgY29ubmVjdGlvbiBmaW5lLiBCb3RoIHRyYW5zcG9ydHMgYXJlIHRyaWVkLCBhbmQgdGhlIGZpcnN0IG9uZSB0aGF0CiAgd29ya3Mgd2lucy4KKiAqKkFQSSByYXRlIGxpbWl0cy4qKiBUaGUgR2l0SHViIFJFU1QgQVBJIGFsbG93cyBvbmx5IDYwIGFub255bW91cwogIHJlcXVlc3RzIHBlciBob3VyIGFuZCBwZXIgSVAsIGFuZCBhIHNoYXJlZCBuZXR3b3JrIGNhbiBidXJuIHRoYXQKICBidWRnZXQgYmVmb3JlIHRoZSB1c2VyIGV2ZW4gc3RhcnRzLiBUaGUgYGByZWxlYXNlcy9sYXRlc3RgYCAqcGFnZSoKICBhbnN3ZXJzIHdpdGggYSByZWRpcmVjdCB0byB0aGUgbmV3ZXN0IHRhZyBhbmQgaXMgbm90IHJhdGUgbGltaXRlZCwKICBzbyB0aGUgdmVyc2lvbiBpcyByZXNvbHZlZCBmcm9tIHRoZXJlLgoqICoqTm8gY3VybC4qKiBgYGN1cmxgYCBpcyBtaXNzaW5nIG9uIGEgZGVmYXVsdCBXaW5kb3dzIGluc3RhbGwsIGFuZAogIHRoZSBzdGFuZGFyZCBsaWJyYXJ5IGlzIGFsd2F5cyB0aGVyZS4gVGhlIG9yZGVyIGlzIHRoZXJlZm9yZQogIHN0YW5kYXJkIGxpYnJhcnkgZmlyc3QsIGN1cmwgc2Vjb25kLgoiIiIKCmltcG9ydCBqc29uCmltcG9ydCBvcwppbXBvcnQgcGF0aGxpYgppbXBvcnQgcmUKaW1wb3J0IHNodXRpbAppbXBvcnQgc3VicHJvY2VzcwppbXBvcnQgc3lzCmltcG9ydCB1cmxsaWIuZXJyb3IKaW1wb3J0IHVybGxpYi5yZXF1ZXN0CgpSRVBPID0gInRmZmd3eS9vcGVubG9vcC1tYXMiCkxBVEVTVF9QQUdFID0gImh0dHBzOi8vZ2l0aHViLmNvbS8iICsgUkVQTyArICIvcmVsZWFzZXMvbGF0ZXN0IgoKCmRlZiBfcHJveHlfdXJsKCk6CiAgICBmb3IgbmFtZSBpbiAoIkhUVFBTX1BST1hZIiwgImh0dHBzX3Byb3h5IiwgIkhUVFBfUFJPWFkiLCAiaHR0cF9wcm94eSIpOgogICAgICAgIHZhbHVlID0gb3MuZW52aXJvbi5nZXQobmFtZSkKICAgICAgICBpZiB2YWx1ZToKICAgICAgICAgICAgcmV0dXJuIHZhbHVlCiAgICByZXR1cm4gIiIKCgpkZWYgX2N1cmwoKToKICAgIHJldHVybiBzaHV0aWwud2hpY2goImN1cmwuZXhlIikgb3Igc2h1dGlsLndoaWNoKCJjdXJsIikKCgpkZWYgX29wZW5lcigpOgogICAgcmV0dXJuIHVybGxpYi5yZXF1ZXN0LmJ1aWxkX29wZW5lcigKICAgICAgICB1cmxsaWIucmVxdWVzdC5Qcm94eUhhbmRsZXIodXJsbGliLnJlcXVlc3QuZ2V0cHJveGllcygpKQogICAgKQoKCmNsYXNzIF9Ob1JlZGlyZWN0KHVybGxpYi5yZXF1ZXN0LkhUVFBSZWRpcmVjdEhhbmRsZXIpOgogICAgZGVmIHJlZGlyZWN0X3JlcXVlc3Qoc2VsZiwgcmVxLCBmcCwgY29kZSwgbXNnLCBoZWFkZXJzLCBuZXd1cmwpOgogICAgICAgIHJldHVybiBOb25lCgoKZGVmIF9yZWFkKHVybCwgdGltZW91dCwgZm9sbG93PVRydWUpOgogICAgaWYgZm9sbG93OgogICAgICAgIG9wZW5lciA9IF9vcGVuZXIoKQogICAgZWxzZToKICAgICAgICBvcGVuZXIgPSB1cmxsaWIucmVxdWVzdC5idWlsZF9vcGVuZXIoCiAgICAgICAgICAgIHVybGxpYi5yZXF1ZXN0LlByb3h5SGFuZGxlcih1cmxsaWIucmVxdWVzdC5nZXRwcm94aWVzKCkpLAogICAgICAgICAgICBfTm9SZWRpcmVjdCwKICAgICAgICApCiAgICByZXF1ZXN0ID0gdXJsbGliLnJlcXVlc3QuUmVxdWVzdCgKICAgICAgICB1cmwsIGhlYWRlcnM9eyJVc2VyLUFnZW50IjogIm9wZW5sb29wLW1hcy1pbnN0YWxsZXIifQogICAgKQogICAgcmV0dXJuIG9wZW5lci5vcGVuKHJlcXVlc3QsIHRpbWVvdXQ9dGltZW91dCkKCgpkZWYgX2ZldGNoX2J5dGVzKHVybCwgdGltZW91dCk6CiAgICB3aXRoIF9yZWFkKHVybCwgdGltZW91dCkgYXMgcmVzcG9uc2U6CiAgICAgICAgcmV0dXJuIHJlc3BvbnNlLnJlYWQoKQoKCmRlZiBfY3VybF9ydW4odXJsLCBkZXN0LCB0aW1lb3V0PTYwMCk6CiAgICBiaW5hcnkgPSBfY3VybCgpCiAgICBpZiBub3QgYmluYXJ5OgogICAgICAgIHJhaXNlIFJ1bnRpbWVFcnJvcigiY3VybCBpcyBub3QgYXZhaWxhYmxlIikKICAgIGNvbW1hbmQgPSBbYmluYXJ5LCAiLWZzU0wiLCAiLS1yZXRyeSIsICIzIl0KICAgIHByb3h5ID0gX3Byb3h5X3VybCgpCiAgICBpZiBwcm94eToKICAgICAgICBjb21tYW5kICs9IFsiLXgiLCBwcm94eV0KICAgIGNvbW1hbmQgKz0gWyItbyIsIHN0cihkZXN0KSwgdXJsXQogICAgc3VicHJvY2Vzcy5ydW4oY29tbWFuZCwgY2hlY2s9VHJ1ZSwgdGltZW91dD10aW1lb3V0KQogICAgcmV0dXJuIHBhdGhsaWIuUGF0aChkZXN0KS5zdGF0KCkuc3Rfc2l6ZQoKCmRlZiBkb3dubG9hZCh1cmwsIGRlc3QpOgogICAgZXJyb3JzID0gW10KICAgIHRyeToKICAgICAgICBkYXRhID0gX2ZldGNoX2J5dGVzKHVybCwgMzAwKQogICAgICAgIHBhdGhsaWIuUGF0aChkZXN0KS53cml0ZV9ieXRlcyhkYXRhKQogICAgICAgIHJldHVybiBsZW4oZGF0YSkKICAgIGV4Y2VwdCBFeGNlcHRpb24gYXMgZXhjOgogICAgICAgIGVycm9ycy5hcHBlbmQoInVybGxpYjoge306IHt9Ii5mb3JtYXQodHlwZShleGMpLl9fbmFtZV9fLCBleGMpKQogICAgaWYgX2N1cmwoKToKICAgICAgICB0cnk6CiAgICAgICAgICAgIHJldHVybiBfY3VybF9ydW4odXJsLCBkZXN0KQogICAgICAgIGV4Y2VwdCBFeGNlcHRpb24gYXMgZXhjOgogICAgICAgICAgICBlcnJvcnMuYXBwZW5kKCJjdXJsOiB7fToge30iLmZvcm1hdCh0eXBlKGV4YykuX19uYW1lX18sIGV4YykpCiAgICBmb3IgbGluZSBpbiBlcnJvcnM6CiAgICAgICAgcHJpbnQobGluZSwgZmlsZT1zeXMuc3RkZXJyKQogICAgcmFpc2UgU3lzdGVtRXhpdCgxKQoKCmRlZiBsYXRlc3RfdmVyc2lvbigpOgogICAgIiIiUmVzb2x2ZSB0aGUgbmV3ZXN0IHB1Ymxpc2hlZCB2ZXJzaW9uIHdpdGhvdXQgdGhlIFJFU1QgQVBJLgoKICAgIFRoZSBBUEkgaXMgcmF0ZSBsaW1pdGVkIHRvIDYwIGFub255bW91cyByZXF1ZXN0cyBwZXIgaG91cjsgdGhlCiAgICByZWxlYXNlIHBhZ2UgcmVkaXJlY3RzIHRvIHRoZSBuZXdlc3QgdGFnIGFuZCBpcyBub3QuCiAgICAiIiIKICAgIGVycm9ycyA9IFtdCiAgICB0cnk6CiAgICAgICAgdHJ5OgogICAgICAgICAgICBfcmVhZChMQVRFU1RfUEFHRSwgNjAsIGZvbGxvdz1GYWxzZSkKICAgICAgICBleGNlcHQgdXJsbGliLmVycm9yLkhUVFBFcnJvciBhcyBleGM6CiAgICAgICAgICAgIGxvY2F0aW9uID0gZXhjLmhlYWRlcnMuZ2V0KCJMb2NhdGlvbiIpIG9yICIiCiAgICAgICAgICAgIG1hdGNoID0gcmUuc2VhcmNoKHIiL3RhZy92PyhbMC05XVteL10qKSIsIGxvY2F0aW9uKQogICAgICAgICAgICBpZiBtYXRjaDoKICAgICAgICAgICAgICAgIHJldHVybiBtYXRjaC5ncm91cCgxKQogICAgICAgICAgICBlcnJvcnMuYXBwZW5kKCJ1cmxsaWI6IG5vIHRhZyBpbiByZWRpcmVjdCB7fSIuZm9ybWF0KGxvY2F0aW9uKSkKICAgICAgICBlbHNlOgogICAgICAgICAgICBlcnJvcnMuYXBwZW5kKCJ1cmxsaWI6IG5vIHJlZGlyZWN0IikKICAgIGV4Y2VwdCBFeGNlcHRpb24gYXMgZXhjOgogICAgICAgIGVycm9ycy5hcHBlbmQoInVybGxpYjoge306IHt9Ii5mb3JtYXQodHlwZShleGMpLl9fbmFtZV9fLCBleGMpKQogICAgaWYgX2N1cmwoKToKICAgICAgICB0cnk6CiAgICAgICAgICAgIHJhdyA9IHN1YnByb2Nlc3MucnVuKAogICAgICAgICAgICAgICAgW19jdXJsKCksICItZnNTTCIsICItLXJldHJ5IiwgIjMiLCAiLW8iLCBvcy5kZXZudWxsLCAiLXciLAogICAgICAgICAgICAgICAgICIle3VybF9lZmZlY3RpdmV9IiwgTEFURVNUX1BBR0VdLAogICAgICAgICAgICAgICAgY2hlY2s9VHJ1ZSwgdGltZW91dD0xMjAsIHN0ZG91dD1zdWJwcm9jZXNzLlBJUEUsCiAgICAgICAgICAgICAgICBzdGRlcnI9c3VicHJvY2Vzcy5ERVZOVUxMLAogICAgICAgICAgICApLnN0ZG91dC5kZWNvZGUoInV0Zi04IiwgInJlcGxhY2UiKQogICAgICAgICAgICBtYXRjaCA9IHJlLnNlYXJjaChyIi90YWcvdj8oWzAtOV1bXi9dKikiLCByYXcpCiAgICAgICAgICAgIGlmIG1hdGNoOgogICAgICAgICAgICAgICAgcmV0dXJuIG1hdGNoLmdyb3VwKDEpCiAgICAgICAgICAgIGVycm9ycy5hcHBlbmQoImN1cmw6IG5vIHRhZyBpbiB7fSIuZm9ybWF0KHJhdykpCiAgICAgICAgZXhjZXB0IEV4Y2VwdGlvbiBhcyBleGM6CiAgICAgICAgICAgIGVycm9ycy5hcHBlbmQoImN1cmw6IHt9OiB7fSIuZm9ybWF0KHR5cGUoZXhjKS5fX25hbWVfXywgZXhjKSkKICAgIGZvciBsaW5lIGluIGVycm9yczoKICAgICAgICBwcmludChsaW5lLCBmaWxlPXN5cy5zdGRlcnIpCiAgICByYWlzZSBTeXN0ZW1FeGl0KDEpCgoKZGVmIHdoZWVsX3VybCh2ZXJzaW9uKToKICAgIHJldHVybiAoCiAgICAgICAgImh0dHBzOi8vZ2l0aHViLmNvbS8iICsgUkVQTyArICIvcmVsZWFzZXMvZG93bmxvYWQvdnt9LyIKICAgICAgICAib3Blbmxvb3BfbWFzLXt9LXB5My1ub25lLWFueS53aGwiLmZvcm1hdCh2ZXJzaW9uLCB2ZXJzaW9uKQogICAgKQoKCmlmIF9fbmFtZV9fID09ICJfX21haW5fXyI6CiAgICBtb2RlID0gc3lzLmFyZ3ZbMV0KICAgIGlmIG1vZGUgPT0gImxhdGVzdCI6CiAgICAgICAgcHJpbnQod2hlZWxfdXJsKGxhdGVzdF92ZXJzaW9uKCkpKQogICAgICAgIHJhaXNlIFN5c3RlbUV4aXQoMCkKICAgIGlmIG1vZGUgPT0gImZldGNoIjoKICAgICAgICBwcmludChkb3dubG9hZChzeXMuYXJndlsyXSwgc3lzLmFyZ3ZbM10pKQogICAgICAgIHJhaXNlIFN5c3RlbUV4aXQoMCkKICAgIHJhaXNlIFN5c3RlbUV4aXQoMikK")))
+        $wheelUrl = ""
+        if ($Version -eq "latest") {
+            $resolved = (& $pythonExe $helperPath latest 2>&1 | Out-String).Trim()
+            if ($LASTEXITCODE -eq 0) { $wheelUrl = $resolved }
+            else { Write-Warn "could not resolve the latest release: $resolved" }
+        } else {
+            $wheelUrl = "https://github.com/$repo/releases/download/v$Version/openloop_mas-$Version-py3-none-any.whl"
+        }
+        if (-not $wheelUrl) {
+            Write-Fail "could not determine the wheel URL. Pass -Version explicitly, e.g. -Version 0.7.17"
+            exit 1
+        }
+        $fetchOutput = (& $pythonExe $helperPath fetch $wheelUrl $wheelPath 2>&1 | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) {
+            Write-Fail "could not download the wheel from $wheelUrl : $fetchOutput"
+            exit 1
+        }
+        Write-Ok "wheel downloaded ($([math]::Round((Get-Item $wheelPath).Length / 1KB)) KB)"
+    }
+
+    # A wheel is a zip; unpack it with the standard library so the installer
+    # stays dependency-free (no pip, no 7zip, no Expand-Archive quirks with
+    # nested paths on old PowerShell).
+    $extractDir = Join-Path $InstallDir "_wheel"
+    if (Test-Path $extractDir) { Remove-Item -Recurse -Force $extractDir }
+    New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
+    & $pythonExe -c @"
+import pathlib, zipfile, sys
+src = pathlib.Path(sys.argv[1]); dst = pathlib.Path(sys.argv[2])
+with zipfile.ZipFile(src) as zf:
+    zf.extractall(dst)
+"@ $wheelPath $extractDir
+    if ($LASTEXITCODE -ne 0) {
+        Write-Fail "could not unpack the wheel"
+        exit 1
+    }
+    $unpacked = Join-Path $extractDir "mas"
+    if (-not (Test-Path $unpacked)) {
+        Write-Fail "the wheel did not contain the mas package"
+        exit 1
+    }
+    if (Test-Path $pkgTarget) { Remove-Item -Recurse -Force $pkgTarget }
+    Move-Item -Path $unpacked -Destination $pkgTarget
+    Remove-Item -Recurse -Force $extractDir -ErrorAction SilentlyContinue
+    Remove-Item -Force $wheelPath -ErrorAction SilentlyContinue
+    if ($helperPath) { Remove-Item -Force $helperPath -ErrorAction SilentlyContinue }
+    Write-Ok "runtime unpacked from the published wheel"
+}
 
 # ---------------------------------------------------------------- config
 Write-Step "Writing configuration"
@@ -128,8 +226,10 @@ $cmdBody = @"
 @echo off
 setlocal
 set "MAS_HOME=$InstallDir"
+set "MAS_STATE_DIR=$InstallDir"
+set "MAS_CONFIG_PATH=$InstallDir\config.json"
 set "PYTHONPATH=$AppDir;%PYTHONPATH%"
-"$pythonExe" -m mas %*
+"$pythonExe" "$AppDir\mas\__main__.py" %*
 "@
 Write-Utf8NoBom $cmdPath $cmdBody
 Write-Ok "launcher: $cmdPath"
@@ -155,10 +255,17 @@ if (-not $SkipPath) {
 # script only wires the environment up (PYTHONPATH / MAS_STATE_DIR) and
 # calls it, so the two install paths can never drift apart.
 $env:MAS_STATE_DIR = $InstallDir
+$env:MAS_CONFIG_PATH = Join-Path $InstallDir "config.json"
 $env:PYTHONPATH = $AppDir
 if (-not $SkipSkills -or -not $SkipMcp) {
     Write-Step "Installing agent skills and registering the MCP server"
-    $installArgs = @("-m", "mas", "install", "--python", $pythonExe)
+    # The runtime is started through its *package path*, not through
+    # ``-m mas``. ``python -m`` puts the current working directory first
+    # on ``sys.path``; when the installer runs inside a source checkout,
+    # the checkout's ``mas/`` package shadows the one that was just
+    # installed. The skills and the MCP registration would then come from
+    # the checkout - so the freshly downloaded wheel was never used at all.
+    $installArgs = @((Join-Path $AppDir "mas\__main__.py"), "install", "--python", $pythonExe)
     if ($SkipSkills) { $installArgs += "--skip-skills" }
     if ($SkipMcp) { $installArgs += "--skip-mcp" }
     & $pythonExe @installArgs
@@ -243,21 +350,23 @@ if ($InstallDshPlugin) {
 # ---------------------------------------------------------------- verify
 Write-Step "Running the self-check"
 $env:MAS_STATE_DIR = $InstallDir
+$env:MAS_CONFIG_PATH = Join-Path $InstallDir "config.json"
 $env:PYTHONPATH = $AppDir
-& $pythonExe -m mas doctor
+$masMain = Join-Path $AppDir "mas\__main__.py"
+& $pythonExe $masMain doctor
 $doctorExit = $LASTEXITCODE
 
 if (-not $SkipDemo) {
     Write-Step "Running the offline demo (no API key needed)"
-    & $pythonExe -m mas demo
+    & $pythonExe $masMain demo
     $demoExit = $LASTEXITCODE
 
     Write-Step "Running the offline benchmark"
-    & $pythonExe -m mas bench --repeats 1
+    & $pythonExe $masMain bench --repeats 1
     $benchExit = $LASTEXITCODE
 
     Write-Step "Running the closure self-check"
-    & $pythonExe -m mas verify
+    & $pythonExe $masMain verify
     $verifyExit = $LASTEXITCODE
 } else {
     $demoExit = 0

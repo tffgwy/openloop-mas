@@ -219,7 +219,41 @@ the workflow.
 
 > Add `--json` to see exactly what it did.
 
-### Option 2: install from source
+### Option 2: download one script (no dependencies - best for beginners)
+
+No clone, no pip, nothing to install yourself - **download one script file**
+and run it:
+
+```powershell
+# Windows: download install.ps1 anywhere, then run it
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+```bash
+# macOS / Linux: download install.sh anywhere, then run it
+bash install.sh
+```
+
+The script fetches the published wheel from the GitHub release, unpacks it
+with the standard library, installs it into `~/.mas/`, registers the MCP
+server and the skills, and finishes with an offline self-check.
+**All it needs is Python 3.10+ - no git, no pip, no compiler.**
+
+Pin a specific release instead of "the latest":
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.17
+```
+
+```bash
+MAS_VERSION=0.7.17 bash install.sh
+```
+
+> The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
+> user's registry key). Pass `-SkipPath` (Windows) or `MAS_SKIP_PATH=1`
+> (shell) to leave `PATH` alone.
+
+### Option 3: install from source (for development)
 
 ```bash
 git clone https://github.com/tffgwy/openloop-mas.git

@@ -22,7 +22,9 @@ Design rules:
 from __future__ import annotations
 
 import json
+import os
 import pathlib
+import re
 import shutil
 import sys
 from typing import Any, Dict, List, Tuple
@@ -35,6 +37,24 @@ PACKAGED_SKILLS = ("mas-loop", "mas-review", "mas-scaffold")
 
 def package_root() -> pathlib.Path:
     return pathlib.Path(__file__).resolve().parent
+
+
+def runtime_root() -> pathlib.Path:
+    """The directory that has to be on ``sys.path`` to import ``mas``.
+
+    ``package_root()`` is the ``mas`` package itself; the *parent* of that
+    directory is what belongs on ``sys.path``. Getting this wrong is
+    silent: the import fails with "No module named mas" even though the
+    package is right there on disk.
+
+    When the runtime is installed by copying the package into
+    ``<install-dir>/app/mas``, the parent is ``<install-dir>/app`` and the
+    package sits directly in it. When the runtime is imported from a
+    source checkout the parent is the checkout root. Both are correct -
+    but only if the parent is computed from the *installed* location and
+    not from wherever the process happens to be running.
+    """
+    return package_root().parent
 
 
 def skills_source() -> pathlib.Path | None:
@@ -72,7 +92,9 @@ def skill_targets() -> List[pathlib.Path]:
     return targets
 
 
-def _backup(path: pathlib.Path) -> pathlib.Path | None:
+def _backup(
+    path: pathlib.Path, backup_dir: pathlib.Path | None = None
+) -> pathlib.Path | None:
     """Copy ``path`` aside before it is modified.
 
     Both files and folders have to work here: the MCP registrations are
@@ -84,6 +106,16 @@ def _backup(path: pathlib.Path) -> pathlib.Path | None:
 
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     backup = path.with_name(f"{path.name}.bak-{stamp}")
+    if backup_dir is not None:
+        # The backup must not live next to the thing it backs up: a
+        # ``<skill>.bak-<stamp>`` folder inside a skills root is picked
+        # up as a *skill* by every host that scans that root, and the
+        # drift detector then sees the backup as an unknown copy.
+        backup = backup_dir / backup.name
+        try:
+            backup_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return None
     try:
         if path.is_dir():
             shutil.copytree(path, backup, dirs_exist_ok=True)
@@ -106,6 +138,47 @@ def _host_label(target_root: pathlib.Path) -> str:
     return target_root.name
 
 
+def _normalised_bytes(item: pathlib.Path) -> bytes:
+    """The bytes of a file with its line endings normalised to LF.
+
+    Windows checkouts rewrite LF into CRLF, so a skill copied from a
+    Git working tree is *byte*-different from the same skill shipped in
+    the wheel - while being textually identical. Hashing the raw bytes
+    therefore reported drift for content nobody had changed, and every
+    sync replaced the copy and left a new backup behind.
+
+    Text files are normalised before hashing; binary files (anything
+    with a NUL byte, or anything that is not valid UTF-8) are hashed
+    byte for byte, because their line endings are part of the format.
+    """
+    raw = item.read_bytes()
+    if b"\0" in raw:
+        return raw
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw
+    return text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
+
+
+def _skill_backup_root() -> pathlib.Path:
+    """Where skill backups are kept: outside every skills root.
+
+    ``~/.mas/backup/skills/<host>/`` is deliberately *not* under
+    ``~/.codex/skills``, ``~/.claude/skills`` or any other host root:
+    a backup that sits inside a skills root is indistinguishable from
+    an installed skill to the host.
+    """
+    return _home() / ".mas" / "backup" / "skills"
+
+
+def _skill_backup(dest: pathlib.Path) -> pathlib.Path | None:
+    """Back up an installed skill folder without polluting the host root."""
+    host = dest.parent.parent.name or "unknown"
+    backup_root = _skill_backup_root() / host
+    return _backup(dest, backup_dir=backup_root)
+
+
 def skill_fingerprint(path: pathlib.Path) -> str:
     """A stable fingerprint of a skill folder's file contents.
 
@@ -123,7 +196,7 @@ def skill_fingerprint(path: pathlib.Path) -> str:
     for item in files:
         digest.update(str(item.relative_to(path)).encode("utf-8"))
         digest.update(b"\0")
-        digest.update(item.read_bytes())
+        digest.update(_normalised_bytes(item))
         digest.update(b"\0")
     return digest.hexdigest()[:12]
 
@@ -197,7 +270,7 @@ def install_skills() -> Dict[str, Any]:
                 existed = dest.is_dir()
                 stale = existed and skill_fingerprint(dest) != skill_fingerprint(skill_dir)
                 if stale:
-                    backup = _backup(dest)
+                    backup = _skill_backup(dest)
                     if backup is not None:
                         result["backups"].append(str(backup))
                     # Remove files that the new version no longer has;
@@ -215,23 +288,80 @@ def install_skills() -> Dict[str, Any]:
     return result
 
 
+def _runtime_env() -> Dict[str, str]:
+    """The environment a *host* has to set to start our MCP server.
+
+    ``PYTHONPATH`` alone is not enough. The server reads its
+    configuration from ``user_config_path()``, which is ``~/.mas/config.json``
+    unless ``MAS_CONFIG_PATH`` says otherwise - and the state directory
+    follows the same rule. An installation into a custom directory
+    (``install.ps1 -InstallDir D:\\mas``) therefore produces a launcher
+    that reads *that* configuration while the MCP registration would read
+    the well-known one: the CLI and the agent would talk to two different
+    providers, and the agent would be the one silently using the wrong
+    key.
+
+    So the registration carries the configuration location explicitly.
+    """
+    from mas.config import effective_config_path, load_config, state_dir
+
+    config = load_config()
+    return {
+        "PYTHONPATH": str(runtime_root()),
+        "MAS_CONFIG_PATH": str(effective_config_path(config)),
+        "MAS_STATE_DIR": str(state_dir(config)),
+    }
+
+
 def _mcp_entry(python_exe: str) -> Dict[str, Any]:
     return {
         "command": python_exe,
-        "args": ["-m", "mas", "serve"],
-        "env": {"PYTHONPATH": str(package_root().parent)},
+        "args": _serve_args(),
+        "env": _runtime_env(),
     }
+
+
+def _serve_args() -> List[str]:
+    """How the MCP server is started.
+
+    The obvious spelling is ``-m mas``. It has a failure mode that is
+    invisible until it bites: ``python -m`` puts the *current working
+    directory* first on ``sys.path``. The host starts the server with
+    its own working directory - the project the user happens to be in.
+    If that directory contains a ``mas`` package or a ``mas.py``, the
+    checkout shadows the installed runtime and the agent talks to
+    whatever happens to be there. The very repository that ships this
+    package contains a ``mas/`` directory, so this is not a corner case.
+
+    Naming the module's entry point by absolute path removes the working
+    directory from the picture entirely.
+    """
+    return [str(runtime_root() / "mas" / "__main__.py"), "serve"]
+
+
+def _toml_env_block(env: Dict[str, str]) -> str:
+    """Render an env mapping as a TOML inline table."""
+    parts = []
+    for key in sorted(env):
+        value = str(env[key]).replace(chr(92), "/")
+        parts.append(f'{key} = "{value}"')
+    return "env = { " + ", ".join(parts) + " }"
 
 
 def _codex_block_text(python_exe: str) -> str:
     """The exact ``[mcp_servers.mas_loop]`` block we want to be present."""
+    # Every path in a TOML basic string needs forward slashes: a backslash
+    # is the escape character there, and ``\U`` is not a legal escape.
+    args = ", ".join(
+        f'"{str(arg).replace(chr(92), "/")}"' for arg in _serve_args()
+    )
     return (
         f"\n[mcp_servers.{MCP_SERVER_NAME}]\n"
         f'command = "{python_exe.replace(chr(92), "/")}"\n'
-        'args = ["-m", "mas", "serve"]\n'
+        f"args = [{args}]\n"
         "startup_timeout_sec = 30.0\n"
         "tool_timeout_sec = 300.0\n"
-        f'env = {{ PYTHONPATH = "{str(package_root().parent).replace(chr(92), "/")}" }}\n'
+        f"{_toml_env_block(_runtime_env())}\n"
     )
 
 
@@ -255,13 +385,48 @@ def _strip_codex_block(text: str) -> str:
 
 def _codex_block_fields(text: str) -> Tuple[str, str]:
     """Extract ``(command, PYTHONPATH)`` from the registered codex block."""
-    import re
+    command = ""
+    env = _codex_block_env(text)
+    for line in _codex_block_lines(text):
+        match = re.match(r'command\s*=\s*"(.*)"', line)
+        if match:
+            command = match.group(1)
+            break
+    return command, str(env.get("PYTHONPATH") or "")
 
+
+def _codex_block_args(text: str) -> List[str]:
+    """Extract the ``args`` list from the registered codex block."""
+    for line in _codex_block_lines(text):
+        match = re.match(r"args\s*=\s*\[(.*)\]\s*$", line)
+        if match:
+            return re.findall(r'"([^"]*)"', match.group(1))
+    return []
+
+
+def _codex_block_env(text: str) -> Dict[str, str]:
+    """Extract the env mapping from the registered codex block.
+
+    The env line is a TOML inline table with more than one key. A greedy
+    pattern over the whole line silently captured its tail - the parse
+    then produced a garbage path, the registration looked dead and every
+    install rewrote it again. Each key is therefore matched on its own.
+    """
+    env: Dict[str, str] = {}
+    for line in _codex_block_lines(text):
+        match = re.match(r'env\s*=\s*\{(.*)\}\s*$', line)
+        if match:
+            for key, value in re.findall(r'(\w+)\s*=\s*"([^"]*)"', match.group(1)):
+                env[key] = value
+    return env
+
+
+def _codex_block_lines(text: str) -> List[str]:
+    """The lines of the ``[mcp_servers.mas_loop]`` block, without the header."""
     header = f"[mcp_servers.{MCP_SERVER_NAME}]"
-    lines = text.splitlines()
     block: List[str] = []
     inside = False
-    for line in lines:
+    for line in text.splitlines():
         stripped = line.strip()
         if stripped == header:
             inside = True
@@ -270,25 +435,32 @@ def _codex_block_fields(text: str) -> Tuple[str, str]:
             if stripped.startswith("["):
                 break
             block.append(stripped)
-    command = ""
-    pythonpath = ""
-    for line in block:
-        match = re.match(r'command\s*=\s*"(.*)"', line)
-        if match:
-            command = match.group(1)
-        match = re.match(r'env\s*=\s*\{.*PYTHONPATH\s*=\s*"(.*)".*\}', line)
-        if match:
-            pythonpath = match.group(1)
-    return command, pythonpath
+    return block
 
 
-def _runtime_is_usable(command: str, pythonpath: str) -> bool:
+def _env_is_complete(env: Dict[str, str]) -> bool:
+    """Does the registration carry the configuration location?
+
+    A registration that only sets ``PYTHONPATH`` can start the server -
+    but the server would then read the *well-known* configuration, which
+    is not the one this installation was set up with. Such an entry is
+    usable but wrong, and it must be refreshed rather than trusted.
+    """
+    if not isinstance(env, dict):
+        return False
+    return bool(str(env.get("PYTHONPATH") or "")) and bool(
+        str(env.get("MAS_CONFIG_PATH") or "")
+    )
+
+
+def _runtime_is_usable(command: str, pythonpath: str, args: Any = None) -> bool:
     """Can this registration actually start the MCP server?
 
     The question is not "does it equal what we would write right now" -
     it is "does it work". A registration is usable when
 
     * the interpreter exists on disk, and
+    * the entry point it names actually exists, and
     * the package path it points at actually contains the ``mas``
       package (or no path is given, in which case the interpreter's own
       site-packages has to provide it).
@@ -300,7 +472,9 @@ def _runtime_is_usable(command: str, pythonpath: str) -> bool:
     """
     if not command:
         return False
-    if not pathlib.Path(command).exists():
+    if not _interpreter_exists(command):
+        return False
+    if not _entry_point_exists(args):
         return False
     if not pythonpath:
         # No explicit path: the interpreter has to be able to import mas
@@ -318,16 +492,72 @@ def _runtime_is_usable(command: str, pythonpath: str) -> bool:
     return (root / "mas" / "__init__.py").exists()
 
 
+def _entry_point_exists(args: Any) -> bool:
+    """Does the registered entry point exist?
+
+    A registration names the runtime either as ``["-m", "mas",
+    "serve"]`` (the historical spelling) or as an absolute path to
+    ``mas/__main__.py`` (the spelling that keeps the host's working
+    directory from shadowing the installed runtime). In the first case
+    there is no file to check - the package path decides. In the second
+    case the file has to be there, or the server cannot start.
+    """
+    if not isinstance(args, (list, tuple)) or not args:
+        return True
+    first = str(args[0])
+    if first == "-m":
+        return True
+    candidate = pathlib.Path(first)
+    if candidate.exists():
+        return True
+    # A POSIX path on a Windows host: /c/Users/... -> C:/Users/...
+    if os.name == "nt" and len(first) > 2 and first[1] == ":" and first[0] == "/":
+        return pathlib.Path(first[2].upper() + first[1]).exists()
+    return False
+
+
+def _interpreter_exists(command: str) -> bool:
+    """Does the registered interpreter exist on disk?
+
+    The command is written into a host configuration by a *different*
+    platform's shell than the one that runs it. A Git Bash installer on
+    Windows resolves ``python`` to ``/c/Python314/python`` - a POSIX path
+    that no Windows process can execute, and a path without the ``.exe``
+    suffix that does not exist on disk either. The registration looked
+    dead even though the runtime was fine.
+
+    So the check accepts the shapes a real host can start: a Windows path,
+    a POSIX path and a bare command name that is on the PATH.
+    """
+    candidate = pathlib.Path(command)
+    if candidate.exists():
+        return True
+    # A POSIX path on a Windows host: /c/Users/... -> C:/Users/...
+    if os.name == "nt" and len(command) > 2 and command[1] == ":" and command[0] == "/":
+        candidate = pathlib.Path(command[2].upper() + command[1])
+        if candidate.exists():
+            return True
+    if not candidate.is_absolute():
+        from shutil import which
+
+        return bool(which(command))
+    return False
+
+
 def _codex_block_is_current(text: str, python_exe: str) -> bool:
     """Is the registered ``mas_loop`` block usable?
 
     Kept as the historical name; the meaning is "the registration can
-    start the server", not "it matches this exact build".
+    start the MCP server *against this installation's configuration*",
+    not "it matches this exact build".
     """
     command, pythonpath = _codex_block_fields(text)
+    args = _codex_block_args(text)
     if not command:
         return False
-    return _runtime_is_usable(command, pythonpath)
+    if not _runtime_is_usable(command, pythonpath, args):
+        return False
+    return _env_is_complete(_codex_block_env(text))
 
 
 def _register_codex(python_exe: str) -> Tuple[str, str]:
@@ -365,15 +595,18 @@ def _register_codex(python_exe: str) -> Tuple[str, str]:
 
 
 def _claude_entry_is_current(entry: Any, python_exe: str) -> bool:
-    """Is the registered Claude MCP entry usable?"""
+    """Is the registered Claude MCP entry usable *and* correctly pointed?"""
     if not isinstance(entry, dict):
         return False
     command = str(entry.get("command") or "")
     env = entry.get("env")
+    args = entry.get("args")
     pythonpath = ""
     if isinstance(env, dict):
         pythonpath = str(env.get("PYTHONPATH") or "")
-    return _runtime_is_usable(command, pythonpath)
+    if not _runtime_is_usable(command, pythonpath, args):
+        return False
+    return _env_is_complete(env if isinstance(env, dict) else {})
 
 
 def _register_claude(python_exe: str) -> Tuple[str, str]:
