@@ -4,6 +4,51 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.43] - 2026-11-15
+
+### Added
+
+The engine writes one closure row per iteration and one reflector row
+per failed iteration - the loop's own account of itself. The report
+read only the *last* closure row, so a run that revised itself three
+times showed a single verdict: the last one. A report of a loop that
+shows only its last turn is a report of a single shot.
+
+* **The report now shows every round.** The summary gained a
+  ``timeline``: one entry per judged round, carrying the verdict, the
+  decision, how many criteria passed, how many were never judged, the
+  issues of that round, the stagnation counter and the hash of the
+  deliverable that round produced. The Markdown renders it as
+  "循环过程（共 N 轮）" with one line per round, so a reader watches
+  the loop work instead of only reading its last verdict. A run that
+  closed on the first attempt says so plainly ("1 轮即定") rather than
+  pretending there was a process.
+
+* **The reflection is visible.** The reflector is the role that says
+  *why* the next attempt must change, and the report never mentioned
+  it. Each round now carries the reflection that led into it, so cause
+  and effect sit next to each other, and the summary gained a
+  ``reflections`` list with the summary, the issues and the next action
+  of each one.
+
+* **The replay's reflector row is no longer blank.** ``_short_detail``
+  had no branch for the reflector, so the one line of the trace that
+  carries the loop's own reasoning was empty. It now renders the
+  reflection summary, its issues and the next action.
+
+### Tests
+
+Twelve new tests in ``tests/test_loop_timeline_report.py`` cover the
+chain: the summary carries every round, the failed round survives in
+the timeline, the passing round survives too, the reflection is
+attached to the round it produced, the reflections are listed, the
+Markdown shows every round, the first round's failure is visible, the
+reflection is visible, a single-round run says so, the replay's
+reflector row is not blank, the replay trace carries the reflection,
+and a run without reflections has no reflection section. Seven layers
+were counter-proven by reverting each on its own and confirming the
+matching tests fail.
+
 ## [0.7.42] - 2026-11-15
 
 ### Fixed

@@ -103,6 +103,62 @@ def _iteration_count(
     return best
 
 
+def _iteration_of(row: Dict[str, Any], fallback: int) -> int:
+    """The iteration a ledger row belongs to, with a safe fallback."""
+    try:
+        return int(row.get("iteration") or fallback)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _reflection_payload(row: Dict[str, Any] | None) -> Dict[str, Any]:
+    """The reflection body of a reflector row, whatever shape it has."""
+    if not row:
+        return {}
+    payload = row.get("reflection")
+    if isinstance(payload, dict):
+        return payload
+    return {}
+
+
+def _reflection_summary(row: Dict[str, Any] | None) -> str:
+    """One line saying what the loop thought about its own failure."""
+    payload = _reflection_payload(row)
+    for key in ("summary", "reason", "analysis", "next_action"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _reflection_text(row: Dict[str, Any] | None) -> str:
+    """The reflection of a round, ready to be printed."""
+    payload = _reflection_payload(row)
+    if not payload:
+        return ""
+    parts: List[str] = []
+    summary = _reflection_summary(row)
+    if summary:
+        parts.append(summary)
+    issues = payload.get("issues") or []
+    if isinstance(issues, list) and issues:
+        parts.append("；".join(str(i) for i in issues))
+    next_action = payload.get("next_action")
+    if isinstance(next_action, str) and next_action.strip():
+        parts.append(f"下一步：{next_action.strip()}")
+    return "　".join(parts)
+
+
+def _reflection_for(
+    reflections: List[Dict[str, Any]], iteration: int
+) -> Dict[str, Any] | None:
+    """The reflection that belongs to a given iteration, if any."""
+    for index, row in enumerate(reflections, start=1):
+        if _iteration_of(row, index) == iteration:
+            return row
+    return None
+
+
 def group_runs(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Group ledger rows into runs, keeping the order of first appearance."""
     runs: Dict[str, List[Dict[str, Any]]] = {}
@@ -125,11 +181,23 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     run_end = None
     errors: List[str] = []
     roles: Dict[str, int] = {}
+    # Every round of the loop, in order. The engine writes one closure
+    # row per iteration; the report used to keep only the last one, so
+    # a run that revised itself three times showed a single verdict -
+    # the last one. The reader saw "PASS" and learned nothing about
+    # the rounds that came before it. A report of a *loop* that shows
+    # only its last turn is a report of a single shot.
+    rounds: List[Dict[str, Any]] = []
+    # The reflections, in order. The reflector says why the next
+    # attempt must change; it is the one role whose answer explains
+    # the loop's own behaviour, and the report never mentioned it.
+    reflections: List[Dict[str, Any]] = []
     for row in rows:
         role = str(row.get("role", "unknown"))
         roles[role] = roles.get(role, 0) + 1
         if role == "closure":
             closure = row
+            rounds.append(row)
         elif role == "planner":
             planner = row
         elif role == "candidates":
@@ -140,6 +208,8 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             run_end = row
         elif role == "error":
             errors.append(str(row.get("error", "")))
+        elif role == "reflector":
+            reflections.append(row)
 
     closure = closure or {}
     scores = closure.get("scores") or []
@@ -224,9 +294,58 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         except (TypeError, ValueError):
             continue
 
+    # The round-by-round view of the loop. One entry per closure row,
+    # carrying what that round judged, what it cost and what the
+    # deliverable looked like - so the reader can watch the loop work
+    # instead of only reading its last verdict.
+    timeline: List[Dict[str, Any]] = []
+    for index, row in enumerate(rounds, start=1):
+        try:
+            iteration = int(row.get("iteration") or index)
+        except (TypeError, ValueError):
+            iteration = index
+        round_scores = row.get("scores") or []
+        timeline.append(
+            {
+                "iteration": iteration,
+                "verdict": str(row.get("verdict") or ""),
+                "decision": str(row.get("decision") or ""),
+                "artifact_sha": str(row.get("artifact_sha") or ""),
+                "artifact_short": str(row.get("artifact_sha") or "")[:12],
+                "passed": sum(1 for s in round_scores if s.get("pass") is True),
+                "total": len(round_scores),
+                "unjudged": sum(1 for s in round_scores if s.get("pass") is None),
+                "issues": list(row.get("issues") or []),
+                "stagnation": int(row.get("stagnation") or 0),
+                "closed": bool(row.get("closed")),
+                # The reflection that led into this round, if any. It
+                # is attached to the round it produced, not to a round
+                # of its own, so the reader sees cause and effect next
+                # to each other.
+                "reflection": _reflection_text(_reflection_for(reflections, iteration)),
+                "reflection_summary": _reflection_summary(
+                    _reflection_for(reflections, iteration)
+                ),
+            }
+        )
+
     return {
         "run_id": run_id,
         "status": status,
+        # The whole loop, round by round. ``rounds`` is the number of
+        # rounds that were actually judged.
+        "timeline": timeline,
+        "rounds": len(timeline),
+        # What the loop said about its own failures, in order.
+        "reflections": [
+            {
+                "iteration": _iteration_of(row, index),
+                "summary": _reflection_summary(row),
+                "issues": list((row.get("reflection") or {}).get("issues") or []),
+                "next_action": str((row.get("reflection") or {}).get("next_action") or ""),
+            }
+            for index, row in enumerate(reflections, start=1)
+        ],
         # Whether the deliverable passed every check, independently of
         # whether the run closed. ``None`` means the run never said -
         # which is not the same as "the deliverable was bad".
@@ -390,6 +509,46 @@ def render_markdown(report: Dict[str, Any]) -> str:
                 f"- 人工工单：`{run.get('ticket_id')}`"
                 "（`mas tickets` 查看，`mas resume <工单号>` 从这里继续）"
             )
+        # The loop, round by round. The verdict of the last round was
+        # the only one the report showed, so a run that revised itself
+        # three times looked like a run that got it right first time.
+        # The reader could not see the failure that drove the work.
+        timeline = run.get("timeline") or []
+        if len(timeline) > 1:
+            lines.append(f"- 循环过程（共 {len(timeline)} 轮）：")
+            for entry in timeline:
+                verdict = str(entry.get("verdict") or "-")
+                mark = "PASS" if verdict == "pass" else "FAIL"
+                total = int(entry.get("total") or 0)
+                passed = int(entry.get("passed") or 0)
+                unjudged = int(entry.get("unjudged") or 0)
+                detail = f"通过 {passed}/{total}" if total else "无判定"
+                if unjudged:
+                    detail += f"（{unjudged} 条无人判定）"
+                lines.append(
+                    f"  - 第 {entry.get('iteration')} 轮 [{mark}] {detail}"
+                    f"　决策 {entry.get('decision') or '-'}"
+                    f"　产物 `{(entry.get('artifact_short') or '')[:12]}`"
+                )
+                issues = entry.get("issues") or []
+                for issue in issues:
+                    lines.append(f"    - 未过：{issue}")
+                reflection = entry.get("reflection") or ""
+                if reflection:
+                    lines.append(f"    - 💭 反思：{reflection}")
+        elif timeline:
+            # A single round: the loop did not iterate, so say that
+            # instead of pretending there was a process.
+            entry = timeline[0]
+            verdict = str(entry.get("verdict") or "-")
+            mark = "PASS" if verdict == "pass" else "FAIL"
+            lines.append(
+                f"- 循环过程：1 轮即定 [{mark}]"
+                f"（未发生迭代）"
+            )
+            reflection = entry.get("reflection") or ""
+            if reflection:
+                lines.append(f"  - 💭 反思：{reflection}")
         if run.get("plan"):
             summary = (run.get("plan") or {}).get("summary") or ""
             lines.append(f"- 规划：{summary}")
@@ -535,6 +694,22 @@ def _short_detail(row: Dict[str, Any]) -> str:
             f"模式={row.get('mode')} 可用={row.get('usable')} "
             f"跳过={row.get('skipped')} 缺席={row.get('missing')}"
         )
+    if role == "reflector":
+        # The reflector is the role that says why the next attempt has
+        # to change. The trace had no branch for it, so the one line
+        # that carries the loop's own reasoning was blank.
+        payload = _reflection_payload(row)
+        parts: List[str] = []
+        summary = _reflection_summary(row)
+        if summary:
+            parts.append(f"反思={summary}")
+        issues = payload.get("issues") or []
+        if isinstance(issues, list) and issues:
+            parts.append("；".join(str(i) for i in issues)[:200])
+        next_action = payload.get("next_action")
+        if isinstance(next_action, str) and next_action.strip():
+            parts.append(f"下一步={next_action.strip()}")
+        return "；".join(parts)[:300]
     if role == "error":
         return str(row.get("error", ""))[:300]
     if role == "run_end":

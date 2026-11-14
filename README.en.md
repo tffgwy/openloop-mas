@@ -7,6 +7,26 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.43 adds** (the report shows the loop, not only its last turn):
+
+- **Only the last round was shown.** The engine writes one closure row
+  per iteration and one reflector row per failed iteration. The report
+  read only the last closure row, so a run that revised itself three
+  times showed a single "PASS" and the two rounds that came before it
+  were nowhere. The report now renders "循环过程（共 N 轮）" - one line
+  per round, with the verdict, the decision, how many criteria passed,
+  how many were never judged, the issues and the hash of that round's
+  deliverable. A run that closed on the first attempt says so plainly.
+- **The reflection is visible.** The reflector is the role that says why
+  the next attempt must change, and the report never mentioned it. Each
+  round now carries the reflection that produced it, and the summary
+  gained a `reflections` list.
+- **The replay's reflector row is no longer blank.** `_short_detail` had
+  no branch for it, so the one line carrying the loop's own reasoning
+  was empty.
+- Twelve new regression tests, seven layers counter-proven by reverting
+  each on its own.
+
 **What v0.7.42 adds** (an unjudged criterion is no longer reported as a failed one):
 
 - **A criterion nobody judged was rendered as `[FAIL]`.** The engine
