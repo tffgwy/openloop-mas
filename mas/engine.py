@@ -1188,7 +1188,16 @@ class LoopEngine:
     def _review(self, verify_state: Dict[str, Any]) -> Dict[str, Any]:
         """Run the verifier (or several verifiers) over the candidate."""
         if self.reviewers <= 1:
-            return self._call_json("verifier", verify_state)
+            # A single reviewer is a panel of one, and it is described
+            # like one. The single-reviewer path used to return the raw
+            # verdict, so the ledger and the report showed "usable: None,
+            # skipped: None, missing: None" - a reader could not tell
+            # whether one reviewer had answered, whether it had stayed
+            # silent, or whether the review had not run at all. The
+            # numbers are the same numbers a panel of one produces, so
+            # the two modes can be read the same way.
+            verdict = self._call_json("verifier", verify_state)
+            return self._single_review_aggregate(verdict)
 
         personas = pick_personas(self.reviewers)
         results = run_parallel(
@@ -1282,6 +1291,33 @@ class LoopEngine:
                 "tokens": int(tokens or 0),
             },
         )
+
+    def _single_review_aggregate(self, verdict: Dict[str, Any]) -> Dict[str, Any]:
+        """Describe a run of one reviewer the way a panel is described.
+
+        A panel of one is still a panel: it can answer, it can stay
+        silent, and it can fail. The aggregate carries the same fields
+        as the multi-reviewer one so that the ledger, the report and
+        the replay all read the same way in both modes.
+        """
+        scores = verdict.get("scores")
+        answered = bool(scores)
+        payload = dict(verdict)
+        payload.update(
+            {
+                "scores": scores if answered else [],
+                "usable": 1 if answered else 0,
+                # A reviewer that answered but produced nothing to judge
+                # was skipped, not absent - the difference matters when
+                # somebody reads "the reviewer never showed up".
+                "skipped": 0 if answered else 1,
+                # The one reviewer was asked and did not answer.
+                "missing": 0 if answered else 1,
+                "reviewers": 1,
+                "mode": self.review_mode,
+            }
+        )
+        return payload
 
     @staticmethod
     def _all_judged(scores: List[Dict[str, Any]]) -> bool:

@@ -4,6 +4,44 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.33] - 2026-11-14
+
+### Fixed
+
+The replay of a run was unreadable exactly where it mattered most, and
+the single-reviewer mode - the default - described a review that nobody
+could interpret.
+
+* **The closure row of a closed run replayed as a blank line.** The
+  closure row is the one that says what was judged and how it came out,
+  but its summary was built from the issues alone, and a closed run has
+  no issues. The successful case - the case anybody replays to see what
+  a good run looks like - showed an empty cell. The summary now names
+  the verdict, the decision, how many criteria passed, and which ones
+  failed and why.
+
+* **The single-reviewer mode reported "usable: None, skipped: None,
+  missing: None".** The one-reviewer path returned the raw verdict and
+  never went through the panel aggregation, so the ledger and the report
+  could not say whether the one reviewer had answered, whether it had
+  stayed silent, or whether the review had not run at all. A panel of
+  one is described like a panel of one: the numbers are now there.
+
+* **A silent reviewer was not counted as a missing vote.** In the
+  single-reviewer mode a reviewer that produced nothing to judge left
+  no trace. It is now counted as skipped and missing, exactly as it is
+  in a panel of several.
+
+### Changed
+
+* The replay and the raw ledger table share one summary function, so
+  both describe a run the same way. No row of a real run is blank any
+  more.
+
+* The panel description does not change the closure decision. A
+  criterion with a machine check is still decided by the machine check,
+  whether the reviewer spoke or not.
+
 ## [0.7.32] - 2026-11-14
 
 ### Fixed

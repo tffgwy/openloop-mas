@@ -335,8 +335,26 @@ def _short_detail(row: Dict[str, Any]) -> str:
     if role == "plan":
         return ""
     if role == "closure":
+        # The closure row is the most important line of a replay - it is
+        # the one that says what was judged and how it came out. Its
+        # summary used to show the issues and nothing else, so a run
+        # that *closed* - the successful case, the case anyone replays
+        # to see what a good run looks like - showed an empty line. The
+        # verdict, the decision and the per-criterion result are the
+        # actual answer, and the issues are only the failure side of it.
+        parts = [f"判定={row.get('verdict') or '-'}", f"决策={row.get('decision') or '-'}"]
+        scores = row.get("scores") or []
+        passed = [s for s in scores if s.get("pass")]
+        failed = [s for s in scores if not s.get("pass")]
+        if scores:
+            parts.append(f"通过 {len(passed)}/{len(scores)}")
+            for item in failed[:3]:
+                note = str(item.get("note") or "")
+                parts.append(f"未过 {item.get('id')}{': ' + note if note else ''}")
         issues = row.get("issues") or []
-        return "; ".join(str(i) for i in issues)[:300]
+        if issues:
+            parts.append("; ".join(str(i) for i in issues)[:200])
+        return "; ".join(parts)[:300]
     if role == "candidates":
         candidates = row.get("candidates") or []
         return "; ".join(

@@ -7,6 +7,29 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.33 adds** (making the replay readable - and killing the
+"None puzzle" of the default configuration):
+
+- **The closure row of a closed run replayed as a blank line.** That row
+  is the one that says what was judged and how it came out, but its
+  summary was built from the issues alone - and a closed run has none.
+  The successful case, the one anybody replays to see what a good run
+  looks like, showed an empty cell. The summary now names the verdict,
+  the decision, how many criteria passed and which ones failed.
+- **The single-reviewer mode reported "usable: None, skipped: None,
+  missing: None".** The one-reviewer path returned the raw verdict and
+  never went through the panel aggregation, so neither the ledger nor
+  the report could say whether the one reviewer had answered. A panel of
+  one is described like a panel of one now.
+- **A silent reviewer was not counted as a missing vote.** In the
+  single-reviewer mode a reviewer that produced nothing to judge left
+  no trace; it is counted as skipped and missing now, exactly as in a
+  panel of several.
+- Fourteen regression tests. Verified: reverting each fix one at a time
+  -> both reverts are caught by the tests. A real run against the local
+  bridge closes the loop, every row of the replay has content, and the
+  single reviewer reads "usable=1 skipped=0 missing=0".
+
 **What v0.7.32 adds** (the report now states the status the run actually
 ended with):
 
