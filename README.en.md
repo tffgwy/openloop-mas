@@ -7,6 +7,24 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.22 adds** (fixing the defect that delivered the model's scratchpad):
+
+- **The parallel path forgot to strip the reasoning block.** Models wrap
+  their scratchpad in `<think>...</think>`. The single worker path has
+  always stripped it; **the parallel path did not**. The result: the
+  scratchpad was **delivered as the artifact**, counted in the **length
+  tie-break** (a candidate with a longer scratchpad won on length), and
+  **written into the files** in the workspace.
+- **Both paths now deliver exactly the same content.** The parallel path
+  strips the reasoning block *before* the ranking, and that order
+  matters: stripping earlier keeps the scratchpad out of the tie-break
+  and out of the text level checks (`min_chars`, `contains`).
+- The regression tests assert that the parallel artifact carries no
+  reasoning block, that the single and the parallel runs deliver
+  identical content, and that the reasoning length cannot decide the
+  tie-break. Verified: with the strip removed the candidate length goes
+  from 34 to 369 and the test fails immediately.
+
 **What v0.7.21 adds** (fixing the defect that made parallel mode pick the
 wrong candidate):
 

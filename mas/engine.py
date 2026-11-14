@@ -749,7 +749,13 @@ class LoopEngine:
                 errors.append(f"{angles[index]}: {item.message}")
                 summary.append({"angle": angles[index], "selected": False, "error": item.message})
                 continue
-            artifact = item["text"]
+            # The reasoning block is not part of the deliverable. The
+            # single worker path has always stripped it; the parallel
+            # path did not, so the scratchpad of a reasoning model was
+            # delivered as the artifact, counted in the length tie
+            # break, and written into files. Stripping it *before* the
+            # ranking keeps both paths identical.
+            artifact = strip_reasoning(item["text"])
             tokens += int(item["usage"].get("total_tokens", 0))
             # The file level checks read the real disk, but at ranking
             # time this candidate has not written its file yet. Scoring
@@ -803,7 +809,7 @@ class LoopEngine:
             state["run_id"], state["task_id"], state["attempt"], "candidates",
             {"count": count, "selected_angle": angles[best_index], "candidates": summary},
         )
-        artifact = results[best_index]["text"]
+        artifact = strip_reasoning(results[best_index]["text"])
         written: List[Dict[str, Any]] = []
         if state.get("write_paths"):
             # Only the *winning* candidate is written to disk. Writing

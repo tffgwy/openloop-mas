@@ -4,6 +4,42 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.22] - 2026-11-14
+
+### Fixed
+
+The parallel candidate path forgot to strip the reasoning block. A
+reasoning model wraps its scratchpad in `<think>...</think>`. The single
+worker path has always stripped it before the artifact was judged,
+written or delivered - the parallel path did not.
+
+* **The scratchpad was delivered as the artifact.** What the user
+  received, what the verifier was asked to judge and what was written
+  into the workspace files was the model's private reasoning, prefixed
+  to the real answer. The single worker path was never affected.
+
+* **The scratchpad decided the tie break.** All candidates failing the
+  checks equally, the winner was chosen by the length of the artifact.
+  A candidate with a longer scratchpad therefore won the race - the
+  ranking was effectively measuring how much the model thought, not how
+  good its answer was.
+
+* **The scratchpad polluted the text level checks.** `min_chars` counted
+  the reasoning as content, and `contains` was satisfied by a token that
+  only appeared in the reasoning.
+
+* The parallel path now strips the reasoning block *before* the ranking,
+  which is what makes the two paths agree: the same input yields the
+  same artifact whether one worker or three produce it.
+
+### Added
+
+* Regression tests asserting that the parallel artifact carries no
+  reasoning block, that the single and the parallel runs deliver
+  identical content, and that the reasoning length cannot decide the tie
+  break. Verified: with the strip removed the candidate grows from 34 to
+  369 characters and the tests fail immediately.
+
 ## [0.7.21] - 2026-11-14
 
 ### Fixed

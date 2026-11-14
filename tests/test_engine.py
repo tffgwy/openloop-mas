@@ -290,6 +290,101 @@ class WriteOverlayTest(unittest.TestCase):
             self.assertTrue(outcome["pass"], outcome)
 
 
+class ParallelReasoningStripTest(unittest.TestCase):
+    """The parallel path must strip the reasoning block like the single path.
+
+    A reasoning model wraps its scratchpad in ``<think>...</think>``. The
+    single worker path has always stripped it before the artifact is
+    judged, written or delivered. The parallel path did not - so the
+    scratchpad was delivered as the artifact, counted in the length tie
+    break, and written into the files the worker produced.
+    """
+
+    class _ThinkingProvider:
+        name = "thinker"
+
+        def __init__(self) -> None:
+            self.model = "thinker-1"
+            self.calls = 0
+
+        def complete(self, *, system, prompt, role="worker",
+                     expect_json=False, max_tokens=4000):
+            self.calls += 1
+            if role == "worker":
+                scratch = "<think>" + ("SCRATCH " * 40) + "</think>"
+                text = scratch + "REAL DELIVERABLE WITH NEEDLE_TOKEN"
+            elif role == "verifier":
+                text = json.dumps({"verdict": "pass", "scores": [], "issues": []})
+            elif role == "planner":
+                text = json.dumps({"summary": "plan", "plan": ["step"], "risks": []})
+            else:
+                text = json.dumps({"decision": "close", "reason": "ok"})
+            return {
+                "text": text,
+                "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
+                "raw": {},
+            }
+
+        def describe(self):
+            return {"provider": self.name, "model": self.model, "calls": self.calls}
+
+    def _run_with(self, workers):
+        tmp = tempfile.mkdtemp()
+        config = json.loads(json.dumps(DEFAULT_CONFIG))
+        config["state_dir"] = tmp
+        config["orchestration"] = {
+            "parallel_workers": workers,
+            "reviewers": 1,
+            "review_mode": "all",
+        }
+        engine = LoopEngine(config, provider=self._ThinkingProvider())
+        result = engine.run(
+            "写一份结论",
+            [
+                {
+                    "id": "c1",
+                    "desc": "含关键结论",
+                    "check": {"type": "contains", "arg": "NEEDLE_TOKEN"},
+                }
+            ],
+        )
+        return result, engine
+
+    def test_the_parallel_path_delivers_no_reasoning(self):
+        result, _engine = self._run_with(3)
+        self.assertNotIn("<think>", result.artifact)
+        self.assertNotIn("SCRATCH", result.artifact)
+        self.assertIn("NEEDLE_TOKEN", result.artifact)
+
+    def test_both_paths_deliver_the_same_artifact(self):
+        single, _ = self._run_with(1)
+        parallel, _ = self._run_with(3)
+        self.assertEqual(single.artifact, parallel.artifact)
+
+    def test_the_reasoning_does_not_decide_the_tie_break(self):
+        # A candidate whose scratchpad is longer must not win on length.
+        _result, engine = self._run_with(3)
+        rows = [r for r in engine.ledger.entries() if r.get("role") == "candidates"]
+        self.assertTrue(rows)
+        for candidate in rows[-1]["candidates"]:
+            self.assertLess(candidate["chars"], 200, candidate)
+
+    def test_a_path_outside_the_overlay_is_still_read_from_disk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = os.path.join(tmp, "ws")
+            os.makedirs(workspace, exist_ok=True)
+            with open(os.path.join(workspace, "other.md"), "w", encoding="utf-8") as handle:
+                handle.write("ON DISK")
+            overlay = {str(Path(workspace).resolve() / "out.md"): b"VIRTUAL"}
+            outcome = evaluate_file_check(
+                "file_contains",
+                {"path": "other.md", "value": "ON DISK"},
+                Path(workspace),
+                overlay,
+            )
+            self.assertTrue(outcome["pass"], outcome)
+
+
 class TestLoopClosure(unittest.TestCase):
     def test_loop_closes_and_ledger_has_one_entry_per_cycle(self):
         with tempfile.TemporaryDirectory() as tmp:
