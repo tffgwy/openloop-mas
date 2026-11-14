@@ -7,6 +7,27 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.42 adds** (an unjudged criterion is no longer reported as a failed one):
+
+- **A criterion nobody judged was rendered as `[FAIL]`.** The engine
+  keeps three states per acceptance criterion - passed, failed, and
+  *unjudged* (no machine check, no reviewer verdict, no lead verdict) -
+  and it treats the third one carefully: an unjudged criterion never
+  passes and never closes the loop. The report collapsed the three into
+  two at the last step, so a criterion that was never checked showed up
+  under "failed". The failed lists now use `pass is False` - the only
+  thing that means "judged and rejected".
+- **"The deliverable failed" was a false claim.** A run whose
+  deliverable was never fully checked was rendered as a clean
+  rejection. The report now says so and names the criteria.
+- **The Markdown has a third mark now.** `UNDECIDED` renders for a
+  criterion nobody could judge, and the report lists the unjudged
+  criteria with the source of the verdict.
+- **The JSON report tells them apart too.** `run_summary` gained an
+  `unjudged` key next to `failed` and `optional_failed`.
+- Eight new regression tests, every layer counter-proven by reverting
+  it on its own.
+
 **What v0.7.41 adds** (the last link of the loop is connected now):
 
 - **The ticket number never entered the ledger.** When a run escalates,

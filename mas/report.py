@@ -146,13 +146,28 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     # A criterion is blocking unless it explicitly says otherwise. Optional
     # criteria may fail without keeping the loop open, so they are reported
     # separately instead of being mixed into the failure list.
+    # A criterion has three states, not two: it passed, it failed, or
+    # nobody could judge it. The report used ``not s.get("pass")``, which
+    # is True for False *and* for None - so every criterion nobody could
+    # judge was filed under "failed" and rendered as ``[FAIL]``. The
+    # engine is careful about exactly this distinction (an unjudged
+    # criterion never passes, and it never gets to close the loop), and
+    # the report threw the distinction away at the last step. Three
+    # states have to stay three states all the way to the reader.
     failed = [
         s for s in scores
-        if not s.get("pass") and s.get("blocking", True)
+        if s.get("pass") is False and s.get("blocking", True)
     ]
     optional_failed = [
         s for s in scores
-        if not s.get("pass") and not s.get("blocking", True)
+        if s.get("pass") is False and not s.get("blocking", True)
+    ]
+    # The criteria that were never judged at all. They are the reason a
+    # run may not close, and they are *not* the same thing as a failure:
+    # a failed criterion needs a fix, an unjudged one needs a decision.
+    unjudged = [
+        s for s in scores
+        if s.get("pass") is None
     ]
     artifacts = [str(r.get("artifact_sha") or "") for r in rows if r.get("artifact_sha")]
 
@@ -243,6 +258,9 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "scores": scores,
         "failed": failed,
         "optional_failed": optional_failed,
+        # The criteria nobody could judge. Kept apart from "failed" so
+        # a reader can tell "checked and rejected" from "never checked".
+        "unjudged": unjudged,
         "issues": list((end.get("issues") if end else None) or closure.get("issues") or []),
         "roles": roles,
         "plan": (planner or {}).get("plan") or {},
@@ -339,9 +357,19 @@ def render_markdown(report: Dict[str, Any]) -> str:
                 "（预算或死线到了）——交付物可用，直接取用即可"
             )
         elif run.get("deliverable_ok") is False and run.get("scores"):
-            lines.append(
-                "- 交付物：❌ 未通过验收标准（见下方未通过项）"
-            )
+            unjudged_ids = [str(s.get("id")) for s in run.get("unjudged") or []]
+            if unjudged_ids:
+                # Some criterion was never judged. Calling that a failed
+                # deliverable is a false claim: the deliverable was not
+                # rejected, it was never fully checked.
+                lines.append(
+                    "- 交付物：⚠ 未通过验收标准，且有标准**从未被判定**"
+                    f"（`{', '.join(unjudged_ids)}`）——见下方判定明细"
+                )
+            else:
+                lines.append(
+                    "- 交付物：❌ 未通过验收标准（见下方未通过项）"
+                )
         # Why the run ended the way it did. The engine writes the reason
         # on the run's end entry - including the specific cause of a
         # stagnation escalation ("the deliverable did not change for N
@@ -393,9 +421,21 @@ def render_markdown(report: Dict[str, Any]) -> str:
         if scores:
             lines.append("- 验收判定：")
             for score in scores:
-                flag = "PASS" if score.get("pass") else "FAIL"
+                # Three states, three marks. ``PASS``/``FAIL``/``UNDECIDED``
+                # - the middle state used to be rendered as FAIL, which
+                # told the reader that a criterion nobody checked had
+                # been checked and rejected.
+                state = score.get("pass")
+                if state is True:
+                    flag = "PASS"
+                elif state is False:
+                    flag = "FAIL"
+                else:
+                    flag = "UNDECIDED"
                 optional = not score.get("blocking", True)
                 mark = "（可选，不阻塞闭合）" if optional else ""
+                if flag == "UNDECIDED":
+                    mark = "（无人判定，不能算通过）"
                 lines.append(
                     f"  - [{flag}] `{score.get('id')}` {score.get('note', '')}{mark}"
                 )
@@ -403,6 +443,14 @@ def render_markdown(report: Dict[str, Any]) -> str:
             lines.append("- 未通过原因：")
             for issue in run["issues"]:
                 lines.append(f"  - {issue}")
+        unjudged = run.get("unjudged") or []
+        if unjudged:
+            lines.append("- 无人判定的标准（不等于失败，但也不能算通过）：")
+            for score in unjudged:
+                lines.append(
+                    f"  - `{score.get('id')}` {score.get('note', '')}"
+                    f"（判定来源：{score.get('source') or '-'}）"
+                )
         if run.get("errors"):
             lines.append("- 错误：")
             for error in run["errors"]:

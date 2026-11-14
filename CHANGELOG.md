@@ -4,6 +4,55 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.42] - 2026-11-15
+
+### Fixed
+
+The engine keeps three states per acceptance criterion - it passed, it
+failed, or nobody could judge it - and it is careful about the third
+one: an unjudged criterion never passes, and it never closes the loop
+on its own. The report threw the distinction away at the last step and
+turned three states into two.
+
+* **A criterion nobody had judged was reported as a failure.** The
+  report's failed list was built with ``not s.get("pass")``, which is
+  true for both ``False`` and ``None``. Every criterion that no machine
+  check, no reviewer and no lead could decide landed under "failed" and
+  was rendered as ``[FAIL]``. A reader was told a criterion that was
+  never checked had been checked and rejected - the exact opposite of
+  what the engine knew. The failed lists now use ``pass is False``,
+  which is the only thing that means "judged and rejected".
+
+* **The deliverable line made the same false claim.** A run whose
+  deliverable was never fully checked was rendered as "交付物：❌ 未通过
+  验收标准" - a clean rejection that never happened. When some
+  criterion was never judged, the report now says so and names the
+  criteria: the deliverable was not rejected, it was never fully
+  checked.
+
+* **The Markdown had no third mark.** The acceptance table rendered
+  ``PASS`` or ``FAIL`` and nothing else. It now renders ``UNDECIDED``
+  for a criterion nobody could judge, with the note that it cannot
+  count as a pass, and the report lists the unjudged criteria separately
+  with the source of the verdict ("rule", "file", "model", "lead",
+  "model-missing") so the reader can see *why* nothing could decide.
+
+* **The summary now carries the unjudged criteria.** ``run_summary``
+  gained an ``unjudged`` key next to ``failed`` and
+  ``optional_failed``, so a consumer of the JSON report can tell
+  "checked and rejected" from "never checked" without parsing prose.
+
+### Tests
+
+Eight new tests in ``tests/test_unjudged_report.py`` cover the chain:
+the unjudged criterion is kept out of the failed list, it is carried in
+its own list with its verdict source, a genuinely failed criterion still
+fails, an optional failure still stays optional, the Markdown renders
+``UNDECIDED`` and never ``[FAIL]`` for it, the unjudged section names
+the criteria, the deliverable line refuses to claim a clean rejection,
+and a pure failure still reports one. Every layer was counter-proven by
+reverting it on its own and confirming the matching test fails.
+
 ## [0.7.41] - 2026-11-15
 
 ### Fixed
