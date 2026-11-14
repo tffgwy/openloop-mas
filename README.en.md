@@ -7,6 +7,30 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.48 adds** (a ticket explains itself):
+
+- **A ticket used to be a serial number.** `mas tickets` printed one
+  line per ticket - an id, a state, a kind and a title - and a person
+  could not tell what was blocked, why the loop gave up, or which
+  command continues it.
+- **Every ticket now carries its own manual:** the task, the run, the
+  check that failed, the reason the loop stopped, how many rounds it
+  spent, the size of the last deliverable, the human note, and the
+  exact `mas resume` command.
+- **An empty command no longer looks broken.** `mas ledger` used to
+  print *nothing at all* on a fresh install. It now says the ledger is
+  empty, names the ledger file and shows the command that fills it.
+  `mas tickets` does the same and points at `mas demo`.
+- **The ledger says where it is** and how many entries it holds.
+- **Resolved tickets are listed separately**, with the decision and
+  the note the human left - and without a resume hint, because a
+  resolved ticket must not tell you to run it again.
+- **The status page names the problem, not the number.** Three waiting
+  escalations look identical when only their ids are shown; the
+  ticket line now carries the task next to the id.
+- 23 new regression tests; a nine-layer falsification framework
+  (AA~II) - every layer, reverted on its own, is caught by the tests.
+
 **What v0.7.47 adds** (`mas status` talks to a human):
 
 - **The status page used to be a JSON dump.** Fine for a machine,

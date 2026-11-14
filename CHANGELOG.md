@@ -4,6 +4,44 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.48] - 2026-11-15
+
+### Added
+
+``mas tickets`` printed one line per ticket - an id, a state, a kind
+and a title - and ``mas ledger`` printed *nothing at all* on an empty
+state. A command that prints nothing looks like a command that broke,
+and a ticket line that names only a serial number cannot be acted on.
+
+* **A ticket now explains itself.** Every ticket in the queue shows
+  the task it belongs to, the run that produced it, the check that
+  failed, the reason the loop gave up, how many rounds it spent, the
+  size of the last deliverable, the human note, and the exact
+  ``mas resume`` command that continues it.
+
+* **An empty command says it is empty.** ``mas ledger`` on a fresh
+  install says the ledger is empty, names the ledger file and shows
+  the command that fills it. ``mas tickets`` says the queue is empty
+  and points at ``mas demo``. A command that says nothing is
+  indistinguishable from a command that failed.
+
+* **The ledger tells you where it is.** After the entries, it prints
+  the total and the path of the full ledger.
+
+* **Resolved tickets are shown separately** from the waiting ones,
+  with the decision and the note the human left, and without a resume
+  hint - a resolved ticket must not tell the user to resume it.
+
+* **The status page names the problem, not just the number.** The
+  waiting-ticket line carries the ticket's task next to its id, so a
+  person can tell three waiting escalations apart.
+
+### Tests
+
+* ``tests/test_tickets_readable.py`` - 23 new regression tests.
+* ``work/_rc748.py`` - a nine-layer falsification framework
+  (AA~II); every layer is caught by the tests.
+
 ## [0.7.47] - 2026-11-15
 
 ### Added

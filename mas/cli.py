@@ -276,6 +276,17 @@ def cmd_status(args: argparse.Namespace) -> int:
         )
     waiting = [t["id"] for t in tickets if t.get("state") == "waiting_human"]
     resolved = [t["id"] for t in tickets if t.get("state") == "resolved"]
+    # A ticket id on its own does not say which problem is waiting.
+    # Keep the title next to the id so the status page names the
+    # problem, not just its serial number.
+    ticket_titles = {
+        t["id"]: (
+            (t.get("payload") or {}).get("title")
+            or (t.get("payload") or {}).get("goal")
+            or ""
+        )
+        for t in tickets
+    }
     runs = [
         run_summary(group["run_id"], group["rows"]) for group in group_runs(rows)
     ]
@@ -331,7 +342,10 @@ def cmd_status(args: argparse.Namespace) -> int:
     if waiting:
         print(f"待处理工单：{len(waiting)} 个")
         for ticket_id in waiting:
-            print(f"  {ticket_id}  →  mas resume {ticket_id} --note \"你的意见\"")
+            label = ticket_titles.get(ticket_id) or ""
+            if label:
+                print(f"  {ticket_id}  {label}")
+            print(f"    →  mas resume {ticket_id} --note \"你的意见\"")
     else:
         print("待处理工单：0 个")
     if resolved:
@@ -344,6 +358,14 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_ledger(args: argparse.Namespace) -> int:
+    """Show the append-only ledger.
+
+    An empty ledger used to print nothing at all. A command that
+    prints nothing looks like a command that failed, and the beginner
+    who just installed the tool cannot tell the difference between
+    "nothing happened yet" and "something went wrong". An empty
+    ledger now says so, and says what to run to fill it.
+    """
     config = load_config()
     engine = _engine(config)
     rows = engine.ledger.tail(args.tail)
@@ -351,26 +373,100 @@ def cmd_ledger(args: argparse.Namespace) -> int:
         rows = [row for row in rows if row.get("run_id") == args.run_id]
     if args.json:
         _print({"path": str(engine.ledger.path), "entries": rows}, True)
-    else:
-        for row in rows:
-            print(
-                f"#{row.get('seq')} {row.get('ts')} {row.get('role'):<9} "
-                f"iter={row.get('iteration')} {row.get('verdict', '')} {row.get('decision', '')} "
-                f"sha={str(row.get('artifact_sha', ''))[:10]}"
-            )
+        return 0
+    if not rows:
+        print("账本还是空的：还没有任何一次循环记录。")
+        print(f"  账本文件：{engine.ledger.path}")
+        print("  先跑一次：mas run --goal \"你的任务\" --criteria \"contains:关键词\"")
+        print("  想先看样例：mas demo")
+        return 0
+    for row in rows:
+        print(
+            f"#{row.get('seq')} {row.get('ts')} {row.get('role'):<9} "
+            f"iter={row.get('iteration')} {row.get('verdict', '')} {row.get('decision', '')} "
+            f"sha={str(row.get('artifact_sha', ''))[:10]}"
+        )
+    print()
+    print(f"共 {len(rows)} 条记录（完整账本：{engine.ledger.path}）")
     return 0
 
 
 def cmd_tickets(args: argparse.Namespace) -> int:
+    """Show the human ticket queue - and say what to do with each one.
+
+    The old listing was one line of ids and kinds: "T-2026...
+    waiting_human loop_escalation some title". A person standing in
+    front of an escalated run could not tell *what* was blocked, *why*
+    the loop gave up, or *where the last result is* - the three
+    things needed to decide whether to resume it. Every ticket now
+    carries its task, its reason, its last deliverable and the exact
+    command that continues it. An empty queue says so instead of
+    printing nothing.
+    """
     config = load_config()
     engine = _engine(config)
     tickets = engine.tickets.list(args.state)
     if args.json:
         _print({"tickets": tickets}, True)
-    else:
-        for ticket in tickets:
-            title = (ticket.get("payload") or {}).get("title", "")
-            print(f"{ticket['id']}  {ticket.get('state'):<14} {ticket.get('kind'):<16} {title}")
+        return 0
+    if not tickets:
+        if args.state:
+            print(f"没有 {args.state} 状态的工单。")
+        else:
+            print("工单队列是空的：所有循环要么自己闭环了，要么还没开始。")
+            print("  想看样例：mas demo")
+        return 0
+
+    waiting = [t for t in tickets if t.get("state") == "waiting_human"]
+    resolved = [t for t in tickets if t.get("state") == "resolved"]
+
+    def show(ticket: Dict[str, Any]) -> None:
+        payload = ticket.get("payload") or {}
+        title = payload.get("title") or payload.get("goal") or "(无标题)"
+        print(f"{ticket['id']}  [{ticket.get('state')}]  {title}")
+        goal = payload.get("goal") or ""
+        if goal and goal != title:
+            print(f"  任务：{goal}")
+        run_id = payload.get("run_id") or ""
+        if run_id:
+            print(f"  运行：{run_id}")
+        issues = payload.get("issues") or []
+        if issues:
+            print(f"  卡在：{issues[0]}")
+            if len(issues) > 1:
+                print(f"        （另有 {len(issues) - 1} 项未通过）")
+        reason = payload.get("reason") or ""
+        if reason:
+            print(f"  原因：{reason}")
+        attempts = payload.get("attempts")
+        if attempts:
+            print(f"  已尝试：{attempts} 轮")
+        last = payload.get("last_artifact") or ""
+        if last:
+            print(f"  最后产物：{len(last)} 字")
+        note = ticket.get("note") or ""
+        if note:
+            print(f"  人工意见：{note}")
+        decision = ticket.get("decision") or ""
+        if decision:
+            print(f"  处理结果：{decision}")
+        if ticket.get("state") == "waiting_human":
+            print(
+                f"  接着干：mas resume {ticket['id']} "
+                f"--note \"你的意见\""
+            )
+        print()
+
+    if waiting:
+        print(f"待处理工单：{len(waiting)} 个")
+        print()
+        for ticket in waiting:
+            show(ticket)
+    if resolved:
+        print(f"已解决工单：{len(resolved)} 个")
+        print()
+        for ticket in resolved:
+            show(ticket)
     return 0
 
 
