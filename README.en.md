@@ -12,6 +12,32 @@
 [![python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![deps](https://img.shields.io/badge/dependencies-0-orange.svg)]()
 
+**What v0.7.18 adds** (making the "one-click install" promise actually true):
+
+- **Downloading a single script used to fail** - the installer needed a source
+  checkout. It now pulls the published wheel from GitHub Releases, unpacks it
+  with the standard library and installs it into `~/.mas/`. **All you need on
+  the machine is Python 3.10+: no git, no pip, no build tools, no clone.**
+- **The install used to shadow the runtime** - the runtime was started with
+  `python -m mas`, and `python -m` puts the **current working directory** first on
+  `sys.path`. Inside a source checkout that directory holds the `mas/` package,
+  so MCP registration and agent skills came from the checkout and the freshly
+  installed runtime was never used. Registration and launch now go through the
+  **package path**;
+- **Registration did not say where the config lives** - a host could start the
+  runtime yet read somebody else's `config.json`. Both registrations now state
+  the **runtime path** and the **config file path**;
+- **Two real-machine traps** - under Git Bash `python` resolves to a POSIX path
+  without `.exe`, which Windows cannot execute; and `install.sh` joined
+  `PYTHONPATH` with colons while the Windows Python it invokes only accepts the
+  platform separator. Both are fixed;
+- **CI now stands up** - the new CI leg stages **only the scripts, no source**, so
+  the installer has to take the real download path; a second leg installs a wheel
+  **built from the current checkout** and asserts the installed version matches
+  the repository;
+- A `CHANGELOG.md` now exists, and `MAS_SKIP_PATH` / `MAS_PYTHON` were added so
+  the two installers expose exactly the same options.
+
 **What v0.7.14 adds** (DeepSeek Harness integration - one set of facts across clients):
 
 - **Another client, another truth?** - Codex, Claude Code and OpenMausBot already
