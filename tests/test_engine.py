@@ -23,6 +23,7 @@ from mas.config import DEFAULT_CONFIG
 from mas.demo import StaticProvider
 from mas.engine import Criterion, LoopEngine, evaluate_check, validate_criteria
 from mas.filechecks import evaluate_file_check
+from mas.providers import TruncatedAnswer
 from mas.teams import load_team
 
 
@@ -383,6 +384,109 @@ class ParallelReasoningStripTest(unittest.TestCase):
                 overlay,
             )
             self.assertTrue(outcome["pass"], outcome)
+
+
+class TruncatedAnswerLoopTest(unittest.TestCase):
+    """A cut off answer must not close the loop.
+
+    A truncated answer can satisfy the acceptance checks by accident: the
+    first paragraph may already contain the searched string, and the
+    partial draft may already be long enough. Delivering it would be a
+    false closure - the exact failure this project exists to prevent.
+    """
+
+    class _TruncatingProvider:
+        name = "truncator"
+        model = "truncator-1"
+
+        def __init__(self, truncate_first=1):
+            self.calls = 0
+            self.truncate_first = truncate_first
+            self.budgets = []
+
+        def complete(self, *, system, prompt, role="worker",
+                     expect_json=False, max_tokens=4000):
+            self.calls += 1
+            self.budgets.append((role, max_tokens))
+            if role == "worker":
+                self.worker_calls = getattr(self, "worker_calls", 0) + 1
+                if self.worker_calls <= self.truncate_first:
+                    raise TruncatedAnswer(
+                        "the model stopped at the output token limit "
+                        "before the answer was complete"
+                    )
+                text = "COMPLETE ANSWER WITH NEEDLE_TOKEN"
+            elif role == "verifier":
+                text = json.dumps({"verdict": "pass", "scores": [], "issues": []})
+            elif role == "planner":
+                text = json.dumps({"summary": "plan", "plan": ["step"], "risks": []})
+            else:
+                text = json.dumps({"decision": "close", "reason": "ok"})
+            return {
+                "text": text,
+                "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
+                "raw": {},
+            }
+
+        def describe(self):
+            return {"provider": self.name, "model": self.model, "calls": self.calls}
+
+    def _run(self, provider, workers=1):
+        tmp = tempfile.mkdtemp()
+        config = json.loads(json.dumps(DEFAULT_CONFIG))
+        config["state_dir"] = tmp
+        config["budget"] = dict(config["budget"])
+        config["budget"]["max_iterations"] = 4
+        config["orchestration"] = {
+            "parallel_workers": workers,
+            "reviewers": 1,
+            "review_mode": "all",
+        }
+        engine = LoopEngine(config, provider=provider)
+        result = engine.run(
+            "写一份结论",
+            [
+                {
+                    "id": "c1",
+                    "desc": "含关键结论",
+                    "check": {"type": "contains", "arg": "NEEDLE_TOKEN"},
+                }
+            ],
+        )
+        return result, engine
+
+    def test_a_truncated_attempt_does_not_close_the_loop(self):
+        provider = self._TruncatingProvider(truncate_first=1)
+        result, _engine = self._run(provider)
+        # The loop had to run a second iteration and still closed - the
+        # truncated first attempt never became the deliverable.
+        self.assertEqual(result.status, "closed")
+        self.assertGreaterEqual(result.iterations, 2)
+
+    def test_the_truncated_fragment_is_never_delivered(self):
+        provider = self._TruncatingProvider(truncate_first=1)
+        result, _engine = self._run(provider)
+        self.assertIn("NEEDLE_TOKEN", result.artifact)
+        self.assertEqual(result.artifact.strip(), "COMPLETE ANSWER WITH NEEDLE_TOKEN")
+
+    def test_the_truncation_is_recorded_in_the_ledger(self):
+        provider = self._TruncatingProvider(truncate_first=1)
+        _result, engine = self._run(provider)
+        rows = [r for r in engine.ledger.entries() if r.get("role") == "truncated"]
+        self.assertTrue(rows, "the truncation must be visible in the ledger")
+
+    def test_the_retry_gets_a_bigger_output_budget(self):
+        provider = self._TruncatingProvider(truncate_first=1)
+        self._run(provider)
+        worker_budgets = [b for role, b in provider.budgets if role == "worker"]
+        self.assertGreaterEqual(len(worker_budgets), 2)
+        self.assertGreater(worker_budgets[1], worker_budgets[0])
+
+    def test_the_parallel_path_also_retries_a_truncation(self):
+        provider = self._TruncatingProvider(truncate_first=1)
+        result, _engine = self._run(provider, workers=3)
+        self.assertEqual(result.status, "closed")
+        self.assertGreaterEqual(result.iterations, 2)
 
 
 class TestLoopClosure(unittest.TestCase):

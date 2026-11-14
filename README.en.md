@@ -7,6 +7,40 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.24 adds** (fixing "the answer was cut off and the loop
+closed anyway"):
+
+- **A cut off answer was delivered as a finished one.** The endpoint's
+  `finish_reason` was captured, put into the raw payload and then never
+  read again - so the one signal that says *this answer is incomplete*
+  was silently dropped.
+- **A truncated answer could close the loop.** A model that stops at the
+  output token limit produces a *partial* answer, and a partial answer
+  can satisfy the acceptance checks by accident: the searched string may
+  already be in the first paragraph, and the fragment may already be long
+  enough for `min_chars`. The loop then closed on the fragment, reported
+  `closed` and handed a half-written deliverable to the user. This is the
+  same family of false closure this project exists to prevent, and the
+  one most likely to happen in practice.
+- **The output budget was never raised.** The provider default of 4000
+  output tokens was used for every call and never increased, so a
+  deliverable that does not fit was always cut off - and always silently
+  accepted.
+- **A truncated answer is now a retryable iteration failure.** The
+  providers raise `TruncatedAnswer` instead of returning an incomplete
+  answer, the engine records the truncation in the ledger and retries the
+  iteration. The partial answer is discarded on purpose: a fragment that
+  happens to satisfy a check must not become the deliverable.
+- **The retry gets more room.** The output budget doubles with every
+  attempt (8000, 16000, 32000 - capped), so the loop gets a real chance
+  to finish. The budget is configurable with `output_max_tokens`.
+- **The parallel path behaves the same.** A truncated candidate is not
+  counted as a lost angle: the whole pool is retried, so the loop never
+  ranks a pool of fragments and picks the longest one.
+- Thirteen regression tests (eight on the provider side, five on the
+  engine side). Verified: with the detection removed one provider test
+  fails, and with the engine retry removed all five engine tests fail.
+
 **What v0.7.23 adds** (fixing two more ways the scratchpad leaked out):
 
 - **An unclosed reasoning block was delivered whole.** When a model

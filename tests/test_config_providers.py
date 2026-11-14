@@ -201,6 +201,67 @@ class TestSseFolding(unittest.TestCase):
             self._provider()._fold_sse(raw)
 
 
+class TestTruncationDetection(unittest.TestCase):
+    """A cut off answer must never be delivered as if it were complete."""
+
+    def test_finish_reason_length_is_truncated(self):
+        from mas.providers import is_truncated
+        self.assertTrue(is_truncated({"choices": [{"finish_reason": "length"}]}))
+
+    def test_finish_reason_stop_is_not_truncated(self):
+        from mas.providers import is_truncated
+        self.assertFalse(is_truncated({"choices": [{"finish_reason": "stop"}]}))
+
+    def test_the_anthropic_stop_reason_is_truncated(self):
+        from mas.providers import is_truncated
+        self.assertTrue(is_truncated({"stop_reason": "max_tokens"}))
+
+    def test_a_missing_finish_reason_is_not_truncated(self):
+        from mas.providers import is_truncated
+        self.assertFalse(is_truncated({"choices": [{}]}))
+
+    def test_an_empty_answer_is_not_truncated(self):
+        from mas.providers import is_truncated
+        self.assertFalse(is_truncated({}))
+
+    def test_the_openai_provider_raises_on_a_truncated_answer(self):
+        from mas.providers import OpenAICompatProvider, TruncatedAnswer
+
+        provider = OpenAICompatProvider(model="m", base_url="http://x/v1", api_key="k")
+        data = {
+            "choices": [{"message": {"content": "half an answer"}, "finish_reason": "length"}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
+        }
+        with self.assertRaises(TruncatedAnswer):
+            provider._post_json = lambda *a, **k: data
+            provider.complete(system="s", prompt="p", role="worker")
+
+    def test_the_openai_provider_returns_a_complete_answer(self):
+        from mas.providers import OpenAICompatProvider
+
+        provider = OpenAICompatProvider(model="m", base_url="http://x/v1", api_key="k")
+        data = {
+            "choices": [{"message": {"content": "the answer"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
+        }
+        provider._post_json = lambda *a, **k: data
+        result = provider.complete(system="s", prompt="p", role="worker")
+        self.assertEqual(result["text"], "the answer")
+
+    def test_the_anthropic_provider_raises_on_a_truncated_answer(self):
+        from mas.providers import AnthropicProvider, TruncatedAnswer
+
+        provider = AnthropicProvider(model="m", base_url="http://x", api_key="k")
+        data = {
+            "content": [{"type": "text", "text": "half an answer"}],
+            "stop_reason": "max_tokens",
+            "usage": {"input_tokens": 5, "output_tokens": 5},
+        }
+        with self.assertRaises(TruncatedAnswer):
+            provider._post_json = lambda *a, **k: data
+            provider.complete(system="s", prompt="p", role="worker")
+
+
 class TestStripReasoning(unittest.TestCase):
     def test_removes_think_block(self):
         text = "<think>先想一下</think>\n\n# 交付物\n正文"

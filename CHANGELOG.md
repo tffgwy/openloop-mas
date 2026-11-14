@@ -4,6 +4,56 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.24] - 2026-11-14
+
+### Fixed
+
+A cut off answer was delivered as if it were a finished one. The
+endpoint's `finish_reason` was captured, put into the raw payload and
+then never read again - so the one signal that says *this answer is
+incomplete* was silently dropped.
+
+* **A truncated answer could close the loop.** A model that stops at the
+  output token limit produces a *partial* answer - and a partial answer
+  can satisfy the acceptance checks by accident: the searched string may
+  already be in the first paragraph, and the fragment may already be long
+  enough for `min_chars`. The loop then closed on the fragment, reported
+  `closed` and handed a half-written deliverable to the user. This is
+  the same family of false closure this project exists to prevent, and it
+  was the most likely one to happen in practice.
+
+* **The output budget was never raised.** The provider default of 4000
+  output tokens was used for every call, and it was never increased. A
+  deliverable that does not fit in 4000 tokens was therefore always cut
+  off - and always silently accepted.
+
+* **A truncated answer is now a retryable iteration failure.** The
+  providers raise `TruncatedAnswer` instead of returning an incomplete
+  answer, the engine records the truncation in the ledger and retries the
+  iteration. The partial answer is discarded on purpose: a fragment that
+  happens to satisfy a check must not become the deliverable.
+
+* **The retry gets more room.** The output budget doubles with every
+  attempt (8000, 16000, 32000 - capped), so the loop gets a real chance
+  to finish the answer instead of failing the same way twice. The budget
+  is configurable with `output_max_tokens`.
+
+* **The parallel path behaves the same.** A truncated candidate is not
+  counted as a lost angle: the whole pool is retried. Otherwise the loop
+  would rank a pool of fragments and pick the longest one.
+
+### Added
+
+* `mas.providers.TruncatedAnswer`, plus `is_truncated` and
+  `finish_reason_of` for reading the signal out of a chat-completions or
+  an Anthropic Messages answer.
+* Thirteen regression tests: eight on the provider side (the signal, the
+  two providers, the complete-answer case) and five on the engine side
+  (no false closure, the fragment is never delivered, the ledger entry,
+  the growing budget, the parallel path). Verified: with the detection
+  removed one provider test fails, and with the engine retry removed all
+  five engine tests fail.
+
 ## [0.7.23] - 2026-11-14
 
 ### Fixed

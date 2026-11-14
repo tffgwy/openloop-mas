@@ -47,7 +47,7 @@ from mas.orchestration import (
     pick_personas,
     run_parallel,
 )
-from mas.providers import Provider, ProviderError, build_provider_chain
+from mas.providers import Provider, ProviderError, TruncatedAnswer, build_provider_chain
 from mas.roles import Roles
 from mas.tickets import TicketStore
 from mas.util import (
@@ -666,6 +666,23 @@ class LoopEngine:
                         ticket_id = ticket["id"]
                     status = STATUS_ESCALATED
                     break
+            except TruncatedAnswer as exc:
+                # The model ran out of output tokens. The answer is
+                # incomplete, so it must not be judged - but it is not a
+                # provider failure either: the next attempt gets a bigger
+                # output budget. The iteration is retried, and the ledger
+                # records why.
+                error = f"truncated answer: {exc}"
+                self._log(
+                    run_id, task_id, attempt, "truncated",
+                    {"error": error, "retry": True},
+                )
+                # The partial answer is discarded on purpose: a fragment
+                # that happens to satisfy a check must not become the
+                # deliverable.
+                artifact = ""
+                last_sha = ""
+                continue
             except ProviderError as exc:
                 error = f"provider error: {exc}"
                 self._log(run_id, task_id, attempt, "error", {"error": error})
@@ -746,6 +763,13 @@ class LoopEngine:
         summary: List[Dict[str, Any]] = []
         for index, item in enumerate(results):
             if isinstance(item, ParallelFailure):
+                # A truncated candidate is not a lost candidate: the whole
+                # pool is retried with a bigger output budget, so the
+                # truncation is raised instead of being counted as a
+                # failed angle. Otherwise the loop would rank a pool of
+                # fragments and happily pick the longest one.
+                if isinstance(item.error, TruncatedAnswer):
+                    raise item.error
                 errors.append(f"{angles[index]}: {item.message}")
                 summary.append({"angle": angles[index], "selected": False, "error": item.message})
                 continue
@@ -1118,12 +1142,29 @@ class LoopEngine:
         entry.update(payload)
         self.ledger.append(entry)
 
+    def _output_budget(self, role: str, attempt: int) -> int:
+        """How many output tokens a role may use on this attempt.
+
+        The provider default (4000) is small enough that a real deliverable
+        gets cut off. A cut off answer is not a failure of the model - it is
+        a budget problem, and it is solved by giving the next attempt more
+        room. The budget grows with the attempt number, so the loop gets a
+        real chance instead of failing the same way twice.
+        """
+        configured = self.config.get("output_max_tokens")
+        base = int(configured) if configured else 8000
+        # Every retry doubles the room, capped so a pathological run cannot
+        # ask for an unbounded answer.
+        grown = base * (2 ** max(0, attempt - 1))
+        return min(grown, 32000)
+
     def _call_text(self, role: str, state: Dict[str, Any], extra: str = "") -> Dict[str, Any]:
         return self.provider.complete(
             system=self.roles.system(role),
             prompt=self.roles.prompt(role, state, extra=extra),
             role=role,
             expect_json=False,
+            max_tokens=self._output_budget(role, int(state.get("attempt") or 1)),
         )
 
     def _call_json(self, role: str, state: Dict[str, Any], extra: str = "") -> Dict[str, Any]:
@@ -1132,6 +1173,7 @@ class LoopEngine:
             prompt=self.roles.prompt(role, state, extra=extra),
             role=role,
             expect_json=True,
+            max_tokens=self._output_budget(role, int(state.get("attempt") or 1)),
         )
         data = parse_json_loose(response["text"]) or {}
         if role == "verifier":

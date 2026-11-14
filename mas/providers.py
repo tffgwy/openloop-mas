@@ -32,6 +32,26 @@ class ProviderError(RuntimeError):
     """Raised when a provider call cannot be completed."""
 
 
+class TruncatedAnswer(ProviderError):
+    """Raised when the model stopped because it ran out of output tokens.
+
+    A truncated answer is not a failed call: the endpoint answered
+    normally and the text is well formed - it is simply *incomplete*. The
+    dangerous part is that an incomplete answer can still satisfy the
+    acceptance checks (a ``contains`` rule may already be satisfied by the
+    first paragraph, a ``min_chars`` rule by the partial draft), so the
+    loop would close on a half-written deliverable and report success.
+
+    The signal is therefore raised instead of returned silently, and the
+    engine turns it into a retryable iteration failure: the loop gets
+    another chance with a bigger budget instead of closing on a fragment.
+    """
+
+    def __init__(self, message: str, *, finish_reason: str = "length") -> None:
+        super().__init__(message)
+        self.finish_reason = finish_reason
+
+
 class Provider:
     """Base provider interface."""
 
@@ -70,6 +90,41 @@ class Provider:
 _CONTROL_MARKER_RE = re.compile(r"\]<\]\s*[^\[\]\n]{0,40}?\[>")
 _EMPTY_TOOL_CALL_RE = re.compile(r"<\s*tool_call\s*>.*?<\s*/\s*tool_call\s*>", re.DOTALL)
 _EMPTY_TOOL_CALL_OPEN_RE = re.compile(r"<\s*tool_call\s*/?\s*>")
+
+
+# A finish reason that means "the answer is incomplete". The endpoints
+# spell it differently, so every spelling is listed.
+_TRUNCATED_REASONS = ("length", "max_tokens", "max_output_tokens", "token_limit")
+
+
+def finish_reason_of(data: Dict[str, Any]) -> str:
+    """Read the finish reason out of a chat-completions / SSE answer."""
+    try:
+        choices = data.get("choices") or []
+        if choices and isinstance(choices[0], dict):
+            reason = choices[0].get("finish_reason")
+            if reason:
+                return str(reason)
+    except (AttributeError, TypeError, IndexError):
+        pass
+    return ""
+
+
+def is_truncated(data: Dict[str, Any]) -> bool:
+    """True when the endpoint stopped because the output budget ran out.
+
+    The signal is deliberately read from the *raw* answer rather than from
+    the text: a truncated answer looks like a perfectly normal answer.
+    """
+    reason = finish_reason_of(data).lower()
+    if reason in _TRUNCATED_REASONS:
+        return True
+    # The Anthropic Messages API uses ``stop_reason``.
+    try:
+        stop_reason = str(data.get("stop_reason") or "").lower()
+    except AttributeError:
+        stop_reason = ""
+    return stop_reason in _TRUNCATED_REASONS
 
 
 def sanitize_gateway_text(text: str) -> str:
@@ -352,6 +407,15 @@ class OpenAICompatProvider(_HttpProvider):
         text = sanitize_gateway_text(self._flatten_content(raw_text))
         usage = self._normalize_usage(data.get("usage") or {})
         self.calls += 1
+        if is_truncated(data):
+            # The answer is incomplete. Handing it back as a normal answer
+            # would let the acceptance checks pass on a fragment, so the
+            # truncation is raised instead of being returned silently.
+            raise TruncatedAnswer(
+                "the model stopped at the output token limit before the "
+                "answer was complete (finish_reason="
+                f"{finish_reason_of(data) or 'length'})"
+            )
         return {
             "text": text,
             "usage": usage,
@@ -389,6 +453,12 @@ class AnthropicProvider(_HttpProvider):
                 chunks.append(str(block.get("text", "")))
         usage = data.get("usage") or {}
         self.calls += 1
+        if is_truncated(data):
+            raise TruncatedAnswer(
+                "the model stopped at the output token limit before the "
+                "answer was complete (stop_reason="
+                f"{data.get('stop_reason') or 'max_tokens'})"
+            )
         return {
             "text": sanitize_gateway_text("".join(chunks)),
             "usage": self._normalize_usage(usage),
