@@ -32,8 +32,10 @@ from typing import Any, Callable, Dict, List, Optional
 
 from mas.filechecks import (
     FILE_CHECK_TYPES,
+    FileCheckError,
     evaluate_file_check,
     file_check_problem,
+    parse_file_check_arg,
     workspace_root,
 )
 from mas.filewrite import apply_write_blocks, plan_writes, write_instruction
@@ -491,6 +493,12 @@ class LoopEngine:
         ticket_id: Optional[str] = None
         status = STATUS_BUDGET
         error = ""
+        # ``error`` describes *this* run's outcome. ``last_error`` keeps
+        # the last transient failure - a truncation that was retried, a
+        # provider that the fallback chain recovered from - so an
+        # escalation can still say why the run was hard, without a
+        # recovered run reporting a failure that no longer applies.
+        last_error = ""
         stagnant = 0
         last_sha = ""
         plan_payload: Dict[str, Any] = {}
@@ -504,8 +512,23 @@ class LoopEngine:
                 status = STATUS_BUDGET
                 error = f"budget: exceeded deadline_sec={deadline_sec:.0f}"
                 break
+            if tokens >= max_tokens:
+                # The token ceiling is checked here as well as after the
+                # scoring step. A truncated answer is retried with a
+                # bigger output budget, and that retry runs *before* the
+                # end-of-iteration check - so a run that kept hitting
+                # the output limit could spend far past the ceiling
+                # the user set. The ceiling has to stop the loop at
+                # the top too, or it is not a ceiling.
+                status = STATUS_BUDGET
+                error = f"budget: tokens {tokens} >= {max_tokens}"
+                break
 
             attempt += 1
+            # A transient failure of the previous iteration does not
+            # describe this one. The error is cleared here so a run that
+            # recovers does not report the failure it already survived.
+            error = ""
             state: Dict[str, Any] = {
                 "run_id": run_id,
                 "task_id": task_id,
@@ -629,6 +652,13 @@ class LoopEngine:
 
                 if passed:
                     status = STATUS_CLOSED
+                    # The run closed. Any error left over from an earlier
+                    # iteration - a truncation that was retried, a failed
+                    # provider that the fallback chain recovered from -
+                    # describes a moment that has been resolved. Carrying
+                    # it made a successful run report "truncated answer"
+                    # as its explanation, which reads as a failed run.
+                    error = ""
                     break
                 if decision == "escalate":
                     payload = {
@@ -642,7 +672,7 @@ class LoopEngine:
                         "attempts": attempt,
                         "history": history,
                         "stagnation": stagnant,
-                        "reason": error or "loop could not close itself",
+                        "reason": error or last_error or "loop could not close itself",
                     }
                     if parent_ticket_id:
                         # A resumed loop keeps the ticket it already has.
@@ -673,6 +703,7 @@ class LoopEngine:
                 # output budget. The iteration is retried, and the ledger
                 # records why.
                 error = f"truncated answer: {exc}"
+                last_error = error
                 # The truncated call really did spend tokens - the
                 # endpoint generated them before it ran out of room. They
                 # are charged to the budget, so the ledger does not
@@ -691,6 +722,7 @@ class LoopEngine:
                 continue
             except ProviderError as exc:
                 error = f"provider error: {exc}"
+                last_error = error
                 self._log(run_id, task_id, attempt, "error", {"error": error})
                 status = STATUS_ERROR
                 break
@@ -705,6 +737,7 @@ class LoopEngine:
                 # also a library entry point, so the loop closes its own
                 # books before the error leaves.
                 error = f"internal error: {type(exc).__name__}: {exc}"
+                last_error = error
                 self._log(
                     run_id, task_id, attempt, "error",
                     {"error": error, "kind": "internal"},
@@ -928,18 +961,17 @@ class LoopEngine:
             }:
                 continue
             try:
-                raw = str(check.get("arg") or "")
-                if isinstance(check.get("arg"), dict):
-                    raw = str(
-                        check["arg"].get("path")
-                        or check["arg"].get("file")
-                        or check["arg"].get("target")
-                        or ""
-                    )
-                if "::" in raw:
-                    raw = raw.split("::", 1)[0]
-                raw = raw.strip()
-            except Exception:
+                # The path is read with the *same* parser the machine
+                # check uses. The engine used to parse the argument on
+                # its own, and the two parsers disagreed: a list or
+                # tuple argument (``["notes/a.txt"]``) was rendered by
+                # the check as ``notes/a.txt`` but by the engine as the
+                # literal text ``['notes/a.txt']``. The worker was then
+                # told to write a file with brackets in its name, while
+                # the check looked at another path - and the loop could
+                # never close, no matter how many iterations it ran.
+                raw, _value = parse_file_check_arg(check.get("arg"))
+            except FileCheckError:
                 raw = ""
             if raw and raw not in paths:
                 paths.append(raw)

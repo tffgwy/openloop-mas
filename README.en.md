@@ -7,6 +7,32 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.27 adds** (fixing three "the loop closed wrong" defects):
+
+- **A list-shaped file check could never close the loop.** When the engine
+  told the worker which files to write, it parsed the check argument with
+  *its own* parser - while the machine check used a *different* one. The two
+  disagreed on the list form: the check saw `notes/a.txt`, the engine saw
+  the literal text `['notes/a.txt']`. The worker was then asked to write a
+  file with brackets in its name while the check looked at another path -
+  and the loop could never close, no matter how many iterations it ran. The
+  engine now reads the path with the check's own parser, so the two can
+  never disagree.
+- **A recovered run reported the previous iteration's error.** A run that
+  was truncated, retried and then closed had `status` `closed` and `error`
+  `truncated answer: ...`. The CLI printed it as an explanation, which
+  reads like a failed run. A transient failure now belongs to the
+  iteration it happened in: closing clears it, while the ledger keeps its
+  `truncated` entry - the audit trail loses nothing.
+- **The token ceiling was not a ceiling.** The budget was only checked at
+  the *end* of an iteration, and a truncation retry happens *before* that.
+  A run that kept hitting the output limit could therefore spend far past
+  the ceiling the user set (measured: ceiling 200,000, spent 240,000). The
+  ceiling is now also checked at the top of every iteration, so it is
+  really a ceiling.
+- Seven regression tests. Verified: with each fix reverted, 2 + 2 + 1
+  tests fail.
+
 **What v0.7.26 adds** (fixing "when it broke, the ledger had no record"):
 
 - **An unexpected error erased the audit trail.** The engine caught

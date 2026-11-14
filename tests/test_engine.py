@@ -15,6 +15,7 @@ except ImportError:  # loaded as a top-level module (unittest -s tests)
 
 import json
 import os
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -1355,3 +1356,209 @@ class TestAdversarialPanelIntegrity(unittest.TestCase):
                     score.get("votes"), "1/1",
                     "a single reviewer must never speak for the whole panel",
                 )
+
+
+class WritePathArgumentTest(unittest.TestCase):
+    """The engine must read the file path exactly like the check does.
+
+    The write instruction names the files the worker has to write. The
+    path came from the *check argument*, and the engine used to parse
+    that argument on its own while the machine check used a different
+    parser. The two disagreed on the list form: the check saw
+    ``notes/a.txt`` and the engine saw the literal text
+    ``['notes/a.txt']``. The worker was told to write a file with
+    brackets in its name, the check looked at another path, and the loop
+    could never close - no matter how many iterations it ran.
+    """
+
+    class _WriterProvider:
+        """Writes the file the write instruction named, like a good worker."""
+
+        name = "writer"
+
+        def __init__(self) -> None:
+            self.model = "writer-1"
+            self.prompts = []
+
+        def complete(self, *, system, prompt, role="worker",
+                     expect_json=False, max_tokens=4000):
+            if role == "worker":
+                self.prompts.append(prompt)
+                match = re.search(r"\u9700\u8981\u5199\u5165\u7684\u6587\u4ef6\uff1a\n- ([^\n]+)", prompt)
+                path = match.group(1).strip() if match else "notes/a.txt"
+                text = f'<<<MAS:FILE path="{path}">>>>\nHELLO\n<<<MAS:END FILE>>>\n'
+            elif role == "verifier":
+                text = json.dumps({"verdict": "pass", "scores": [], "issues": []})
+            elif role == "planner":
+                text = json.dumps({"summary": "plan", "plan": ["step"], "risks": []})
+            else:
+                text = json.dumps({"decision": "close", "reason": "ok"})
+            return {
+                "text": text,
+                "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
+                "raw": {},
+            }
+
+        def describe(self):
+            return {"provider": self.name, "model": self.model}
+
+    def _run(self, arg):
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = os.path.join(tmp, "ws")
+            os.makedirs(workspace, exist_ok=True)
+            provider = self._WriterProvider()
+            config = make_config(tmp)
+            config["workspace"] = workspace
+            engine = LoopEngine(config, provider=provider)
+            result = engine.run(
+                "\u628a\u7ed3\u8bba\u5199\u8fdb notes/a.txt",
+                [{"id": "c1", "desc": "\u6587\u4ef6\u5b58\u5728", "check": {
+                    "type": "file_exists", "arg": arg,
+                }}],
+            )
+            written = os.path.exists(os.path.join(workspace, "notes", "a.txt"))
+            return result, written, provider.prompts[0]
+
+    def test_the_list_argument_names_the_real_path(self):
+        result, written, prompt = self._run(["notes/a.txt"])
+        self.assertTrue(result.closed, result.status)
+        self.assertTrue(written, "the file was not written")
+        self.assertIn("- notes/a.txt", prompt)
+        self.assertNotIn("notes/a.txt\']", prompt)
+
+    def test_the_tuple_argument_names_the_real_path(self):
+        result, written, prompt = self._run(("notes/a.txt",))
+        self.assertTrue(result.closed, result.status)
+        self.assertTrue(written, "the file was not written")
+        self.assertIn("- notes/a.txt", prompt)
+
+    def test_the_object_argument_still_works(self):
+        result, written, _prompt = self._run({"path": "notes/a.txt"})
+        self.assertTrue(result.closed, result.status)
+        self.assertTrue(written, "the file was not written")
+
+
+class RecoveredRunErrorTest(unittest.TestCase):
+    """A run that recovered must not report the failure it survived."""
+
+    class _TruncateThenAnswer:
+        """The first worker call is truncated, the second one succeeds."""
+
+        name = "flaky"
+
+        def __init__(self) -> None:
+            self.model = "flaky-1"
+            self.calls = 0
+
+        def complete(self, *, system, prompt, role="worker",
+                     expect_json=False, max_tokens=4000):
+            if role == "worker":
+                self.calls += 1
+                if self.calls == 1:
+                    raise TruncatedAnswer(
+                        "the model stopped at the output token limit",
+                        usage={"total_tokens": 120},
+                    )
+                text = "FINAL ANSWER WITH THE NEEDLE"
+            elif role == "verifier":
+                text = json.dumps({"verdict": "pass", "scores": [], "issues": []})
+            elif role == "planner":
+                text = json.dumps({"summary": "plan", "plan": ["step"], "risks": []})
+            else:
+                text = json.dumps({"decision": "close", "reason": "ok"})
+            return {
+                "text": text,
+                "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 50},
+                "raw": {},
+            }
+
+        def describe(self):
+            return {"provider": self.name, "model": self.model}
+
+    def test_a_closed_run_carries_no_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = LoopEngine(make_config(tmp), provider=self._TruncateThenAnswer())
+            result = engine.run(
+                "\u5199\u4e00\u6bb5\u6587",
+                [{"id": "c1", "desc": "\u6709\u7ed3\u8bba", "check": {
+                    "type": "contains", "arg": "NEEDLE",
+                }}],
+            )
+            self.assertTrue(result.closed, result.status)
+            self.assertEqual(result.error, "", "a closed run must not report an error")
+
+    def test_the_retry_is_still_recorded_in_the_ledger(self):
+        # Clearing the error must not erase the audit trail: the
+        # truncation is still visible as its own ledger entry.
+        with tempfile.TemporaryDirectory() as tmp:
+            engine = LoopEngine(make_config(tmp), provider=self._TruncateThenAnswer())
+            engine.run(
+                "\u5199\u4e00\u6bb5\u6587",
+                [{"id": "c1", "desc": "\u6709\u7ed3\u8bba", "check": {
+                    "type": "contains", "arg": "NEEDLE",
+                }}],
+            )
+            rows = [r for r in engine.ledger.entries() if r.get("role") == "truncated"]
+            self.assertTrue(rows, "the truncation was not recorded")
+
+
+class TokenCeilingTest(unittest.TestCase):
+    """The token ceiling must hold even when every answer is truncated."""
+
+    class _AlwaysTruncated:
+        name = "truncating"
+
+        def __init__(self) -> None:
+            self.model = "truncating-1"
+
+        def complete(self, *, system, prompt, role="worker",
+                     expect_json=False, max_tokens=4000):
+            if role == "worker":
+                raise TruncatedAnswer(
+                    "the model stopped at the output token limit",
+                    usage={"total_tokens": 30000},
+                )
+            text = json.dumps({"summary": "plan", "plan": [], "risks": []})
+            return {
+                "text": text,
+                "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10},
+                "raw": {},
+            }
+
+        def describe(self):
+            return {"provider": self.name, "model": self.model}
+
+    def test_the_run_stops_at_the_ceiling(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = make_config(tmp)
+            config["budget"] = dict(config["budget"])
+            config["budget"]["max_tokens"] = 200000
+            engine = LoopEngine(config, provider=self._AlwaysTruncated())
+            result = engine.run(
+                "\u5199\u4e00\u6bb5\u6587",
+                [{"id": "c1", "desc": "\u6709\u7ed3\u8bba", "check": {
+                    "type": "contains", "arg": "NEEDLE",
+                }}],
+            )
+            self.assertEqual(result.status, "budget_exhausted")
+            self.assertLessEqual(
+                result.tokens_used, 200000 + 30000,
+                "the run spent far past the ceiling the user set",
+            )
+
+    def test_the_ceiling_is_checked_before_the_next_iteration(self):
+        # The truncation retry runs before the end-of-iteration budget
+        # check, so the ceiling has to stop the loop at the top as well.
+        with tempfile.TemporaryDirectory() as tmp:
+            config = make_config(tmp)
+            config["budget"] = dict(config["budget"])
+            config["budget"]["max_tokens"] = 50000
+            engine = LoopEngine(config, provider=self._AlwaysTruncated())
+            result = engine.run(
+                "\u5199\u4e00\u6bb5\u6587",
+                [{"id": "c1", "desc": "\u6709\u7ed3\u8bba", "check": {
+                    "type": "contains", "arg": "NEEDLE",
+                }}],
+            )
+            self.assertEqual(result.status, "budget_exhausted")
+            self.assertLessEqual(result.tokens_used, 80000, result.tokens_used)

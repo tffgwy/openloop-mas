@@ -4,6 +4,53 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.27] - 2026-11-14
+
+### Fixed
+
+Three defects that made a loop close wrong - or fail to close at all.
+
+* **A list-shaped file check could never close the loop.** The engine
+  parsed the check argument with its own logic while the machine check
+  used a different parser. The two disagreed on the list form: the check
+  saw `notes/a.txt`, the engine saw the literal text `['notes/a.txt']`.
+  The worker was told to write a file with brackets in its name while
+  the check looked at another path - so the loop never closed, no matter
+  how many iterations it ran. The engine now reads the path with the
+  check's own parser, so the two can never disagree.
+
+* **A recovered run reported the error it had already survived.** A run
+  that was truncated, retried and then closed carried `status` `closed`
+  *and* `error` `truncated answer: ...`. The CLI printed the error as an
+  explanation, which reads like a failed run. A transient failure now
+  belongs to the iteration it happened in - closing clears it - while the
+  ledger keeps its `truncated` entry, so the audit trail loses nothing.
+
+* **The token ceiling was not a ceiling.** The budget was only checked at
+  the end of an iteration, and the truncation retry runs before that. A
+  run that kept hitting the output limit could spend far past the
+  ceiling the user set (measured: ceiling 200,000, spent 240,000). The
+  ceiling is now checked at the top of every iteration as well, so it
+  really is a ceiling.
+
+### Added
+
+* Seven regression tests: three on the write-path argument (list, tuple
+  and object form), two on the recovered run (no error on a closed run,
+  the truncation still in the ledger) and two on the token ceiling.
+  Verified: with each fix reverted, 2 + 2 + 1 tests fail.
+
+### Verified
+
+* `pytest tests/` - 434 passed, 4 skipped.
+* `unittest discover -s tests` - Ran 438 tests, OK.
+* `ruff check mas tests` - all checks passed.
+* Live run against the local bridge (`claude-opus-5-5`): a two-candidate
+  parallel run with a file-level check closed on the first iteration, the
+  file really landed on disk and the check read the real file. The same
+  task with the list-shaped argument - the case that used to deadlock -
+  also closed on the first iteration.
+
 ## [0.7.26] - 2026-11-14
 
 ### Fixed
