@@ -7,6 +7,38 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.51 adds** (**the replay talks like a person**):
+
+- **The replay was the last place that still spoke only in runs** ---
+  **v0.7.50 taught the report to count problems, but `mas replay` still
+  printed a flat ledger**, and the replay is exactly the screen a person
+  reads to find out what the loop did and what to do next;
+
+- **Two attempts used to have no visible boundary** --- **two tries at
+  one problem were fourteen flat rows**, and "one problem tried twice"
+  looked exactly like "two problems tried once";
+
+- **The replay is now grouped by run** --- **one block per run, with
+  its status, round count, token spend, and what it was about**;
+
+- **An unfinished run now hands itself to you** --- **the replay used
+  to stop at the last line even when a ticket was waiting**; it now
+  prints the exact command: `→ 接着干：mas resume T-... --note "..."`;
+
+- **The replay closes with the problems** --- **one line per problem**
+  with its state, attempts and cost, not one line per attempt;
+
+- **The report leads with the problems** --- **the run table lists every
+  attempt, so a reader who stops there thinks there is more to do than
+  there is**; the report now opens with the problem table;
+
+- **`mas replay --json` says the same thing** --- **it now carries
+  `runs`, `threads` and `problems_open`, and every step knows its
+  `run_id`**;
+
+- 20 regression tests, with **all eight change layers reverted one by
+  one to prove the tests fail without them**.
+
 **What v0.7.50 adds** (one problem, one thread):
 
 - **The ledger counts runs; the human queue counts problems - and the

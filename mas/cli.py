@@ -638,12 +638,56 @@ def cmd_replay(args: argparse.Namespace) -> int:
         _print(trace, True)
         return 0
     print(f"回放 {trace['steps_count']} 条账本记录")
-    for step in trace["steps"]:
-        mark = "*" if step.get("closed") else "-"
+    # The steps are grouped by the run they belong to. A flat list of
+    # twenty entries does not say whether the loop handled one problem
+    # twice or two problems once - the grouping does.
+    for block in trace.get("runs") or []:
+        print()
         print(
-            f"{mark} #{step.get('seq')} iter={step.get('iteration')} "
-            f"{step.get('role')} {step.get('decision') or ''} {step.get('detail') or ''}".rstrip()
+            f"── 运行 {block.get('run_id')}"
+            f"（{block.get('status')}"
+            f"，{block.get('iterations')} 轮"
+            f"，{block.get('tokens')} token）"
         )
+        goal = block.get("goal") or ""
+        if goal:
+            print(f"   任务：{goal}")
+        for step in trace["steps"]:
+            if step.get("run_id") != block.get("run_id"):
+                continue
+            mark = "*" if step.get("closed") else "-"
+            print(
+                f"  {mark} #{step.get('seq')} iter={step.get('iteration')} "
+                f"{step.get('role')} {step.get('decision') or ''} {step.get('detail') or ''}".rstrip()
+            )
+        # An unfinished run needs somebody to pick it up. The replay
+        # used to stop at the last line of the trace, so a reader who
+        # replayed an escalated run learned what went wrong and not
+        # what to do about it - the same gap the report closed in
+        # v0.7.49, left open here.
+        ticket_id = block.get("ticket_id") or ""
+        if ticket_id and not block.get("closed"):
+            print(
+                f"   → 接着干：mas resume {ticket_id} --note \"你的意见\""
+            )
+    # The problems behind the runs, so "one problem, two attempts"
+    # reads as one problem and two attempts.
+    threads = trace.get("threads") or []
+    # Every problem gets a row, even a single attempt: "one open problem"
+    # is exactly the case where the reader most needs to see that it is
+    # still open. The handover hint below says how to continue; this
+    # says whether it is done.
+    if threads:
+        print()
+        print("按问题分组：")
+        for thread in threads:
+            label = thread.get("title") or thread.get("goal") or thread.get("thread_id")
+            state = "已解决" if thread.get("closed") else "待处理"
+            print(
+                f"  [{state}] {label}"
+                f"　{thread.get('run_count')} 次尝试"
+                f"　{thread.get('iterations')} 轮"
+            )
     return 0
 
 

@@ -4,6 +4,46 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.51] - 2026-11-15
+
+### Fixed
+
+The replay was the one place that still spoke only in runs. `mas report`
+learned to talk about problems in v0.7.50, but `mas replay` printed a
+flat list of ledger rows - and a replay is exactly what a person reads
+when they want to know what the loop did and what they have to do next.
+Twenty rows for two attempts on one problem read exactly like twenty
+rows for two separate problems. And the replay stopped at the last line
+of the trace: an escalated run replayed fine, showed what went wrong,
+and never said where to pick it up. The report got a handover hint in
+v0.7.49; the replay left the gap open.
+
+Measured on the live model: after one resume the replay printed a single
+flat block of fourteen rows with no run boundaries, no grouping and no
+handover line, even though the ticket was waiting in the queue.
+
+* **The replay groups by run.** Each run is a block with its own status,
+  round count and token spend, and the task it was about. A reader can
+  see where one attempt ended and the next began.
+
+* **The replay hands the open problem to the reader.** An unfinished run
+  prints the exact command to continue it:
+  `→ 接着干：mas resume T-... --note "你的意见"`.
+
+* **The replay groups by problem.** A closing section says which
+  attempts belong to which problem, whether it is still open, and how
+  many rounds it has cost - one line per problem, not one per attempt.
+
+* **The report leads with the problems.** The Markdown report now opens
+  with a "问题概览" table (problem, state, attempts, rounds, ticket,
+  tokens) *before* the run table, because the run table lists every
+  attempt and a reader who stops there concludes there is more to do
+  than there really is.
+
+* **The machine-readable replay says the same thing.** `mas replay
+  --json` now carries `runs`, `threads` and `problems_open` next to the
+  steps, and every step knows its `run_id`.
+
 ## [0.7.50] - 2026-11-15
 
 ### Fixed

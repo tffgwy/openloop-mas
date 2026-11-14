@@ -525,6 +525,29 @@ def render_markdown(report: Dict[str, Any]) -> str:
         lines.append("账本为空，暂无运行记录。")
         return "\n".join(lines) + "\n"
 
+    # The problems, first. The run table below lists every attempt,
+    # so a problem that was attempted twice appears there twice - and
+    # a reader who stops at that table concludes that two things need
+    # doing. The thread table is the one that answers "how much is
+    # left".
+    threads = report.get("threads") or []
+    if threads:
+        lines.append("## 问题概览")
+        lines.append("")
+        lines.append("| 问题 | 状态 | 尝试 | 轮数 | 工单 | token |")
+        lines.append("|---|---|---|---|---|---|")
+        for thread in threads:
+            label = str(thread.get("title") or thread.get("goal") or thread.get("thread_id"))
+            label = label.replace("|", "\\|")[:40]
+            state = "已解决" if thread.get("closed") else "待处理"
+            ticket = str(thread.get("ticket_id") or "-")
+            lines.append(
+                f"| {label or '-'} | {state} | {thread.get('run_count', 0)} | "
+                f"{thread.get('iterations', 0)} | `{ticket}` | "
+                f"{int(thread.get('tokens') or 0)} |"
+            )
+        lines.append("")
+
     lines.append("## 运行概览")
     lines.append("")
     lines.append("| 运行 ID | 任务 | 状态 | 决策 | 迭代 | 停滞 | 产物 SHA | 条目 | token |")
@@ -737,6 +760,12 @@ def replay_trace(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     The trace lists every ledger entry in order with the role, the decision
     and the artifact hash, so a reviewer can step through what the loop did.
+
+    The trace also says *where a run belongs*. A ledger that holds two
+    attempts on one problem prints them as one flat list, and the reader
+    cannot tell "the loop tried twice" from "the loop handled two
+    problems" - so the trace groups the steps by run, and the runs by
+    the problem they belong to.
     """
     steps: List[Dict[str, Any]] = []
     for row in rows:
@@ -744,6 +773,7 @@ def replay_trace(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             {
                 "seq": row.get("seq"),
                 "ts": row.get("ts"),
+                "run_id": row.get("run_id"),
                 "iteration": row.get("iteration"),
                 "role": row.get("role"),
                 "decision": row.get("decision"),
@@ -753,11 +783,35 @@ def replay_trace(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "detail": _short_detail(row),
             }
         )
+    # The runs in the trace, each with the outcome the ledger booked.
+    run_blocks: List[Dict[str, Any]] = []
+    for group in group_runs(rows):
+        summary = run_summary(group["run_id"], group["rows"])
+        run_blocks.append(
+            {
+                "run_id": summary["run_id"],
+                "steps": len(group["rows"]),
+                "status": summary["status"],
+                "closed": summary["closed"],
+                "iterations": summary["iterations"],
+                "goal": summary["goal"],
+                "ticket_id": summary["ticket_id"],
+                "artifact_path": summary["artifact_path"],
+                "tokens": summary["tokens"],
+            }
+        )
+    # The problems behind the runs, so a reader sees "one problem, two
+    # attempts" instead of two flat runs.
+    threads = group_threads([run_summary(g["run_id"], g["rows"]) for g in group_runs(rows)])
     return {
         "steps": steps,
         "steps_count": len(steps),
         "artifact_chain": [s["artifact_sha"] for s in steps if s.get("artifact_sha")],
         "terminal": steps[-1] if steps else None,
+        # The attempts and the problems they belong to.
+        "runs": run_blocks,
+        "threads": threads,
+        "problems_open": len([t for t in threads if not t.get("closed")]),
     }
 
 

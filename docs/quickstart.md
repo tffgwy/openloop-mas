@@ -275,6 +275,58 @@ mas artifacts --json                        # 结构化输出
 
 ---
 
+## 5.2 回放也要说人话
+
+`mas report` 讲的是**问题**，`mas replay` 讲的是**过程**——
+但过程也得让人看出**问题**在哪。
+
+```bash
+mas replay
+```
+
+```
+回放 14 条账本记录
+
+── 运行 R-b59585accd（budget_exhausted，1 轮，14252 token）
+   任务：写一份循环工程上手指南
+  - #1 iter=1 planner
+  - #2 iter=1 write
+  ...
+  - #7 iter=1 run_end revise status=budget_exhausted decision=revise
+   → 接着干：mas resume T-20261115-070909-a094 --note "你的意见"
+
+── 运行 R-bc72d41c8d（budget_exhausted，1 轮，13103 token）
+   任务：写一份循环工程上手指南
+  ...
+
+按问题分组：
+  [待处理] 写一份循环工程上手指南　2 次尝试　2 轮
+```
+
+三件事：
+
+- **每次运行一块** —— 状态、轮数、token 花费、这次在干什么；
+- **没闭环的运行给出接手命令** —— 不用再去翻工单队列找是哪一张；
+- **末尾一行一个问题** —— 「待处理 / 已解决、几次尝试、几轮花费」。
+
+`mas report` 的开头也多了一张**「问题概览」表**，
+**排在「运行概览」之前**——因为运行表会把同一个问题列成两行，
+**先读运行表的人会以为有两件事要做**。
+
+机器可读的版本也一样：
+
+```bash
+mas replay --json
+```
+
+```json
+{
+  "runs": [{"run_id": "R-...", "status": "budget_exhausted", "closed": false, "ticket_id": "T-..."}],
+  "threads": [{"thread_id": "T-...", "run_count": 2, "closed": false, "iterations": 2}],
+  "problems_open": 1
+}
+```
+
 ## 6. 接入 MCP 客户端
 
 安装器已自动注册。手动注册（任意 MCP 客户端通用）：
