@@ -47,9 +47,22 @@ class TruncatedAnswer(ProviderError):
     another chance with a bigger budget instead of closing on a fragment.
     """
 
-    def __init__(self, message: str, *, finish_reason: str = "length") -> None:
+    def __init__(self, message: str, *, finish_reason: str = "length",
+                 usage: Dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.finish_reason = finish_reason
+        # The truncated call *did* spend tokens - the endpoint generated
+        # them before it ran out of room. Carrying the usage along lets
+        # the engine charge the call to the budget, so the ledger does not
+        # under-report the real spend of a run that had to retry.
+        self.usage = usage or {}
+
+    @property
+    def tokens(self) -> int:
+        try:
+            return int(self.usage.get("total_tokens", 0) or 0)
+        except (AttributeError, TypeError, ValueError):
+            return 0
 
 
 class Provider:
@@ -414,7 +427,8 @@ class OpenAICompatProvider(_HttpProvider):
             raise TruncatedAnswer(
                 "the model stopped at the output token limit before the "
                 "answer was complete (finish_reason="
-                f"{finish_reason_of(data) or 'length'})"
+                f"{finish_reason_of(data) or 'length'})",
+                usage=usage,
             )
         return {
             "text": text,
@@ -457,7 +471,8 @@ class AnthropicProvider(_HttpProvider):
             raise TruncatedAnswer(
                 "the model stopped at the output token limit before the "
                 "answer was complete (stop_reason="
-                f"{data.get('stop_reason') or 'max_tokens'})"
+                f"{data.get('stop_reason') or 'max_tokens'})",
+                usage=self._normalize_usage(usage),
             )
         return {
             "text": sanitize_gateway_text("".join(chunks)),

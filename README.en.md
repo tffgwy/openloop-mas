@@ -7,6 +7,28 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.25 adds** (fixing "the budget ledger was lying"):
+
+- **A truncated call was free.** The endpoint had already generated the
+  tokens and been billed for them before it stopped. The exception
+  carried the answer but not the usage, so the engine charged the call
+  nothing. A run that truncated five times looked five times cheaper
+  than it was, and the budget ceiling was effectively five times too
+  generous.
+- **The parallel pool under-reported by a factor of N.** Three workers
+  meant three truncations and three sets of tokens, but only the single
+  re-raised truncation was counted - the other two candidates' tokens
+  vanished. The whole pool's spend is now collected before the
+  truncation is raised, so the number in the ledger is the number the
+  endpoint billed.
+- `TruncatedAnswer` now carries the usage of the call that produced it,
+  and the engine charges it to the budget. The ledger's `truncated`
+  entry reports the tokens that were spent.
+- Two regression tests: the truncated call is charged to the budget, and
+  every truncated candidate of a parallel pool is charged. Verified:
+  with the charging removed the parallel test reports 0 tokens instead
+  of the expected 2400.
+
 **What v0.7.24 adds** (fixing "the answer was cut off and the loop
 closed anyway"):
 

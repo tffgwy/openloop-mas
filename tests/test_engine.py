@@ -488,6 +488,34 @@ class TruncatedAnswerLoopTest(unittest.TestCase):
         self.assertEqual(result.status, "closed")
         self.assertGreaterEqual(result.iterations, 2)
 
+    def test_the_truncated_call_is_charged_to_the_budget(self):
+        # The truncated call really did spend tokens - the endpoint
+        # generated them before it ran out of room. A run that had to
+        # retry must not hide that spend from the budget.
+        provider = self._TruncatingProvider(truncate_first=1)
+        result, _engine = self._run(provider)
+        self.assertGreater(result.tokens_used, 0)
+
+    def test_the_parallel_pool_charges_every_truncated_candidate(self):
+        # Three workers ran, so three calls were truncated and three sets
+        # of tokens were spent. Counting only the re-raised one would
+        # under-report the spend of a parallel run by a factor of three.
+        class _AllTruncating(self._TruncatingProvider):
+            def complete(self, **kwargs):
+                if kwargs.get("role") == "worker":
+                    self.calls += 1
+                    self.worker_calls = getattr(self, "worker_calls", 0) + 1
+                    raise TruncatedAnswer(
+                        "the model stopped at the output token limit",
+                        usage={"total_tokens": 200},
+                    )
+                return super().complete(**kwargs)
+
+        provider = _AllTruncating(truncate_first=99)
+        result, _engine = self._run(provider, workers=3)
+        # Every attempt truncated, so every attempt charged 3 x 200.
+        self.assertGreaterEqual(result.tokens_used, 3 * 200 * result.iterations)
+
 
 class TestLoopClosure(unittest.TestCase):
     def test_loop_closes_and_ledger_has_one_entry_per_cycle(self):

@@ -4,6 +4,39 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.25] - 2026-11-14
+
+### Fixed
+
+The truncation handling added in v0.7.24 threw the truncated answer
+away - including the tokens the endpoint had already spent to produce
+it. The budget therefore under-reported the real cost of a run that had
+to retry.
+
+* **A truncated call was free.** The endpoint generated tokens, billed
+  them, and then stopped. The exception carried the answer but not the
+  usage, so the engine charged the call nothing. A run that truncated
+  five times looked five times cheaper than it was, and the budget
+  ceiling was effectively five times too generous.
+
+* **The parallel pool under-reported by a factor of N.** With three
+  workers, three calls were truncated and three sets of tokens were
+  spent - but only the single re-raised truncation was counted. The
+  other two candidates' tokens vanished. The whole pool's spend is now
+  collected before the truncation is raised, so the number in the ledger
+  is the number the endpoint billed.
+
+* `TruncatedAnswer` now carries the usage of the call that produced it,
+  and the engine charges it to the budget. The ledger's `truncated`
+  entry reports the tokens that were spent.
+
+### Added
+
+* Two regression tests: the truncated call is charged to the budget, and
+  every truncated candidate of a parallel pool is charged. Verified:
+  with the charging removed the parallel test reports 0 tokens instead
+  of the expected 2400.
+
 ## [0.7.24] - 2026-11-14
 
 ### Fixed

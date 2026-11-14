@@ -673,9 +673,15 @@ class LoopEngine:
                 # output budget. The iteration is retried, and the ledger
                 # records why.
                 error = f"truncated answer: {exc}"
+                # The truncated call really did spend tokens - the
+                # endpoint generated them before it ran out of room. They
+                # are charged to the budget, so the ledger does not
+                # under-report the spend of a run that had to retry.
+                spent = int(getattr(exc, "tokens", 0) or 0)
+                tokens += spent
                 self._log(
                     run_id, task_id, attempt, "truncated",
-                    {"error": error, "retry": True},
+                    {"error": error, "retry": True, "tokens": spent},
                 )
                 # The partial answer is discarded on purpose: a fragment
                 # that happens to satisfy a check must not become the
@@ -755,6 +761,22 @@ class LoopEngine:
         results = run_parallel(
             [self._make_candidate_task(state, angle) for angle in angles]
         )
+        # A truncation anywhere in the pool invalidates the whole pool.
+        # The tokens of *every* truncated candidate are collected here, not
+        # just the one that is re-raised: the other candidates ran too and
+        # really did spend their budget. Counting only the re-raised one
+        # under-reported the spend of a parallel run.
+        truncated_tokens = 0
+        truncation: Optional[TruncatedAnswer] = None
+        for item in results:
+            if isinstance(item, ParallelFailure) and isinstance(item.error, TruncatedAnswer):
+                truncated_tokens += int(getattr(item.error, "tokens", 0) or 0)
+                if truncation is None:
+                    truncation = item.error
+        if truncation is not None:
+            truncation.usage = dict(truncation.usage or {})
+            truncation.usage["total_tokens"] = truncated_tokens
+            raise truncation
         crits = [Criterion.from_raw(raw, i) for i, raw in enumerate(state.get("criteria") or [])]
         best_index = -1
         best_rank = (-1, -1, -1)
@@ -763,13 +785,10 @@ class LoopEngine:
         summary: List[Dict[str, Any]] = []
         for index, item in enumerate(results):
             if isinstance(item, ParallelFailure):
-                # A truncated candidate is not a lost candidate: the whole
-                # pool is retried with a bigger output budget, so the
-                # truncation is raised instead of being counted as a
-                # failed angle. Otherwise the loop would rank a pool of
-                # fragments and happily pick the longest one.
-                if isinstance(item.error, TruncatedAnswer):
-                    raise item.error
+                # A truncated candidate never reaches this point: the
+                # pre-pass above already raised the truncation, so the
+                # whole pool is retried with a bigger output budget
+                # instead of being ranked as a pool of fragments.
                 errors.append(f"{angles[index]}: {item.message}")
                 summary.append({"angle": angles[index], "selected": False, "error": item.message})
                 continue
