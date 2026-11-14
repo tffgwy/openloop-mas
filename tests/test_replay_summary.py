@@ -171,5 +171,49 @@ class ReplaySummaryTest(unittest.TestCase):
         self.assertIn("status=closed", trace["steps"][1]["detail"])
 
 
+
+class TestIterationsIsAlwaysANumber(unittest.TestCase):
+    """A report field that is sometimes a number and sometimes ``null``
+    cannot be read by a script - and a run that crashed before its
+    first iteration is exactly the case a user looks at.
+    """
+
+    def test_a_run_without_an_iteration_field_reports_zero(self):
+        from mas.report import run_summary
+
+        rows = [{"run_id": "R-1", "role": "planner"}]
+        summary = run_summary("R-1", rows)
+        self.assertEqual(summary["iterations"], 0)
+        self.assertIsInstance(summary["iterations"], int)
+
+    def test_a_run_without_a_closure_row_reports_the_last_iteration(self):
+        from mas.report import run_summary
+
+        rows = [
+            {"run_id": "R-2", "role": "planner", "iteration": 1},
+            {"run_id": "R-2", "role": "error", "iteration": 3},
+        ]
+        summary = run_summary("R-2", rows)
+        self.assertEqual(summary["iterations"], 3)
+
+    def test_the_engine_end_entry_wins_over_the_closure_row(self):
+        from mas.report import run_summary
+
+        rows = [
+            {"run_id": "R-3", "role": "closure", "iteration": 2,
+             "closed": False, "verdict": "fail"},
+            {"run_id": "R-3", "role": "run_end", "iteration": 5,
+             "status": "escalated", "iterations": 5, "closed": False},
+        ]
+        summary = run_summary("R-3", rows)
+        self.assertEqual(summary["iterations"], 5)
+
+    def test_an_empty_run_reports_zero(self):
+        from mas.report import run_summary
+
+        summary = run_summary("R-4", [])
+        self.assertEqual(summary["iterations"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

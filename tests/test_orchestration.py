@@ -290,6 +290,46 @@ class TestAggregateReviews(unittest.TestCase):
         self.assertFalse(merged["scores"][0]["pass"])
 
 
+class TestThePanelKeepsAnUnreadableVote(unittest.TestCase):
+    """A garbled vote must stay a garbled vote in the panel, too.
+
+    The single-reviewer path keeps the ``unreadable`` marker, so the
+    engine asks the reviewer again. The panel path used to fold the
+    same garbled answer into a plain "no", so the engine saw a decided
+    criterion and never asked again. The same bad answer was therefore
+    treated two different ways depending on the reviewer count.
+    """
+
+    def test_an_unreadable_vote_is_marked_in_the_aggregate(self):
+        reviews = [
+            {"scores": [{"id": "c1", "pass": True, "note": "ok"}]},
+            {"scores": [{"id": "c1", "pass": True, "note": "ok"}]},
+            {"scores": [{"id": "c1", "pass": False, "unreadable": True, "note": "?"}]},
+        ]
+        merged = aggregate_reviews(reviews, mode="all", expected=3)
+        self.assertTrue(merged["scores"][0].get("unreadable"))
+        self.assertEqual(merged["scores"][0]["unreadable_votes"], 1)
+
+    def test_a_panel_with_a_garbled_vote_is_asked_again(self):
+        # The engine re-asks when a criterion is unjudged. With the
+        # marker dropped, the panel booked it as "judged and failed" and
+        # the question was never asked a second time.
+        from mas.engine import Criterion, evaluate_check
+
+        crits = [Criterion.from_raw({"id": "c1", "desc": "d"}, 0)]
+        checks = [evaluate_check(crits[0], "artifact", {})]
+        agg = aggregate_reviews(
+            [
+                {"scores": [{"id": "c1", "pass": True, "note": "ok"}]},
+                {"scores": [{"id": "c1", "pass": False, "unreadable": True, "note": "?"}]},
+            ],
+            mode="all",
+            expected=2,
+        )
+        merged = LoopEngine._merge_verdict_scores(crits, checks, [agg])
+        self.assertEqual(merged[0]["source"], "model-missing")
+
+
 class TestProviderChain(unittest.TestCase):
     def test_chain_uses_first_working_provider(self):
         chain = ProviderChain([CountingProvider(), CountingProvider()])

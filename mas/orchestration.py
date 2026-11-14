@@ -225,7 +225,16 @@ def aggregate_reviews(
         # counted as a non-pass, which keeps the aggregate on the
         # conservative side instead of letting a garbled reply close a
         # criterion nobody actually accepted.
-        decisions = [_as_bool(v.get("pass")) for v in votes]
+        # A vote that was marked unreadable is no vote at all. The
+        # canonical normaliser folds an unreadable answer into
+        # ``pass: False`` and marks it, so the flag has to be read
+        # here - otherwise the panel counts a garbled reply as a
+        # reviewer who actively said "no", and the engine has no
+        # reason to ask again.
+        decisions = [
+            None if v.get("unreadable") else _as_bool(v.get("pass"))
+            for v in votes
+        ]
         passed_votes = [v for v, d in zip(votes, decisions, strict=True) if d is True]
         unreadable = [v for v, d in zip(votes, decisions, strict=True) if d is None]
         # A criterion that some reviewer never judged at all is missing
@@ -269,6 +278,17 @@ def aggregate_reviews(
                 "pass": passed,
                 "note": note,
                 "source": "review",
+                # A garbled vote is no vote. Without this flag the
+                # aggregate booked the criterion as "judged and failed",
+                # so the engine saw a decided answer and never asked the
+                # panel again - while the single-reviewer path, which
+                # keeps the unreadable marker, did ask. The same garbled
+                # answer was therefore treated two different ways
+                # depending on how many reviewers were configured.
+                # Carrying the flag makes the panel path behave like the
+                # single-reviewer path: the criterion stays unjudged and
+                # the panel is asked again.
+                **({"unreadable": True} if unreadable else {}),
                 # The vote string states how many reviewers *answered*
                 # and how many of them said yes. A panel of three that
                 # only got two answers reads "2/2" and hides the fact

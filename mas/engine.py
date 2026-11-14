@@ -747,6 +747,19 @@ class LoopEngine:
                 decision = "close" if passed else "revise"
                 if not passed and stagnant >= stagnation_limit:
                     decision = "escalate"
+                    # The escalation has to name its cause. A ticket that
+                    # only says "the loop could not close itself" sends
+                    # the human looking for the wrong thing: this run
+                    # stopped because the artifact stopped changing -
+                    # the worker kept producing the same bytes while the
+                    # checks kept failing. That is a different problem
+                    # (and a different fix) than a run that simply ran
+                    # out of budget.
+                    error = (
+                        f"stagnation: the deliverable did not change for "
+                        f"{stagnant} consecutive attempts "
+                        f"(stagnation_limit={stagnation_limit})"
+                    )
                 if tokens >= max_tokens:
                     decision = "escalate"
                     error = f"budget: tokens {tokens} >= {max_tokens}"
@@ -1678,6 +1691,26 @@ class LoopEngine:
         return data
 
     @staticmethod
+    def _read_review_pass(review: Optional[Dict[str, Any]]) -> Optional[bool]:
+        """Read a reviewer's answer, and say so when it cannot be read.
+
+        ``normalize_verdict`` folds an unreadable answer into
+        ``pass: False`` and marks it with ``unreadable``. Folding it
+        into a plain ``False`` is what makes the two states
+        indistinguishable downstream: the engine then believes the
+        criterion was *judged and failed*, so it never asks the
+        reviewer again - the very thing the re-ask path exists for.
+
+        So the flag is read here. An unreadable answer is no answer:
+        the criterion stays unjudged and the engine asks again.
+        """
+        if not review:
+            return None
+        if review.get("unreadable"):
+            return None
+        return _as_bool(review.get("pass"))
+
+    @staticmethod
     def _merge_verdict_scores(
         crits: List[Criterion],
         checks: List[Dict[str, Any]],
@@ -1746,7 +1779,7 @@ class LoopEngine:
                 # than "unjudged" - an optional criterion must never send
                 # the loop back to the verifier for a second opinion.
                 review = model_scores.get(criterion.id)
-                decided = _as_bool(review.get("pass")) if review else None
+                decided = LoopEngine._read_review_pass(review)
                 if decided is None:
                     merged.append(
                         {
@@ -1813,7 +1846,7 @@ class LoopEngine:
                 # criterion that was never satisfied would close the loop.
                 # _as_bool reads the actual meaning of the string; an
                 # unreadable answer stays unjudged instead of guessing.
-                decided = _as_bool(review.get("pass"))
+                decided = LoopEngine._read_review_pass(review)
                 if decided is None:
                     merged.append(
                         {

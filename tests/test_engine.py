@@ -1363,6 +1363,208 @@ class TestDeliverableIsSeparateFromClosure(unittest.TestCase):
         self.assertTrue(result.to_dict()["deliverable_ok"])
 
 
+
+class TestAFractionIsNotAVerdict(unittest.TestCase):
+    """A score is not a verdict.
+
+    A reviewer that answers ``"pass": 0.5`` means "half of this
+    criterion is satisfied". The old conversion used ``bool(value)``,
+    so 0.5 became True, the criterion was booked as a full pass and
+    the loop closed on it. A criterion that was never really accepted
+    must never close a loop.
+    """
+
+    def test_a_fractional_verdict_is_unreadable_not_true(self):
+        from mas.util import _as_bool
+
+        self.assertIsNone(_as_bool(0.5))
+        self.assertIsNone(_as_bool(0.99))
+        self.assertIsNone(_as_bool(2))
+        # The two numbers that really are verdicts keep working.
+        self.assertIs(_as_bool(1), True)
+        self.assertIs(_as_bool(1.0), True)
+        self.assertIs(_as_bool(0), False)
+        self.assertIs(_as_bool(0.0), False)
+
+    def test_a_fractional_model_verdict_does_not_pass_a_criterion(self):
+        from mas.engine import Criterion, evaluate_check
+
+        crits = [Criterion.from_raw({"id": "c1", "desc": "d"}, 0)]
+        checks = [evaluate_check(crits[0], "artifact", {})]
+        verdict = {"scores": [{"id": "c1", "pass": 0.5, "note": "half"}]}
+        merged = LoopEngine._merge_verdict_scores(crits, checks, [verdict])
+        self.assertFalse(merged[0]["pass"])
+        self.assertEqual(merged[0]["source"], "model-missing")
+
+    def test_a_summary_cannot_pass_criteria_nobody_could_read(self):
+        from mas.util import normalize_verdict
+
+        out = normalize_verdict(
+            {"verdict": "pass", "scores": [{"id": "c1", "pass": 0.5, "note": "half"}]}
+        )
+        self.assertEqual(out["verdict"], "fail")
+        self.assertTrue(out["scores"][0].get("unreadable"))
+
+    def test_a_loop_does_not_close_on_a_fractional_verdict(self):
+        class _HalfProvider(Provider):
+            name = "half"
+
+            def __init__(self):
+                super().__init__(model="m")
+
+            def complete(self, *, system, prompt, role="worker",
+                         expect_json=False, max_tokens=4000):
+                if role == "planner":
+                    text = json.dumps({"summary": "p", "plan": ["one"], "risks": []})
+                elif role == "verifier":
+                    text = json.dumps(
+                        {"verdict": "pass",
+                         "scores": [{"id": "c1", "pass": 0.5, "note": "half"}]}
+                    )
+                elif role == "reflector":
+                    text = json.dumps(
+                        {"summary": "r", "issues": ["x"], "next_action": "revise"}
+                    )
+                else:
+                    text = "deliverable"
+                return {"text": text,
+                        "usage": {"total_tokens": 10},
+                        "raw": {}}
+
+        config = make_config(tempfile.mkdtemp())
+        config["budget"]["max_iterations"] = 2
+        engine = LoopEngine(config, team=load_team("default"))
+        engine.provider = _HalfProvider()
+        result = engine.run(
+            "goal",
+            [{"id": "c1", "desc": "prose criterion", "required": True}],
+        )
+        self.assertFalse(
+            result.closed,
+            "a criterion nobody really accepted must not close the loop",
+        )
+
+
+class TestAnUnreadableAnswerIsNoAnswer(unittest.TestCase):
+    """A garbled reply must be re-asked, not booked as a failure.
+
+    ``normalize_verdict`` folds an unreadable verdict into
+    ``pass: False`` and marks it. Folding it into a plain ``False`` is
+    what made the two states indistinguishable: the engine believed
+    the criterion was judged and failed, so it never asked the
+    reviewer again - the one thing the re-ask path exists for.
+    """
+
+    def test_an_unreadable_criterion_stays_unjudged(self):
+        from mas.engine import Criterion, evaluate_check
+
+        crits = [Criterion.from_raw({"id": "c1", "desc": "d"}, 0)]
+        checks = [evaluate_check(crits[0], "artifact", {})]
+        verdict = {
+            "scores": [{"id": "c1", "pass": False, "unreadable": True, "note": "?"}]
+        }
+        merged = LoopEngine._merge_verdict_scores(crits, checks, [verdict])
+        self.assertEqual(merged[0]["source"], "model-missing")
+        self.assertFalse(merged[0]["pass"])
+
+    def test_the_engine_asks_the_reviewer_again(self):
+        asked = {"reask": 0}
+
+        class _GarbledProvider(Provider):
+            name = "garbled"
+
+            def __init__(self):
+                super().__init__(model="m")
+
+            def complete(self, *, system, prompt, role="worker",
+                         expect_json=False, max_tokens=4000):
+                if role == "planner":
+                    text = json.dumps({"summary": "p", "plan": ["one"], "risks": []})
+                elif role == "verifier":
+                    if "missing_criteria" in prompt or "再次" in prompt:
+                        asked["reask"] += 1
+                        text = json.dumps(
+                            {"verdict": "pass",
+                             "scores": [{"id": "c1", "pass": True, "note": "now ok"}]}
+                        )
+                    else:
+                        text = json.dumps(
+                            {"verdict": "pass",
+                             "scores": [{"id": "c1", "pass": 0.5, "note": "half"}]}
+                        )
+                else:
+                    text = "deliverable"
+                return {"text": text,
+                        "usage": {"total_tokens": 10},
+                        "raw": {}}
+
+        config = make_config(tempfile.mkdtemp())
+        config["budget"]["max_iterations"] = 2
+        engine = LoopEngine(config, team=load_team("default"))
+        engine.provider = _GarbledProvider()
+        result = engine.run(
+            "goal",
+            [{"id": "c1", "desc": "prose criterion", "required": True}],
+        )
+        self.assertGreaterEqual(
+            asked["reask"], 1,
+            "an unreadable verdict must be asked again, not booked as a failure",
+        )
+
+
+class TestTheEscalationNamesItsCause(unittest.TestCase):
+    """An escalation that does not say why sends the human the wrong way."""
+
+    def test_a_stagnant_run_says_it_stagnated(self):
+        class _SameProvider(Provider):
+            name = "same"
+
+            def __init__(self):
+                super().__init__(model="m")
+
+            def complete(self, *, system, prompt, role="worker",
+                         expect_json=False, max_tokens=4000):
+                if role == "planner":
+                    text = json.dumps({"summary": "p", "plan": ["one"], "risks": []})
+                elif role == "verifier":
+                    text = json.dumps(
+                        {"verdict": "fail",
+                         "scores": [{"id": "c1", "pass": False, "note": "missing"}],
+                         "issues": ["missing"]}
+                    )
+                elif role == "reflector":
+                    text = json.dumps(
+                        {"summary": "r", "issues": ["missing"], "next_action": "revise"}
+                    )
+                else:
+                    text = "no marker"
+                return {"text": text,
+                        "usage": {"total_tokens": 10},
+                        "raw": {}}
+
+        config = make_config(tempfile.mkdtemp())
+        config["stagnation_limit"] = 2
+        config["budget"]["max_iterations"] = 5
+        engine = LoopEngine(config, team=load_team("default"))
+        engine.provider = _SameProvider()
+        result = engine.run(
+            "goal",
+            [{"id": "c1", "desc": "contains MARK",
+              "check": {"type": "contains", "arg": "MARK"}}],
+        )
+        self.assertEqual(result.status, "escalated")
+        self.assertIn("stagnation", result.error)
+        self.assertIn("did not change", result.error)
+        # The ticket is what a human actually reads.
+        self.assertTrue(result.ticket_id)
+        import pathlib
+        ticket = json.loads(
+            (pathlib.Path(config["state_dir"]) / "tickets" /
+             (result.ticket_id + ".json")).read_text(encoding="utf-8")
+        )
+        self.assertIn("stagnation", ticket["payload"]["reason"])
+
+
 if __name__ == "__main__":
     unittest.main()
 

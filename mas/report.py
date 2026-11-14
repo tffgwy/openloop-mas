@@ -58,6 +58,42 @@ STATUS_ICON = {
 }
 
 
+def _iteration_count(
+    closure: Dict[str, Any] | None,
+    end: Dict[str, Any] | None,
+    rows: List[Dict[str, Any]],
+) -> int:
+    """How many iterations a run took, as a number.
+
+    The ledger is the only source of truth here, and every row that
+    carries an iteration number is a candidate. The engine's own end
+    entry counts first (it knows the real number), then the closure
+    row, then the highest iteration number any row mentions.
+
+    A run whose rows carry no iteration at all reports 0 - not
+    ``None``. A report field that is sometimes a number and sometimes
+    ``null`` cannot be read by a script.
+    """
+    for source in (end or {}, closure or {}):
+        value = source.get("iterations", source.get("iteration"))
+        if value is None:
+            continue
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            continue
+    best = 0
+    for row in rows or []:
+        value = row.get("iteration")
+        if value is None:
+            continue
+        try:
+            best = max(best, int(value))
+        except (TypeError, ValueError):
+            continue
+    return best
+
+
 def group_runs(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Group ledger rows into runs, keeping the order of first appearance."""
     runs: Dict[str, List[Dict[str, Any]]] = {}
@@ -147,7 +183,12 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         # a provider error after producing an artifact still has one,
         # and a report that hides it cannot show what was actually made.
         "closed": bool(end.get("closed")) if end else bool(closure.get("closed")),
-        "iterations": closure.get("iteration") or rows[-1].get("iteration") if rows else 0,
+        # The iteration count has to be a number. The old expression
+        # was ``a or b if rows else 0``, which parses as ``(a or b) if
+        # rows else 0`` - so a run whose rows carry no iteration field
+        # reported ``null`` instead of a count, and a report that says
+        # "null iterations" cannot be read by anything.
+        "iterations": _iteration_count(closure, end, rows),
         "artifact_sha": str(
             (end.get("artifact_sha") if end else "") or closure.get("artifact_sha") or ""
         ),

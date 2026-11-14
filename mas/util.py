@@ -214,11 +214,30 @@ _FALSE_WORDS = {"fail", "failed", "false", "no", "unsatisfied", "violated", "不
 
 
 def _as_bool(value: Any) -> Optional[bool]:
-    """Best-effort conversion of a model's verdict value into a bool."""
+    """Best-effort conversion of a model's verdict value into a bool.
+
+    A number is only ever a verdict when it is exactly 0 or 1. The old
+    code used ``bool(value)``, so ``0.5`` - a model that says "half of
+    this criterion is satisfied" - became ``True``: the criterion was
+    recorded as a full pass and the loop closed on it. A score is not a
+    verdict. A model that means "partially" has to say so in words; the
+    engine reads words.
+
+    Anything that is not 0 or 1 is *unreadable*, not false and not
+    true: the caller then keeps the criterion unjudged and asks again,
+    which is the honest outcome.
+    """
     if isinstance(value, bool):
         return value
     if isinstance(value, (int, float)):
-        return bool(value)
+        if value == 1:
+            return True
+        if value == 0:
+            return False
+        # 0.5 is neither a pass nor a fail. Treating it as a pass is
+        # exactly how a loop closes on a criterion nobody really
+        # accepted.
+        return None
     if isinstance(value, str):
         text = value.strip().lower()
         if text in _TRUE_WORDS:
@@ -294,8 +313,15 @@ def normalize_verdict(payload: Dict[str, Any]) -> Dict[str, Any]:
             result["verdict"] = (
                 "pass" if all(s.get("pass") is True for s in decided) else "fail"
             )
-        elif not result.get("verdict"):
-            result["verdict"] = "fail"
+        else:
+            # Every score was unreadable, so there is no per-criterion
+            # answer at all - only the model's own summary. A summary
+            # that says "pass" over answers nobody could read is a claim
+            # without evidence, and the report would show a green light
+            # next to a criterion that was never judged. The summary is
+            # kept only when it already says "fail".
+            if str(result.get("verdict") or "").strip().lower() != "fail":
+                result["verdict"] = "fail"
         return result
 
     # Alternative shape: {"criteria": [...]} or {"results": [...]}.
@@ -338,30 +364,44 @@ def normalize_verdict(payload: Dict[str, Any]) -> Dict[str, Any]:
         )
         if isinstance(note, list):
             note = "; ".join(str(part) for part in note)
-        scores.append(
-            {
-                "id": str(item.get("id") or item.get("criterion") or item.get("name") or ""),
-                "pass": bool(passed),
-                "note": str(note),
-            }
-        )
+        score = {
+            "id": str(item.get("id") or item.get("criterion") or item.get("name") or ""),
+            "pass": bool(passed),
+            "note": str(note),
+        }
+        if passed is None:
+            # Same rule as the canonical path: an answer nobody can read
+            # is not a passing answer, and it is marked so the engine can
+            # tell "failed" apart from "never judged".
+            score["pass"] = False
+            score["unreadable"] = True
+        scores.append(score)
 
     if not scores:
         return payload
 
-    overall = _as_bool(payload.get("overall_pass"))
-    if overall is None:
-        overall = _as_bool(payload.get("passed"))
-    if overall is None:
-        overall = _as_bool(payload.get("verdict"))
-    if overall is None:
-        overall = all(score["pass"] for score in scores)
-
     result = dict(payload)
     result["scores"] = scores
-    result["verdict"] = "pass" if overall else "fail"
+    # The summary must not contradict the per-criterion answers here
+    # either. v0.7.12 fixed this for the canonical shape and left the
+    # alternative shape alone, so a reviewer that answered "FAIL" on
+    # every criterion while writing "verdict: pass" on top still
+    # produced a green summary. The per-criterion answers decide.
+    decided = [s for s in scores if not s.get("unreadable")]
+    if decided:
+        result["verdict"] = (
+            "pass" if all(s.get("pass") is True for s in decided) else "fail"
+        )
+    else:
+        # Nothing was readable - the summary is a claim without
+        # evidence, so it cannot light up the report.
+        result["verdict"] = "fail"
     result.setdefault("issues", [
-        str(item.get("required_fix") or item.get("reason") or "") for item in raw_scores
-        if isinstance(item, dict) and not _as_bool(item.get("pass", item.get("result")))
+        text for text in (
+            str(item.get("required_fix") or item.get("reason") or "")
+            for item in raw_scores
+            if isinstance(item, dict)
+            and not _as_bool(item.get("pass", item.get("result")))
+        ) if text
     ])
     return result

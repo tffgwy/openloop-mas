@@ -4,6 +4,76 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.37] - 2026-11-15
+
+### Fixed
+
+A reviewer that answered with a fraction, a garbled word or a shape the
+engine did not recognise could close a loop that should have stayed
+open - and the report said the run had passed.
+
+* **A score is not a verdict.** The conversion from a model's answer to
+  a boolean used ``bool(value)``, so ``0.5`` - a reviewer saying "half
+  of this criterion is satisfied" - became ``True``: the criterion was
+  booked as a full pass and the loop closed on it. A number is now only
+  a verdict when it is exactly ``0`` or ``1``. Everything else is
+  *unreadable*, and an unreadable answer is no answer.
+
+* **An unreadable answer was silently booked as a failure.** The
+  normaliser folds an unreadable verdict into ``pass: False``, and the
+  engine could not tell that apart from a reviewer who actively said
+  "no". So the criterion looked *judged*, the engine never asked the
+  reviewer again, and the loop burned an iteration on a revision that
+  could not help. The unreadable marker is now read on the way in: the
+  criterion stays unjudged, the follow-up question is asked, and the
+  answer that comes back is the one the engine decides on.
+
+* **The panel path treated a garbled reply differently from the single
+  reviewer path.** The multi-reviewer aggregate dropped the unreadable
+  marker, so the same bad answer was re-asked with one reviewer
+  configured and booked as a decided failure with three. The aggregate
+  now carries the marker, and both paths behave the same way.
+
+* **The alternative verdict shape was never held to the same rule.**
+  ``normalize_verdict`` rewrites a model's own answer into the
+  canonical shape, and it has two paths: ``{"scores": [...]}`` and
+  ``{"criteria": [...]}``. v0.7.12 made the summary obey the
+  per-criterion answers on the canonical path and left the alternative
+  path alone - so a reviewer that wrote ``FAIL`` on every criterion
+  while putting ``"verdict": "pass"`` on top still produced a green
+  summary. Both paths now agree.
+
+* **A summary cannot light up an unreadable review.** When nothing in
+  the scores could be read, the model's own summary was kept - so
+  ``{"verdict": "pass", "scores": [{"pass": "maybe"}]}`` reported a
+  pass over a criterion nobody judged. The engine decides the closure
+  from the per-criterion answers, and the report now says the same
+  thing: nothing was judged, so nothing passed.
+
+* **The iteration count in a report was sometimes ``null``.** The
+  expression was ``a or b if rows else 0``, which parses as
+  ``(a or b) if rows else 0`` - so a run whose rows carry no iteration
+  field reported ``null`` instead of a count, and a report that says
+  "null iterations" cannot be read by a script. The count is now
+  resolved from the run's own end entry, then the closure row, then the
+  highest iteration number any row mentions - and it is always a
+  number.
+
+* **An escalation that did not say why.** A run that stopped because
+  the deliverable stopped changing escalated with the reason "the loop
+  could not close itself" - which sends the human looking for the wrong
+  thing. It now names the cause: the artifact did not change for N
+  consecutive attempts.
+
+### Verified
+
+* ``pytest -q``: 548 passed, 4 skipped, 51 subtests passed
+* ``python -m unittest discover -s tests``: Ran 552 tests, OK (skipped=4)
+* ``ruff check .``: All checks passed
+* Ledger invariant sweep (45 shapes): MISMATCHES: 0
+* Counter-proof for every layer above: each change was reverted in
+  isolation and the matching test was confirmed to fail
+
 ## [0.7.36] - 2026-11-14
 
 ### Fixed

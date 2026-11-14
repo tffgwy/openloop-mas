@@ -7,6 +7,55 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.37 adds** (an answer nobody can read can no longer get
+past the loop):
+
+- **A score is not a verdict.** A reviewer that answered `"pass": 0.5` -
+  "half of this criterion is satisfied" - was converted with
+  `bool(value)`, so 0.5 became `True`: the criterion was booked as a
+  full pass and the loop closed on it. A number is now a verdict only
+  when it is exactly `0` or `1`. Everything else is *unreadable*, and an
+  unreadable answer is no answer.
+- **An unreadable answer was quietly booked as a failure.** The
+  normaliser folds an unreadable verdict into `pass: False`, and the
+  engine could not tell that apart from a reviewer who actively said
+  "no". The criterion therefore looked *judged*, the engine never
+  asked the reviewer again, and the loop burned an iteration on a
+  revision that could not help. The unreadable marker is now read on
+  the way in: the criterion stays unjudged, the follow-up question is
+  asked, and the answer that comes back is the one the engine decides
+  on.
+- **The panel path treated a garbled reply differently from the single
+  reviewer path.** The multi-reviewer aggregate dropped the marker, so
+  the same bad answer was re-asked with one reviewer configured and
+  booked as a decided failure with three. The aggregate now carries the
+  marker and both paths behave the same way.
+- **The alternative verdict shape was never held to the same rule.**
+  `normalize_verdict` has two paths - `{"scores": [...]}` and
+  `{"criteria": [...]}`. v0.7.12 made the summary obey the
+  per-criterion answers on the canonical path and left the alternative
+  path alone, so a reviewer that wrote `FAIL` on every criterion while
+  putting `"verdict": "pass"` on top still produced a green summary.
+  Both paths now agree.
+- **A summary cannot light up an unreadable review.** When nothing in
+  the scores could be read, the model's own summary was kept, so
+  `{"verdict": "pass", "scores": [{"pass": "maybe"}]}` reported a pass
+  over a criterion nobody judged. Nothing was judged, so nothing
+  passed.
+- **The iteration count in a report was sometimes `null`.** The
+  expression `a or b if rows else 0` parses as `(a or b) if rows else
+  0`, so a run whose rows carry no iteration field reported `null`
+  instead of a count. The count is now resolved from the run's own end
+  entry, then the closure row, then the highest iteration number any
+  row mentions - and it is always a number.
+- **An escalation that did not say why.** A run that stopped because
+  the deliverable stopped changing escalated with the reason "the loop
+  could not close itself", which sends the human looking for the wrong
+  thing. It now names the cause: the artifact did not change for N
+  consecutive attempts.
+- 11 regression tests, and every layer above was counter-proved: reverted
+  in isolation, the matching test was confirmed to fail.
+
 **What v0.7.36 adds** (the deadline is now a real ceiling, and the
 self-check no longer sits silent for minutes):
 

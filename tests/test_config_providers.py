@@ -633,14 +633,18 @@ class VerdictNormalizationTest(unittest.TestCase):
         out = normalize_verdict(payload)
         self.assertEqual(out["verdict"], "fail")
 
-    def test_the_summary_survives_when_no_score_is_readable(self):
-        # With nothing readable in the scores, the model's summary is
-        # the only signal there is - it must not be thrown away.
+    def test_a_summary_cannot_survive_when_no_score_is_readable(self):
+        # With nothing readable in the scores, the model's summary is a
+        # claim without evidence. It used to survive as "pass" - so a
+        # reviewer that answered "maybe" on every criterion still lit
+        # up the report green. The engine decides the closure from the
+        # per-criterion answers, and the report has to say the same
+        # thing: nothing was judged, so nothing passed.
         from mas.util import normalize_verdict
 
         payload = {"verdict": "pass", "scores": [{"id": "c1", "pass": "maybe"}]}
         out = normalize_verdict(payload)
-        self.assertEqual(out["verdict"], "pass")
+        self.assertEqual(out["verdict"], "fail")
         self.assertTrue(out["scores"][0].get("unreadable"))
 
     def test_unrelated_payload_is_left_alone(self):
@@ -979,3 +983,43 @@ class MissingVerdictRecoveryTest(unittest.TestCase):
         score = [s for s in result.scores if s["id"] == "c1"][0]
         self.assertTrue(score["pass"])
         self.assertEqual(score["source"], "model")
+
+
+class AlternativeShapeVerdictTest(unittest.TestCase):
+    """The alternative shape must obey the same rules as the canonical one."""
+
+    def test_a_summary_cannot_contradict_a_failed_criterion(self):
+        # v0.7.12 fixed this for the canonical shape and left the
+        # alternative shape alone: a reviewer that wrote "FAIL" on every
+        # criterion while putting "verdict: pass" on top still produced
+        # a green summary, because the alternative path took the
+        # summary at face value.
+        from mas.util import normalize_verdict
+
+        payload = {"verdict": "pass", "criteria": [{"id": "c1", "result": "FAIL"}]}
+        out = normalize_verdict(payload)
+        self.assertEqual(out["verdict"], "fail")
+        self.assertIs(out["scores"][0]["pass"], False)
+
+    def test_a_fractional_criterion_is_unreadable(self):
+        from mas.util import normalize_verdict
+
+        payload = {"criteria": [{"id": "c1", "result": 0.5}]}
+        out = normalize_verdict(payload)
+        self.assertTrue(out["scores"][0].get("unreadable"))
+        self.assertEqual(out["verdict"], "fail")
+
+    def test_both_shapes_agree_on_an_unreadable_answer(self):
+        from mas.util import normalize_verdict
+
+        canonical = normalize_verdict(
+            {"verdict": "pass", "scores": [{"id": "c1", "pass": "maybe"}]}
+        )
+        alternative = normalize_verdict(
+            {"verdict": "pass", "criteria": [{"id": "c1", "result": "maybe"}]}
+        )
+        self.assertEqual(canonical["verdict"], alternative["verdict"])
+        self.assertEqual(
+            canonical["scores"][0].get("unreadable"),
+            alternative["scores"][0].get("unreadable"),
+        )
