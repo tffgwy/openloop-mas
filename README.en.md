@@ -7,6 +7,30 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.50 adds** (one problem, one thread):
+
+- **The ledger counts runs; the human queue counts problems - and the
+  two used to disagree** - a run that escalates opens a ticket, and
+  every resume makes another run on the *same* problem, while the
+  status page and the report counted the runs;
+- **Measured on the live model** - after one resume the status page said
+  "未闭环 2" while the ticket queue held exactly one ticket, so a
+  person could not tell "one problem, two attempts" from "two
+  problems, one attempt each";
+- **The report and the status page now count problems next to runs** -
+  two runs and one problem read as exactly that;
+- **The ticket carries the whole bill** - the cumulative rounds spent
+  on the problem, not just the last attempt's; a problem that burned
+  fifteen rounds used to say "已尝试 5 轮";
+- **The ticket names the runs it covers**, so the queue is a real join
+  between the human side and the ledger;
+- **The ledger books the thread** - every resumed run records the
+  ticket it belongs to, including the one that finally closed;
+- **A resolved ticket points at the run that closed it**, so the
+  deliverable the human actually got sits next to the failed history;
+- **20 regression tests**, with **eight layers each individually rolled
+  back and re-proven** - the matching test fails every time.
+
 **What v0.7.49 adds** (an unfinished run always leaves a ticket):
 
 - **Only the "escalate" ending opened a ticket.** Every other

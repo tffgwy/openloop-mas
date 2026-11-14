@@ -888,6 +888,8 @@ class LoopEngine:
                         "last_artifact": artifact,
                         "issues": issues,
                         "attempts": attempt,
+                        "iterations_total": attempt,
+                        "runs": [run_id],
                         "history": history,
                         "stagnation": stagnant,
                         "reason": error or last_error or "loop could not close itself",
@@ -1018,6 +1020,12 @@ class LoopEngine:
         # A run without a ticket is not a result. Every ending that is
         # not "closed" now opens one, so the queue always matches the
         # report.
+        # A resumed run that closes is still part of the thread it
+        # came from. Without this the closing run carried no ticket id
+        # at all, so the ledger showed a closed run that belonged to
+        # no problem and the report could not join the two.
+        if status == STATUS_CLOSED and parent_ticket_id and not ticket_id:
+            ticket_id = parent_ticket_id
         if status != STATUS_CLOSED and not ticket_id:
             ticket_id = self._open_handover_ticket(
                 run_id=run_id,
@@ -1053,6 +1061,10 @@ class LoopEngine:
                 # hand, resume - was written in the engine and never
                 # reached the report.
                 "ticket_id": ticket_id or "",
+                # The thread this run belongs to. A run that closed on
+                # the first try has no thread, and that is correct: it
+                # never was anybody else's problem.
+                "parent_ticket_id": parent_ticket_id or "",
                 # What this run was *about*. The ledger used to record
                 # everything about a run except the one thing a human
                 # needs: which task produced these results. A replay
@@ -2185,6 +2197,11 @@ class LoopEngine:
             "last_artifact": artifact,
             "issues": list(issues),
             "attempts": attempt,
+            # The rounds spent on this problem so far, and the runs
+            # that spent them. The first run of a thread starts both
+            # counters at its own attempt count.
+            "iterations_total": attempt,
+            "runs": [run_id],
             "history": history,
             "stagnation": stagnant,
             "reason": reason,
@@ -2221,6 +2238,16 @@ class LoopEngine:
         if result.closed:
             if ticket.get("state") != "resolved":
                 self.tickets.resolve(ticket_id, "resumed", note)
+            # The ticket must point at the run that closed it. A
+            # resolved ticket that only remembers the failures sends
+            # the reader back into the failed history to find out how
+            # the problem was actually solved.
+            self.tickets.note_success(
+                ticket_id,
+                run_id=result.run_id,
+                iterations=int(result.iterations or 0),
+                artifact=str(result.artifact or ""),
+            )
         else:
             self.tickets.reopen(
                 ticket_id,

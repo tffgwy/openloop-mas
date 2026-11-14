@@ -4,6 +4,47 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.50] - 2026-11-15
+
+### Fixed
+
+The ledger counts *runs*; the human queue counts *problems*. A run
+that escalates opens a ticket, and every resume on that ticket makes
+another run on the same problem. The status page and the report then
+counted the runs - so one unresolved problem that was resumed three
+times showed up as "未闭环 4" next to a queue of one ticket. The report
+and the queue disagreed about how much work was left, and the ticket
+itself said "已尝试 5 轮" when fifteen rounds had actually been spent.
+
+Measured on the live model: after one resume the status page said
+"未闭环 2" while the ticket queue held exactly one ticket, and the
+ticket reported only the last attempt's round count. The loop reported
+a problem four times over, and the human could not tell one problem
+from four.
+
+* **One problem is one thread.** The report and the status page now
+  count *problems* next to *runs*, and every run that belongs to a
+  ticket is grouped under that ticket. Two runs on one problem read
+  as two runs and one problem.
+
+* **The ticket counts the rounds of every attempt.** It carries the
+  cumulative number of rounds the human has paid for, not just the
+  last attempt's, so a problem that has been resumed three times says
+  how much it has really cost.
+
+* **The ticket names the runs it covers.** A ticket that was resumed
+  twice lists both runs, so the queue is a join between the human
+  side and the ledger.
+
+* **The ledger books the thread.** Every resumed run records the
+  ticket it belongs to, and a resumed run that closes keeps that
+  ticket - the closing run is part of the story of the problem it
+  solved, not a run that belongs to nobody.
+
+* **A resolved ticket points at the run that closed it.** The
+  deliverable the human actually got is on the ticket, next to the
+  failed history that led to it.
+
 ## [0.7.49] - 2026-11-15
 
 ### Fixed

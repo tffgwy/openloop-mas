@@ -68,6 +68,40 @@ class TicketStore:
         )
         return ticket
 
+    def note_success(
+        self,
+        ticket_id: str,
+        run_id: str = "",
+        iterations: int = 0,
+        artifact: str = "",
+    ) -> Dict[str, Any]:
+        """Record the run that finally closed the problem.
+
+        A resolved ticket used to keep only the state of the *failed*
+        attempts. The run that actually closed it - the deliverable
+        the human got - was nowhere on the ticket, so the queue could
+        not point at the thing that solved the problem.
+        """
+        ticket = self.get(ticket_id)
+        if ticket is None:
+            raise KeyError(f"unknown ticket: {ticket_id}")
+        payload = ticket.get("payload") or {}
+        runs = list(payload.get("runs") or [])
+        if run_id and run_id not in runs:
+            runs.append(run_id)
+        payload["runs"] = runs
+        payload["iterations_total"] = int(payload.get("iterations_total") or 0) + int(
+            iterations or 0
+        )
+        payload["closed_run_id"] = run_id or payload.get("closed_run_id", "")
+        if artifact:
+            payload["closed_artifact"] = artifact
+        ticket["payload"] = payload
+        self._file(ticket_id).write_text(
+            json.dumps(ticket, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        return ticket
+
     def append_attempt(
         self,
         ticket_id: str,
@@ -89,6 +123,29 @@ class TicketStore:
         merged.update(payload or {})
         merged["attempts_total"] = int(old.get("attempts_total") or 0) + 1
         merged["reason"] = reason or merged.get("reason", "")
+        # One problem, one thread. A resumed run that fails again does
+        # not start a second story: it adds rounds to the story that is
+        # already open. The ticket therefore carries the *cumulative*
+        # number of rounds the human has paid for, not just the number
+        # of the last attempt - "5 rounds" on a ticket whose third
+        # attempt had already burned 15 rounds understates the cost.
+        merged["iterations_total"] = int(
+            old.get("iterations_total") or old.get("attempts") or 0
+        ) + int((payload or {}).get("attempts") or 0)
+        # Every run that belongs to this problem, in order. A ticket
+        # that says which runs it covers is the join between the human
+        # queue and the run ledger.
+        runs = list(old.get("runs") or [])
+        if not runs and old.get("run_id"):
+            # The first run of the thread was recorded before the
+            # "runs" list existed. Dropping it would make the ticket
+            # claim that the problem had one fewer attempt than it
+            # really had.
+            runs = [str(old["run_id"])]
+        new_run = str((payload or {}).get("run_id") or "")
+        if new_run and new_run not in runs:
+            runs.append(new_run)
+        merged["runs"] = runs
         # The failure itself is recorded once, by reopen(); here we only
         # carry the fresh evidence onto the ticket.
         ticket["payload"] = merged

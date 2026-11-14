@@ -418,18 +418,80 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def thread_of(run: Dict[str, Any]) -> str:
+    """The problem a run belongs to.
+
+    A run that never escalated has no problem: it is its own thread.
+    A run that escalated - or that was resumed from an escalation -
+    belongs to the ticket that holds it. Counting runs instead of
+    threads is how a report ends up saying "three unfinished runs"
+    for one single unfinished problem.
+    """
+    ticket = str(run.get("ticket_id") or "")
+    if ticket:
+        return ticket
+    return str(run.get("run_id") or "")
+
+
+def group_threads(runs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Group runs into threads, keeping the order of first appearance.
+
+    A thread is one problem the human has to deal with. The runs in
+    it are the attempts that were made on it.
+    """
+    order: List[str] = []
+    grouped: Dict[str, List[Dict[str, Any]]] = {}
+    for run in runs:
+        key = thread_of(run)
+        if key not in grouped:
+            grouped[key] = []
+            order.append(key)
+        grouped[key].append(run)
+    threads: List[Dict[str, Any]] = []
+    for key in order:
+        members = grouped[key]
+        threads.append(
+            {
+                "thread_id": key,
+                "runs": [m.get("run_id") for m in members],
+                "run_count": len(members),
+                "closed": all(m.get("closed") for m in members),
+                "iterations": sum(int(m.get("iterations") or 0) for m in members),
+                "tokens": sum(int(m.get("tokens") or 0) for m in members),
+                "goal": next((m.get("goal") for m in members if m.get("goal")), ""),
+                "title": next((m.get("title") for m in members if m.get("title")), ""),
+                "ticket_id": next(
+                    (str(m.get("ticket_id") or "") for m in members if m.get("ticket_id")),
+                    "",
+                ),
+            }
+        )
+    return threads
+
+
 def build_report(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Build the full report payload for a set of ledger rows."""
     runs = [run_summary(run["run_id"], run["rows"]) for run in group_runs(rows)]
     closed = [r for r in runs if r["closed"]]
     failed_runs = [r for r in runs if not r["closed"]]
+    threads = group_threads(runs)
+    open_threads = [t for t in threads if not t["closed"]]
     return {
         "generated_at": now_iso(),
         "runs": runs,
+        # The problems, as opposed to the attempts. One unfinished
+        # problem that was resumed three times is one open problem and
+        # four runs; a report that only counts runs makes the human
+        # queue look four times as long as it is.
+        "threads": threads,
         "totals": {
             "runs": len(runs),
             "closed": len(closed),
             "not_closed": len(failed_runs),
+            # How many distinct problems the ledger holds.
+            "problems": len(threads),
+            "problems_open": len(open_threads),
+            "problems_closed": len(threads) - len(open_threads),
             "closure_rate": round(len(closed) / len(runs), 4) if runs else 0.0,
             "entries": len(rows),
             # The spend of every run in this report.
@@ -446,6 +508,14 @@ def render_markdown(report: Dict[str, Any]) -> str:
     lines.append(
         f"运行总数：{totals.get('runs', 0)}　已闭环：{totals.get('closed', 0)}　"
         f"未闭环：{totals.get('not_closed', 0)}　闭环率：{totals.get('closure_rate', 0):.0%}"
+    )
+    # Runs are attempts; problems are what the human actually has to
+    # deal with. Saying both stops the report from looking like three
+    # open problems when there is one.
+    lines.append(
+        f"待解决问题：{totals.get('problems_open', 0)} 个"
+        f"（共 {totals.get('problems', 0)} 个问题，"
+        f"{totals.get('problems_closed', 0)} 个已解决）"
     )
     lines.append(f"总花费：{int(totals.get('tokens', 0) or 0)} token")
     lines.append("")

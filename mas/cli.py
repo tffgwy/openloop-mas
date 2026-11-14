@@ -28,6 +28,7 @@ from mas.relay import serve_relay
 from mas.report import (
     build_report,
     group_runs,
+    group_threads,
     ledger_markdown,
     render_markdown,
     replay_trace,
@@ -290,6 +291,11 @@ def cmd_status(args: argparse.Namespace) -> int:
     runs = [
         run_summary(group["run_id"], group["rows"]) for group in group_runs(rows)
     ]
+    # Runs are attempts; problems are what the human has to deal with.
+    # A problem that was resumed three times is one open problem, not
+    # four - the status page has to say so, or the queue and the
+    # report disagree about how much is left to do.
+    threads = group_threads(runs)
     payload = {
         "config": {
             "provider": config.get("provider"),
@@ -311,6 +317,13 @@ def cmd_status(args: argparse.Namespace) -> int:
             "closed": len([r for r in runs if r.get("closed")]),
             "open": len([r for r in runs if not r.get("closed")]),
         },
+        # The problems, as opposed to the attempts on them.
+        "problems": {
+            "total": len(threads),
+            "open": len([t for t in threads if not t.get("closed")]),
+            "closed": len([t for t in threads if t.get("closed")]),
+            "items": threads,
+        },
         # The deliverables, and whether they are still on disk.
         "artifacts": {
             "count": len(artifacts),
@@ -330,6 +343,14 @@ def cmd_status(args: argparse.Namespace) -> int:
         f"运行 {payload['runs']['total']} 次  "
         f"已闭环 {payload['runs']['closed']}  "
         f"未闭环 {payload['runs']['open']}"
+    )
+    # Attempts and problems are different numbers. A single problem
+    # that was resumed three times is four runs and one problem, and
+    # the page has to make that difference visible - otherwise the
+    # user concludes that four things need their attention.
+    print(
+        f"待解决问题：{payload['problems']['open']} 个"
+        f"（共 {payload['problems']['total']} 个问题）"
     )
     # The deliverables come first among the things to look at: they are
     # what the user came for.
@@ -430,6 +451,13 @@ def cmd_tickets(args: argparse.Namespace) -> int:
         run_id = payload.get("run_id") or ""
         if run_id:
             print(f"  运行：{run_id}")
+        # The runs that belong to this problem. One ticket can cover
+        # several runs - every resume makes another attempt on the same
+        # problem - and the queue has to show that they are one problem
+        # and not several.
+        runs = [r for r in (payload.get("runs") or []) if r]
+        if len(runs) > 1:
+            print(f"  关联运行：{len(runs)} 次尝试（{runs[0]} … {runs[-1]}）")
         issues = payload.get("issues") or []
         if issues:
             print(f"  卡在：{issues[0]}")
@@ -440,7 +468,20 @@ def cmd_tickets(args: argparse.Namespace) -> int:
             print(f"  原因：{reason}")
         attempts = payload.get("attempts")
         if attempts:
-            print(f"  已尝试：{attempts} 轮")
+            # The wording of this line is part of the tool's contract
+            # with the people reading it: "已尝试" is what they look
+            # for. The cumulative figure is added next to it, not
+            # instead of it.
+            print(f"  已尝试：{attempts} 轮（本次）")
+        # The cumulative cost of the problem, across every resume. A
+        # ticket that only shows the last attempt's round count makes
+        # a problem that burned fifteen rounds look like a one-round
+        # problem.
+        total_rounds = payload.get("iterations_total")
+        if total_rounds is None:
+            total_rounds = payload.get("attempts_total")
+        if total_rounds is not None and int(total_rounds or 0) > int(attempts or 0):
+            print(f"  累计已烧：{int(total_rounds)} 轮（含历次续跑）")
         last = payload.get("last_artifact") or ""
         if last:
             print(f"  最后产物：{len(last)} 字")
