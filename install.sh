@@ -257,7 +257,7 @@ HELPER
     else
       WHEEL_URL="https://github.com/$REPO/releases/download/v$VERSION/openloop_mas-$VERSION-py3-none-any.whl"
     fi
-    [ -n "$WHEEL_URL" ] || fail "could not determine the wheel URL. Set MAS_VERSION explicitly, e.g. MAS_VERSION=0.7.17"
+    [ -n "$WHEEL_URL" ] || fail "could not determine the wheel URL. Set MAS_VERSION explicitly, e.g. MAS_VERSION=0.7.18"
     "$PYTHON_BIN" "$HELPER_PATH" fetch "$WHEEL_URL" "$WHEEL_PATH" \
         || fail "could not download the wheel from $WHEEL_URL"
     ok "wheel downloaded ($(wc -c < "$WHEEL_PATH") bytes)"

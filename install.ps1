@@ -151,7 +151,7 @@ if (Test-Path $pkgSource) {
             $wheelUrl = "https://github.com/$repo/releases/download/v$Version/openloop_mas-$Version-py3-none-any.whl"
         }
         if (-not $wheelUrl) {
-            Write-Fail "could not determine the wheel URL. Pass -Version explicitly, e.g. -Version 0.7.17"
+            Write-Fail "could not determine the wheel URL. Pass -Version explicitly, e.g. -Version 0.7.18"
             exit 1
         }
         $fetchOutput = (& $pythonExe $helperPath fetch $wheelUrl $wheelPath 2>&1 | Out-String).Trim()

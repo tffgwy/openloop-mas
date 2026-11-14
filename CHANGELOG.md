@@ -4,6 +4,23 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.18] - 2026-11-14
+
+### Fixed
+
+Two defects in the checks added in 0.7.17. Both passed on Windows and
+failed on Linux and macOS.
+
+* The installer test compared the registered `PYTHONPATH` after turning
+  every forward slash into a backslash. That is right on Windows and
+  wrong on POSIX, where the path has no backslashes to begin with - the
+  assertion named a file that cannot exist. The comparison now follows
+  the platform.
+* The smoke check started the installed runtime through its package path
+  without putting the package directory on `sys.path`, so the import of
+  `mas` failed with `ModuleNotFoundError`. The runtime is now started the
+  way the MCP registration starts it.
+
 ## [0.7.17] - 2026-11-14
 
 ### Fixed
