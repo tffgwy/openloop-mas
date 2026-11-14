@@ -60,6 +60,10 @@ STATUS_ICON = {
     "error": "ERR",
     "not_closed": "OPEN",
     "incomplete": "OPEN",
+    # The deliverable passed but the run did not close - the artifact is
+    # good, the budget or the deadline was not. Marked apart from the
+    # plain OPEN so the overview table says which half failed.
+    "deliverable_ok_but_not_closed": "OK!",
 }
 
 
@@ -177,9 +181,27 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     else:
         status = "not_closed"
 
+    # Did the deliverable itself pass every check? This is a different
+    # question from "did the run close", and the engine already answers
+    # it - it books the answer on the run's end entry. The report threw
+    # that answer away, so a run whose artifact was perfect but whose
+    # wall-clock budget ran out looked exactly like a run whose artifact
+    # was wrong. The user had to guess which half of the system failed.
+    #
+    # A run that did not close but whose deliverable passed is now
+    # reported as ``deliverable_ok_but_not_closed`` - a distinguishable
+    # state, not a third word for "unfinished".
+    deliverable_ok = bool(end.get("deliverable_ok")) if end else False
+    if status != "closed" and deliverable_ok and scores:
+        status = "deliverable_ok_but_not_closed"
+
     return {
         "run_id": run_id,
         "status": status,
+        # Whether the deliverable passed every check, independently of
+        # whether the run closed. ``None`` means the run never said -
+        # which is not the same as "the deliverable was bad".
+        "deliverable_ok": deliverable_ok if end else None,
         "verdict": last_verdict,
         "decision": decision,
         # The end entry is the engine's own account of the run, so it
@@ -286,6 +308,18 @@ def render_markdown(report: Dict[str, Any]) -> str:
         lines.append(f"- 开始：{run.get('started_at') or '-'}")
         lines.append(f"- 结束：{run.get('finished_at') or '-'}")
         lines.append(f"- 花费：{int(run.get('tokens') or 0)} token")
+        # Say which half failed. "Not closed" alone hides the difference
+        # between a wrong deliverable and a good deliverable that ran
+        # out of budget.
+        if run.get("status") == "deliverable_ok_but_not_closed":
+            lines.append(
+                "- 交付物：✅ 通过了全部验收标准，但本次运行**没有闭合**"
+                "（预算或死线到了）——交付物可用，直接取用即可"
+            )
+        elif run.get("deliverable_ok") is False and run.get("scores"):
+            lines.append(
+                "- 交付物：❌ 未通过验收标准（见下方未通过项）"
+            )
         if run.get("plan"):
             summary = (run.get("plan") or {}).get("summary") or ""
             lines.append(f"- 规划：{summary}")

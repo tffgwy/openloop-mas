@@ -172,6 +172,78 @@ class ReplaySummaryTest(unittest.TestCase):
 
 
 
+class TestTheReportSaysWhichHalfFailed(unittest.TestCase):
+    """A run that did not close has two very different causes.
+
+    The engine already answers both questions separately: *did the
+    deliverable pass every check* and *did the run close*. It books the
+    first answer on the run's end entry. The report threw that answer
+    away, so a run whose artifact was perfect but whose budget ran out
+    looked exactly like a run whose artifact was wrong - and the user
+    had to guess which half of the system failed.
+    """
+
+    def _rows(self, status, deliverable_ok, scores=None):
+        return [
+            {"run_id": "R-1", "role": "worker", "iteration": 1, "tokens": 10},
+            {"run_id": "R-1", "role": "closure", "iteration": 1,
+             "closed": False, "verdict": "pass", "decision": "revise",
+             "scores": scores if scores is not None else [
+                 {"id": "c1", "pass": True, "source": "rule"},
+             ]},
+            {"run_id": "R-1", "role": "run_end", "iteration": 1,
+             "status": status, "closed": False,
+             "deliverable_ok": deliverable_ok,
+             "error": "budget: tokens 100 >= 100"},
+        ]
+
+    def test_a_good_deliverable_that_ran_out_of_budget_is_its_own_state(self):
+        from mas.report import run_summary
+
+        summary = run_summary("R-1", self._rows("budget_exhausted", True))
+        self.assertEqual(
+            summary["status"], "deliverable_ok_but_not_closed"
+        )
+        self.assertTrue(summary["deliverable_ok"])
+
+    def test_a_bad_deliverable_is_not_the_same_state(self):
+        from mas.report import run_summary
+
+        summary = run_summary("R-1", self._rows("not_closed", False))
+        self.assertNotEqual(
+            summary["status"], "deliverable_ok_but_not_closed"
+        )
+        self.assertFalse(summary["deliverable_ok"])
+
+    def test_a_run_that_closed_is_never_relabelled(self):
+        from mas.report import run_summary
+
+        rows = self._rows("closed", True)
+        rows[1]["closed"] = True
+        rows[1]["decision"] = "close"
+        rows[2]["closed"] = True
+        summary = run_summary("R-1", rows)
+        self.assertEqual(summary["status"], "closed")
+
+    def test_a_run_that_never_ended_says_it_did_not_know(self):
+        # No end entry: the run never got to say. "It did not know" is
+        # not "the deliverable was bad", and the report must not
+        # pretend otherwise.
+        from mas.report import run_summary
+
+        rows = [{"run_id": "R-1", "role": "planner", "iteration": 1}]
+        summary = run_summary("R-1", rows)
+        self.assertIsNone(summary["deliverable_ok"])
+
+    def test_the_markdown_says_which_half_failed(self):
+        from mas.report import build_report, render_markdown
+
+        report = build_report(self._rows("budget_exhausted", True))
+        text = render_markdown(report)
+        self.assertIn("通过了全部验收标准", text)
+        self.assertIn("没有闭合", text)
+
+
 class TestIterationsIsAlwaysANumber(unittest.TestCase):
     """A report field that is sometimes a number and sometimes ``null``
     cannot be read by a script - and a run that crashed before its

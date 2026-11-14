@@ -7,6 +7,29 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.39 adds** ("not closed" is no longer a vague sentence):
+
+- **A good deliverable was reported as "not closed".** The engine
+  already answers two questions separately - *did the deliverable pass
+  every check* and *did the run close* - and books the first answer on
+  the run's end entry. The report threw that answer away. A real run
+  against a live endpoint produced a deliverable that passed every
+  acceptance criterion and then stopped on the stagnation ceiling: the
+  report said "not closed", as if the work itself were wrong, and the
+  user had to guess which half of the system had failed. Such a run is
+  now reported as `deliverable_ok_but_not_closed` - a distinguishable
+  state, not a third word for "unfinished".
+- **The Markdown said nothing about which half failed.** It now says
+  it in words: the deliverable passed every criterion but the run did
+  not close (budget or deadline), and the artifact is usable as is.
+- **"The run never said" is not "the deliverable was bad".** A run
+  with no end entry did not know how its deliverable fared, and the
+  report now reports `deliverable_ok: None` for it rather than a
+  confident `False`.
+- Five new tests cover the projection, and every layer was
+  counter-proven by reverting it on its own and confirming the
+  matching test fails.
+
 **What v0.7.38 adds** (the role that was supposed to close the loop is
 actually wired up now):
 

@@ -4,6 +4,44 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.39] - 2026-11-15
+
+### Fixed
+
+A run that did not close has two very different causes, and the report
+could not tell them apart. The engine answers both questions separately
+- *did the deliverable pass every check* and *did the run close* - and
+books the first answer on the run's end entry. The report threw that
+answer away.
+
+* **A good deliverable that ran out of budget looked like a bad
+  deliverable.** A real run against a live endpoint produced a
+  deliverable that passed every acceptance criterion, then stopped on
+  the stagnation ceiling and escalated. The report said "not closed" -
+  as if the work itself were wrong - and the user had to guess which
+  half of the system had failed. The report now reads the engine's own
+  answer and reports such a run as ``deliverable_ok_but_not_closed``:
+  a distinguishable state, not a third word for "unfinished".
+
+* **The Markdown said nothing about which half failed.** Even where the
+  numbers were available, the rendered report listed the status and the
+  token spend and stopped there. It now says it in words: the
+  deliverable passed every criterion but the run did not close (budget
+  or deadline), and the artifact is usable as is.
+
+* **"The run never said" is not "the deliverable was bad".** A run
+  with no end entry did not know how its deliverable fared, and the
+  report now reports ``deliverable_ok: None`` for it rather than a
+  confident ``False``.
+
+### Tests
+
+Five new tests cover the projection: a good deliverable that ran out of
+budget gets its own state, a bad deliverable does not, a closed run is
+never relabelled, a run that never ended says it did not know, and the
+Markdown says which half failed. Every layer was counter-proven by
+reverting it on its own and confirming the matching test fails.
+
 ## [0.7.38] - 2026-11-15
 
 ### Fixed
