@@ -175,6 +175,39 @@ class RelayTest(unittest.TestCase):
         status, _ = self._post("/v1/../../etc/passwd", {})
         self.assertIn(status, (400, 404))
 
+    def test_a_refused_request_does_not_break_the_next_one(self):
+        """A refusal must not leave the request body in the socket.
+
+        The relay answers an unknown path with 404 without reading the
+        request body. Under HTTP/1.1 the connection is kept alive, so
+        the unread bytes stay in the socket and the *next* request on
+        that connection starts reading in the middle of the previous
+        body. The client then sees a transport error instead of the
+        answer it was promised.
+
+        This showed up as a test that passed on most machines and
+        failed on others: the same request refused over and over
+        eventually aborted the connection. The refusal now drains the
+        body and closes the connection, so the failure cannot come
+        back.
+        """
+        bad = []
+        for _ in range(60):
+            status, _ = self._post("/v1/../../etc/passwd", {"payload": "x" * 512})
+            if status not in (400, 404):
+                bad.append(status)
+                break
+        self.assertEqual(bad, [], "the relay broke the connection on a refusal")
+
+    def test_a_refused_request_still_answers_the_next_one(self):
+        """After a refusal the relay still serves a normal request."""
+        self._post("/v1/../../etc/passwd", {"payload": "x" * 512})
+        status, body = self._post(
+            "/v1/responses", {"model": "m", "input": "x"}, {"Content-Type": "application/json"}
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(json.loads(body)["echo"])["model"], "m")
+
     def test_relay_token_gates_everything_but_health(self):
         self.relay.auth_token = "secret-token"
         try:

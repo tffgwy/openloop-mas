@@ -144,12 +144,7 @@ class RelayHandler(BaseHTTPRequestHandler):
     def _require_auth(self) -> bool:
         if self._is_authorized():
             return True
-        body = json.dumps({"error": "unauthorized: missing or invalid bearer token"}).encode("utf-8")
-        self.send_response(401)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        self._refuse(401, {"error": "unauthorized: missing or invalid bearer token"})
         return False
 
     def _send_json(self, status: int, payload: Any) -> None:
@@ -160,11 +155,51 @@ class RelayHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _refuse(self, status: int, payload: Any) -> None:
+        """Answer with a refusal, without breaking the connection.
+
+        Two things have to happen together: the unread request body is
+        drained, and the connection is closed after the answer. Closing
+        is the belt to the drain's braces - if the body was not fully
+        readable, whatever is left in the socket would still be read as
+        the beginning of the next request.
+        """
+        self._drain_body()
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self.wfile.write(body)
+        self.close_connection = True
+
     def _read_body(self) -> bytes:
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0:
             return b""
         return self.rfile.read(length)
+
+    def _drain_body(self) -> None:
+        """Read and throw away a body nobody is going to use.
+
+        A response that is sent *without* the request body having been
+        read leaves those bytes in the socket. Under HTTP/1.1 the
+        connection is kept alive, so the next request on that socket
+        starts reading in the middle of the previous body - and the
+        server either answers the wrong request or aborts the
+        connection. The client then sees a transport error instead of
+        the 404 it was promised.
+
+        Every path that refuses a request (401, 404) has to drain the
+        body first. This is the difference between "the relay refuses
+        that path" and "the relay sometimes breaks the connection".
+        """
+        try:
+            self._read_body()
+        except (OSError, ValueError):
+            # The client hung up mid-body. Nothing left to drain.
+            self.close_connection = True
 
     def _upstream_headers(self) -> Dict[str, str]:
         """Build the headers sent upstream.
@@ -320,7 +355,7 @@ class RelayHandler(BaseHTTPRequestHandler):
         if path in ("/v1/models", "/models"):
             self._proxy("GET", path)
             return
-        self._send_json(404, {"error": f"not found: {path}"})
+        self._refuse(404, {"error": f"not found: {path}"})
 
     def do_POST(self) -> None:  # noqa: N802 - http.server API
         path = self.path.split("?", 1)[0]
@@ -329,7 +364,7 @@ class RelayHandler(BaseHTTPRequestHandler):
         if path in ("/v1/responses", "/responses", "/v1/chat/completions", "/chat/completions"):
             self._proxy("POST", path)
             return
-        self._send_json(404, {"error": f"not found: {path}"})
+        self._refuse(404, {"error": f"not found: {path}"})
 
 
 class _QuietThreadingHTTPServer(ThreadingHTTPServer):

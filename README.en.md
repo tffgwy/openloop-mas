@@ -7,6 +7,17 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.59 fixes** (**the relay no longer breaks connections at random**):
+
+- After v0.7.58 CI caught an intermittent failure: when the relay refused an unknown
+  path it **did not read the request body**. HTTP/1.1 keeps the connection alive, so
+  the leftover bytes stayed in the socket and the *next* request started reading in
+  the middle of the previous body. The client then saw "connection aborted" instead
+  of the 404 it was promised.
+- A 200-request stress loop reproduced it about 9 times - a real bug, not a slow
+  machine. A refusal (401 / 404) now drains the body first, closes the connection
+  explicitly, and two regression tests pin the behaviour.
+
 **What v0.7.58 adds** (**why the loop did not close, in words**):
 
 - **The line that says why the run stopped was still the engine talking

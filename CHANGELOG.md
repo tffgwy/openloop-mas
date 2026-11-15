@@ -4,6 +4,17 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.59] - 2026-11-15
+
+### Fixed
+
+- 修复 relay 拒绝请求时未排空请求体的问题：HTTP/1.1 keep-alive 下残留字节会污染下一次请求，客户端偶发收到连接中断而不是 404（v0.7.58 引入的 CI 失败根因，本地难以复现、压测 200 次约 9 次触发）
+- relay 的 401/404 拒绝路径改为先排空 body 再应答，并显式关闭该连接
+
+### Added
+
+- 新增两条 relay 回归测试：连续拒绝不会弄断连接、拒绝之后下一次正常请求照常返回
+
 ## [0.7.58] - 2026-11-15
 
 ### Added
