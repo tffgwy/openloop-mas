@@ -1183,6 +1183,28 @@ mas sync           # bring the installed skills back to the packaged version
 mas demo           # no API key needed - watch it close a loop on its own
 ```
 
+`mas doctor` talks to a person: every check explains what it *is*, is
+tagged **required / recommended / optional**, and the report ends with
+one conclusion and one next command.
+
+```
+[OK  ] python（必需）
+       3.14.10
+       是什么：Python 版本够不够新（3.10 以上才能跑）
+[注意] skill_codex（可选）
+       未安装: ...\.codex\skills\mas-loop\SKILL.md（运行 mas install）
+       是什么：给 Codex 装的 skill：让 Codex 会用这个闭环工具
+...
+小结：8 项正常，6 项注意，0 项坏了
+结论：闭环能跑，但智能体接不上：skill_codex、skill_claude、skills_sync、mcp_codex、mcp_claude 还没装。
+下一步：运行 mas install，一条命令装上 skill 并注册 MCP 服务。
+```
+
+The three verdicts mean different things: **the loop cannot run** (a
+required part is broken), **the loop runs but no agent can reach it**
+(skills / MCP not installed), or **everything is ready**. The exit code
+is non-zero only in the first case.
+
 `mas install` copies the **agent skills into the Codex / Claude Code skill
 directories** and **registers the MCP server** in `~/.codex/config.toml`
 and `~/.claude.json`. Open a new terminal afterwards and both hosts know

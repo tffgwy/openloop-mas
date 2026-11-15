@@ -4,6 +4,49 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.54] - 2026-11-15
+
+### Changed
+
+`mas doctor` now speaks to a person instead of to a machine.
+
+The self-check printed one line per check - a name, a status, a path -
+and then exited zero. On a clean machine that is eight OK lines and six
+WARN lines, and the exit code says *fine*. A beginner who had just
+installed the tool had no way to tell that the six warnings meant "no
+skill installed, no MCP server registered, the agent cannot reach this
+tool at all" - the very thing they installed it for.
+
+Three changes:
+
+* **Every check says what it is.** Each row now carries a plain-language
+  line ("是什么：给 Codex 装的 skill：让 Codex 会用这个闭环工具"), so a
+  machine name like `skill_codex` or `mcp_claude` is never the only
+  thing on the line.
+
+* **Checks are sorted into three tiers.** `必需` (the loop cannot run
+  without it), `建议` (the loop runs, but a real user should act on it),
+  and `可选` (the loop runs fine without it; it only makes the loop
+  reachable from an agent). The config file used to be labelled
+  required *and* reported as a warning at the same time - a
+  contradiction, now fixed by giving it its own tier.
+
+* **The report ends with one conclusion and one next command.**
+  `verdict()` answers the only question a beginner actually has:
+  `broken` (the loop cannot run), `degraded` (it runs, but a part did
+  not install), `agent_not_reachable` (it runs, but no agent can reach
+  it), or `ready`. The `action` field names the command to run next.
+  `loop_usable` and `agent_reachable` are reported separately, because
+  "the tool is broken" and "the tool is fine but nothing can call it"
+  are different problems with different fixes.
+
+The exit code now means what it says: non-zero only when the loop
+itself is broken. The optional parts stay warnings, so `mas doctor`
+remains exit-zero on a clean CI runner.
+
+`mas doctor --json` carries the verdict next to the counts and checks,
+so a script can ask "can the loop run?" instead of parsing prose.
+
 ## [0.7.53] - 2026-11-15
 
 ### Fixed

@@ -16,6 +16,48 @@ from typing import Any, Dict, List
 from mas.config import config_path, load_config, state_dir, user_config_path
 from mas.probe import probe_from_config, probe_instruction_echo
 
+#: What each check *means*, in words a person can act on.
+#:
+#: The check names are for machines (``skill_codex``, ``mcp_claude``).
+#: A beginner who has never heard of an MCP server cannot tell from
+#: "skill_codex 未安装" whether that is a problem, what it costs them,
+#: or what to do about it. This table is the sentence that answers
+#: "what is this and do I care?".
+CHECK_PLAIN_LANGUAGE: Dict[str, str] = {
+    "python": "Python 版本够不够新（3.10 以上才能跑）",
+    "package": "运行时本体装好了没有",
+    "config": "你的设置文件在不在（没有也能跑，用默认的 mock）",
+    "orchestration": "几个智能体并行、几个评审、用哪种投票规则",
+    "state_dir": "账本、工单和交付物存放的目录",
+    "ledger": "账本文件能不能写（历史记录存这儿）",
+    "skills_source": "包内自带的 skill 模板在不在（安装用的源）",
+    "skill_codex": "给 Codex 装的 skill：让 Codex 会用这个闭环工具",
+    "skill_claude": "给 Claude 装的 skill：让 Claude 会用这个闭环工具",
+    "skills_sync": "已装的 skill 是不是和包内最新版本一致（不一致就同步）",
+    "mcp_codex": "给 Codex 注册的 MCP 服务：让 Codex 能直接调 mas 的工具",
+    "mcp_claude": "给 Claude 注册的 MCP 服务：让 Claude 能直接调 mas 的工具",
+    "provider": "模型后端配好了没有（mock 是离线演示模式）",
+    "endpoint": "模型端点连得上吗",
+    "instruction": "模型端点认不认角色指令（不认就等于没有闭环）",
+    "file_checks": "能不能读真实文件（不能的话验收会变成空话）",
+}
+
+#: The checks that are *optional* - the loop runs without them, they
+#: only make the loop reachable from an agent.
+OPTIONAL_CHECKS = frozenset(
+    {"skill_codex", "skill_claude", "skills_sync", "mcp_codex", "mcp_claude"}
+)
+
+#: The checks that decide whether the loop can run at all.
+ESSENTIAL_CHECKS = frozenset({"python", "package", "state_dir", "ledger", "file_checks"})
+
+#: The checks that are neither required nor optional: the loop runs
+#: without them, but a real user is expected to act on them. The config
+#: file is the classic example - the runtime falls back to sane defaults,
+#: so it is a "建议" rather than a "必需", and calling it required while
+#: also reporting it as a warning is a contradiction.
+RECOMMENDED_CHECKS = frozenset({"config"})
+
 
 def _check(name: str, status: str, detail: str) -> Dict[str, Any]:
     return {"check": name, "status": status, "detail": detail}
@@ -307,3 +349,133 @@ def summarize(results: List[Dict[str, Any]]) -> Dict[str, Any]:
     for row in results:
         counts[row["status"]] = counts.get(row["status"], 0) + 1
     return {"counts": counts, "checks": results}
+
+
+def explain(name: str) -> str:
+    """The plain-language sentence for a check, or an empty string."""
+    return CHECK_PLAIN_LANGUAGE.get(name, "")
+
+
+def is_optional(name: str) -> bool:
+    """True when the loop runs fine without this check."""
+    return name in OPTIONAL_CHECKS
+
+
+def is_recommended(name: str) -> bool:
+    """True when the check is expected to be acted on, but not required."""
+    return name in RECOMMENDED_CHECKS
+
+
+def verdict(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Decide what the installation is good for, in words.
+
+    ``mas doctor`` used to print a list of check names and exit zero.
+    A beginner read six WARN lines and one zero, and had no way to tell
+    whether the tool worked. The answer is a single sentence:
+
+    * the loop cannot run at all - something essential is broken;
+    * the loop runs, but an agent cannot reach it - the optional parts
+      (skills and the MCP registration) are missing;
+    * everything is in place.
+    """
+    by_name = {row["check"]: row for row in results}
+    broken = [
+        row["check"]
+        for row in results
+        if row["status"] == "fail" and row["check"] in ESSENTIAL_CHECKS
+    ]
+    broken_optional = [
+        row["check"]
+        for row in results
+        if row["status"] == "fail" and row["check"] not in ESSENTIAL_CHECKS
+    ]
+    missing_optional = [
+        row["check"]
+        for row in results
+        if row["status"] == "warn" and row["check"] in OPTIONAL_CHECKS
+    ]
+    missing_recommended = [
+        row["check"]
+        for row in results
+        if row["status"] == "warn" and row["check"] in RECOMMENDED_CHECKS
+    ]
+    if broken:
+        state = "broken"
+        headline = "闭环跑不起来：{} 有硬伤，先修它。".format("、".join(broken))
+        action = "看上面那一条的详情修好它，然后重新运行 mas doctor 复查。"
+    elif broken_optional:
+        state = "degraded"
+        headline = "闭环能跑，但 {} 没就位。".format("、".join(broken_optional))
+        action = "运行 mas install 补齐；如果还不行，看上面那一条的详情。"
+    elif missing_optional:
+        state = "agent_not_reachable"
+        headline = (
+            "闭环能跑，但智能体接不上：{} 还没装。".format("、".join(missing_optional))
+        )
+        action = "运行 mas install，一条命令装上 skill 并注册 MCP 服务。"
+    else:
+        state = "ready"
+        headline = "一切就绪：闭环能跑，智能体也接得上。"
+        action = "可以开始干活了：mas run --goal \"...\" --criteria \"...\"。"
+    if missing_recommended and state != "broken":
+        action = "{} 另外建议运行 mas init 生成配置。".format(action.rstrip("。 "))
+    return {
+        "state": state,
+        "headline": headline,
+        "action": action,
+        # The loop itself only depends on the essential checks. A broken
+        # skill or MCP registration makes the tool *unreachable from an
+        # agent*, but `mas run` still works - that is a different problem
+        # with a different fix, and conflating the two made the summary
+        # say the loop was dead when it was merely disconnected.
+        "loop_usable": not broken,
+        "agent_reachable": not missing_optional and not broken_optional,
+        "broken": broken,
+        "missing_optional": missing_optional,
+        "missing_recommended": missing_recommended,
+        "checks": {
+            name: {
+                "status": by_name[name]["status"],
+                "detail": by_name[name]["detail"],
+                "plain": explain(name),
+                "optional": is_optional(name),
+                "recommended": is_recommended(name),
+            }
+            for name in by_name
+        },
+    }
+
+
+def format_doctor(results: List[Dict[str, Any]]) -> str:
+    """Render the self-check so that a person can act on it.
+
+    The old rendering was one line per check: a machine name and a
+    path. That is a report for the tool, not for the person who just
+    installed the tool. This one says what each check means, separates
+    the parts that stop the loop from the parts that only make the loop
+    reachable from an agent, and ends with one sentence and one command.
+    """
+    lines: List[str] = []
+    for row in results:
+        plain = explain(row["check"])
+        if is_optional(row["check"]):
+            tag = "可选"
+        elif is_recommended(row["check"]):
+            tag = "建议"
+        else:
+            tag = "必需"
+        mark = {"ok": "[OK  ]", "warn": "[注意]", "fail": "[坏了]"}.get(
+            row["status"], "[?   ]"
+        )
+        lines.append(f"{mark} {row['check']}（{tag}）")
+        lines.append(f"       {row['detail']}")
+        if plain:
+            lines.append(f"       是什么：{plain}")
+    counts = summarize(results)["counts"]
+    lines.append("")
+    lines.append(
+        "小结：{} 项正常，{} 项注意，{} 项坏了".format(
+            counts.get("ok", 0), counts.get("warn", 0), counts.get("fail", 0)
+        )
+    )
+    return "\n".join(lines) + "\n"

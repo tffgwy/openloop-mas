@@ -908,6 +908,25 @@ mas doctor         # 自检（包含 skills 版本是否漂移）
 mas sync           # 把已安装的 skills 同步回包内版本
 ```
 
+`mas doctor` 说的是人话：每一项都解释「这是什么」，标清楚是**必需 / 建议 / 可选**，
+最后给一句**结论**和一条**下一步命令**：
+
+```
+[OK  ] python（必需）
+       3.14.10
+       是什么：Python 版本够不够新（3.10 以上才能跑）
+[注意] skill_codex（可选）
+       未安装: ...\.codex\skills\mas-loop\SKILL.md（运行 mas install）
+       是什么：给 Codex 装的 skill：让 Codex 会用这个闭环工具
+...
+小结：8 项正常，6 项注意，0 项坏了
+结论：闭环能跑，但智能体接不上：skill_codex、skill_claude、skills_sync、mcp_codex、mcp_claude 还没装。
+下一步：运行 mas install，一条命令装上 skill 并注册 MCP 服务。
+```
+
+三种结论的区别很重要：**闭环跑不起来**（必需项坏了）、**闭环能跑但智能体接不上**
+（skill / MCP 没装）、**一切就绪**。退出码只在第一种情况下非零。
+
 `mas install` 做的是**装 agent skills 到 Codex / Claude Code 的 skill 目录**、
 **把 MCP 服务器注册进 `~/.codex/config.toml` 和 `~/.claude.json`**，
 然后你可以直接开一个新终端，Codex 和 Claude Code 就认识这套闭环工作流了。

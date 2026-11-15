@@ -13,7 +13,7 @@ from mas import __version__
 from mas.bench import format_bench, run_bench
 from mas.config import load_config, load_persisted_config, save_config
 from mas.demo import run_scenarios
-from mas.doctor import run_doctor, summarize
+from mas.doctor import format_doctor, run_doctor, summarize, verdict
 from mas.engine import LoopEngine
 from mas.installer import (
     format_report,
@@ -857,13 +857,20 @@ def cmd_teams(args: argparse.Namespace) -> int:
 def cmd_doctor(args: argparse.Namespace) -> int:
     config = load_config()
     results = run_doctor(config, allow_network=not getattr(args, "no_network", False))
+    final = verdict(results)
     if args.json:
-        _print(summarize(results), True)
+        payload = summarize(results)
+        payload["verdict"] = final
+        _print(payload, True)
     else:
-        for row in results:
-            print(f"[{row['status'].upper():<4}] {row['check']:<14} {row['detail']}")
-    counts = summarize(results)["counts"]
-    return 1 if counts.get("fail") else 0
+        print(format_doctor(results), end="")
+        print("结论：" + final["headline"])
+        print("下一步：" + final["action"])
+    # Only a hard break of the loop itself is a failure. The optional
+    # parts (skills, MCP registration) are warnings: the loop still runs
+    # without them, and `mas doctor` must stay exit-0 on a fresh machine
+    # so that CI can call it as a smoke test.
+    return 1 if final["state"] == "broken" else 0
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
