@@ -4,6 +4,38 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.55] - 2026-11-15
+
+### Changed
+
+The three commands a beginner meets first now answer back.
+
+`mas status`, `mas demo` and `mas report` are what a new user runs before
+they have done anything at all - and all three used to talk to the
+machine instead of the person:
+
+* **`mas status` said "provider: mock".** "mock" is not a word a
+  newcomer knows, and the page it printed was a column of zeroes. Zeroes
+  are not a diagnosis: they do not say whether the tool is broken or
+  simply has not been used yet. The status page now names the offline
+  demonstration mode in words ("闭环会跑，但调的是内置假模型，不联网、
+  不花钱"), says how to switch to a real model, and - on a machine that
+  has never run anything - says explicitly that the zeroes are not a
+  failure.
+
+* **`mas demo` printed "expect=closed actual=closed" three times.** That
+  is the engine talking to itself. The three scenarios are the proof
+  that the loop actually works, so each one now says what it proves:
+  the loop re-does a deliverable until it passes the criteria; the loop
+  stops and opens a ticket instead of burning the budget when it is
+  stuck; the loop reports an exhausted budget instead of pretending it
+  finished. The demo also says that it is offline - no network, no real
+  model, no cost - and ends with the next command.
+
+* **`mas report` ended with "账本为空，暂无运行记录。"** True, and a dead
+  end. The report now says it is not a failure and names the two
+  commands that fill the ledger.
+
 ## [0.7.54] - 2026-11-15
 
 ### Changed

@@ -232,6 +232,16 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0 if result.closed else 2
 
 
+#: What each demo scenario *proves*, in words. The three lines the demo
+#: used to print were machine truth ("expect=closed actual=closed") that
+#: told a beginner nothing about what had just been proven.
+DEMO_SCENARIO_MEANING = {
+    "closure": "场景一 · 会验收：交付物不合格就重来，直到真的满足验收条件。",
+    "stagnation": "场景二 · 会止损：一直产不出合格结果时停下来开工单，而不是烧光预算。",
+    "budget": "场景三 · 会说实话：预算用完就报预算耗尽，绝不假装做完了。",
+}
+
+
 def cmd_demo(args: argparse.Namespace) -> int:
     results = run_scenarios(args.scenario)
     if args.json:
@@ -239,10 +249,20 @@ def cmd_demo(args: argparse.Namespace) -> int:
     else:
         for row in results:
             flag = "OK " if row.get("ok") else "FAIL"
+            meaning = DEMO_SCENARIO_MEANING.get(row["scenario"], "")
+            print(f"{meaning}")
             print(
                 f"[{flag}] {row['scenario']:<11} 期望={row['expect']:<18} 实际={row['status']:<18} "
                 f"迭代={row.get('iterations')} 票={row.get('ticket_id') or '-'}"
             )
+            print("")
+        ok_all = all(row.get("ok") for row in results)
+        if ok_all:
+            print("三个场景全部符合预期：闭环引擎会验收、会止损、会如实报告预算耗尽。")
+            print("下一步：mas init --wizard  接上你自己的模型，然后 mas run 跑一个真任务。")
+        else:
+            print("有场景不符合预期 - 上面标 FAIL 的那行就是问题所在。")
+        print("（这是离线演示，不联网、不调真模型、不花钱。）")
     return 0 if all(row.get("ok") for row in results) else 1
 
 
@@ -340,6 +360,14 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     budget = config.get("budget") or {}
     print(f"provider：{config.get('provider')} / {config.get('model')}")
+    if str(config.get("provider") or "mock") == "mock":
+        # "provider: mock" is a machine word. A beginner who just
+        # installed the tool reads it and has no idea whether the thing
+        # is working or broken - it is neither. It is the offline
+        # demonstration mode: the loop runs, but no real model is
+        # called. Say that, and say what to change.
+        print("        （离线演示模式：闭环会跑，但调的是内置假模型，不联网、不花钱）")
+        print("        要接真模型：mas init --provider openai_compat --model <模型> --base-url <端点>")
     print(f"状态目录：{config.get('state_dir')}")
     print(
         f"账本：{payload['ledger']['entries']} 条  "
@@ -378,6 +406,14 @@ def cmd_status(args: argparse.Namespace) -> int:
         f"预算：迭代 {budget.get('max_iterations')} / "
         f"{budget.get('deadline_sec')} 秒 / {budget.get('max_tokens')} token"
     )
+    # A status page on a machine that has never run anything is a page
+    # of zeroes. Zeroes are not a diagnosis - they do not say whether
+    # the tool is broken or simply has not been used yet. Say which.
+    if not rows:
+        print("")
+        print("还没跑过任何一次闭环，所以上面全是 0。这不是故障。")
+        print("  先看它怎么跑：mas demo")
+        print("  再跑一个真任务：mas run --goal \"你的任务\" --criteria \"contains:关键词\"")
     return 0
 
 

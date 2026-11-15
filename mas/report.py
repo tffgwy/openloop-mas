@@ -522,7 +522,16 @@ def render_markdown(report: Dict[str, Any]) -> str:
 
     runs = report.get("runs") or []
     if not runs:
+        # "账本为空，暂无运行记录。" is true but leaves the reader stuck:
+        # it does not say whether the tool is broken or simply has not
+        # been used yet, and it names no next step. The report is the
+        # thing a beginner reads *after* running something, so it has to
+        # point at the thing to run.
         lines.append("账本为空，暂无运行记录。")
+        lines.append("")
+        lines.append("这不是故障 —— 这台机器上还没跑过任何一次闭环。")
+        lines.append("  先看它怎么跑：mas demo")
+        lines.append("  再跑一个真任务：mas run --goal \"你的任务\" --criteria \"contains:关键词\"")
         return "\n".join(lines) + "\n"
 
     # The problems, first. The run table below lists every attempt,
