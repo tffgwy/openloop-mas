@@ -1109,6 +1109,304 @@ def _find_candidate_entry(ledger_path: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _ledger_rows(ledger_path: str) -> List[Dict[str, Any]]:
+    """Read the run ledger into a list of rows."""
+    path = pathlib.Path(str(ledger_path or ""))
+    if not path.is_file():
+        return []
+    rows: List[Dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def _ledger_run_ids(ledger_path: str) -> List[str]:
+    """The run ids the ledger knows about."""
+    return [str(row.get("run_id") or "") for row in _ledger_rows(ledger_path)]
+
+
+def _ledger_ticket_ids(ledger_path: str) -> List[str]:
+    """The ticket ids the ledger points at."""
+    found: List[str] = []
+    for row in _ledger_rows(ledger_path):
+        for key in ("ticket_id", "parent_ticket_id"):
+            value = str(row.get(key) or "")
+            if value and value not in found:
+                found.append(value)
+    return found
+
+
+# ------------------------------------------------------------------- check 7
+def check_an_escalated_run_leaves_a_ticket_a_human_can_take_over(
+    iterations: int = 10,
+) -> Dict[str, Any]:
+
+    """An escalated run must leave a ticket a human can actually pick up.
+
+    The engine promises three things when a loop cannot close itself: it
+    escalates instead of spinning, it opens a ticket, and that ticket
+    carries enough context to resume the loop. The first two were easy
+    to see. The third was a promise nobody kept.
+
+    A ticket that names the cause but drops the acceptance criteria is
+    not a handover: the human who resumes the run gets a loop with no
+    standards left, and the verifier's opinion becomes the only rule.
+    The loop still reports success - it just stops being the loop the
+    user asked for. So the ticket is checked by *using* it:
+
+    * the run escalates (the deliverable stopped changing) and opens a
+      ticket;
+    * the ticket is on disk, waiting for a human, and names its cause;
+    * the ticket carries the goal, the criteria, the last deliverable,
+      the failing issues and the history;
+    * the criteria survive the round trip - they come back as machine
+      checks, not as prose;
+    * the ledger points at the ticket and the ticket points back at the
+      ledger;
+    * and the decisive one: feeding the ticket back into
+      ``engine.resume()`` closes the loop **through the machine check**.
+
+    That last point is what makes the check bite. The verifier in this
+    check always answers "fail", so a resumed run can only close if the
+    criteria really came back on the ticket. A ticket that lost its
+    criteria - or kept them as unreadable prose - leaves the loop
+    unable to close, and the gate turns red.
+    """
+    import tempfile
+
+    from mas.engine import Criterion, LoopEngine
+    from mas.providers import Provider
+
+    class _StuckProvider(Provider):
+        """A worker that never improves, and a verifier that never passes."""
+
+        name = "selftest-handover"
+
+        def __init__(self, model: str = "selftest-model", **options: Any) -> None:
+            super().__init__(model=model, **options)
+            # False: the worker writes the same text every round, so the
+            # deliverable stops changing and the loop cannot close.
+            self.repaired = False
+
+        def complete(self, *, system: str, prompt: str, role: str = "worker",
+                     expect_json: bool = False, max_tokens: int = 4000) -> Dict[str, Any]:
+            self.calls += 1
+            usage = {"total_tokens": 10}
+            if role == "planner":
+                text = json.dumps(
+                    {"summary": "计划", "plan": ["写交付物"], "risks": ["写不好"]}
+                )
+                return {"text": text, "usage": usage, "raw": {}}
+            if role == "verifier":
+                # The verifier never passes. The only way a resumed run
+                # can close is through the machine check that came back
+                # on the ticket - so the check cannot be faked by the
+                # model, and a ticket without criteria cannot close.
+                text = json.dumps(
+                    {
+                        "verdict": "fail",
+                        "scores": [{"id": "c1", "pass": False, "note": "不过"}],
+                    }
+                )
+                return {"text": text, "usage": usage, "raw": {}}
+            if role == "reflector":
+                text = json.dumps(
+                    {"summary": "复盘", "issues": [], "next_action": "revise"}
+                )
+                return {"text": text, "usage": usage, "raw": {}}
+            if role == "worker":
+                text = "结论。数据是 42。" if self.repaired else "结论。数据是 41。"
+                return {"text": text, "usage": usage, "raw": {}}
+            return {"text": "{}", "usage": usage, "raw": {}}
+
+    def _config(tmp: str, **budget: Any) -> Dict[str, Any]:
+        # The iteration ceiling has to sit *above* the stagnation limit,
+        # otherwise the budget fires first and the escalation path - the
+        # one this check is about - is never reached.
+        base = {"max_iterations": 6, "max_tokens": 1000000, "deadline_sec": 60}
+        base.update(budget)
+        return {
+            "provider": "mock",
+            "model": "selftest-model",
+            "state_dir": os.path.join(tmp, "state"),
+            "workspace": "",
+            "budget": base,
+            "orchestration": {"parallel_workers": 1, "reviewers": 1, "review_mode": "all"},
+            "team": {"language": "zh"},
+            "stagnation_limit": 2,
+        }
+
+    #: The keys a human needs to take the problem over.
+    required_payload_keys = (
+        "run_id", "task_id", "goal", "title", "criteria", "last_artifact",
+        "issues", "attempts", "iterations_total", "runs", "history",
+        "stagnation", "reason", "status",
+    )
+
+    def _one_round(index: int) -> List[str]:
+        """Escalate, then take the loop over from the ticket itself."""
+        problems: List[str] = []
+        prefix = "第 %d 次：" % (index + 1)
+
+        with tempfile.TemporaryDirectory(prefix="mas-selftest-handover-") as tmp:
+            provider = _StuckProvider(model="selftest-model")
+            config = _config(tmp)
+            engine = LoopEngine(config, provider=provider)
+            criteria = [
+                {
+                    "id": "c1",
+                    "desc": "正文里要出现 42",
+                    "check": {"type": "contains", "arg": "42"},
+                }
+            ]
+            try:
+                result = engine.run(goal="写一份 Q3 报告", criteria=criteria)
+            except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                return [prefix + "运行报错：%s" % exc]
+
+            if result.closed:
+                return [prefix + "运行竟然闭合了（status=%s），升级路径没被走到" % result.status]
+            if result.status != "escalated":
+                return [prefix + "状态不是 escalated（而是 %s）" % result.status]
+            if not result.ticket_id:
+                return [prefix + "升级了却没有票据"]
+
+            ticket_id = str(result.ticket_id)
+
+            # The ticket has to be on disk, not only in memory: the human
+            # finds it through ``mas tickets``, which reads the folder.
+            ticket_file = pathlib.Path(
+                os.path.join(config["state_dir"], "tickets", ticket_id + ".json")
+            )
+            if not ticket_file.is_file():
+                return [prefix + "票据没有落盘（%s）" % ticket_file]
+            try:
+                ticket = json.loads(ticket_file.read_text(encoding="utf-8"))
+            except ValueError as exc:
+                return [prefix + "票据不是合法 JSON：%s" % exc]
+
+            if ticket.get("state") != "waiting_human":
+                problems.append(
+                    prefix + "票据状态不是 waiting_human（而是 %r）" % ticket.get("state")
+                )
+            if ticket.get("kind") != "loop_escalation":
+                problems.append(
+                    prefix + "票据类型不对（%r）" % ticket.get("kind")
+                )
+            reason = str((ticket.get("payload") or {}).get("reason") or "")
+            if "stagnation" not in reason:
+                problems.append(prefix + "票据没说清楚为什么停下（reason=%r）" % reason)
+
+            payload = ticket.get("payload") or {}
+            missing = [key for key in required_payload_keys if key not in payload]
+            if missing:
+                problems.append(prefix + "票据缺了字段：%s" % ", ".join(missing))
+
+            # The criteria have to come back as machine checks. Prose is
+            # not a standard: it cannot be re-run, so it cannot close a
+            # loop on its own.
+            raw_criteria = payload.get("criteria")
+            if not isinstance(raw_criteria, list) or not raw_criteria:
+                problems.append(prefix + "票据里没有验收标准")
+                raw_criteria = []
+            for position, raw in enumerate(raw_criteria):
+                criterion = Criterion.from_raw(raw, position)
+                if not criterion.check:
+                    problems.append(
+                        prefix + "第 %d 条验收标准没有机检（只剩散文）" % (position + 1)
+                    )
+                elif criterion.check.get("arg") != "42":
+                    problems.append(
+                        prefix + "第 %d 条验收标准的机检内容变了（arg=%r）"
+                        % (position + 1, criterion.check.get("arg"))
+                    )
+                if not criterion.desc:
+                    problems.append(prefix + "第 %d 条验收标准没有说明" % (position + 1))
+
+            if not str(payload.get("goal") or ""):
+                problems.append(prefix + "票据没有写目标")
+            if not str(payload.get("last_artifact") or ""):
+                problems.append(prefix + "票据没有带上最后一次产物")
+            if not list(payload.get("issues") or []):
+                problems.append(prefix + "票据没有带上失败的原因")
+            if not list(payload.get("history") or []):
+                problems.append(prefix + "票据没有带上历史")
+            if not list(payload.get("runs") or []):
+                problems.append(prefix + "票据没有指明涉及哪些运行")
+
+            # The ledger and the ticket have to point at each other:
+            # the ledger is how the human finds the run, the ticket is
+            # how the human finds the problem.
+            run_id = str(payload.get("run_id") or "")
+            ledger_run_ids = _ledger_run_ids(result.ledger_path)
+            if run_id not in ledger_run_ids:
+                problems.append(
+                    prefix + "票据上的 run_id 不在账本里（%s）" % (run_id or "空")
+                )
+            if ticket_id not in _ledger_ticket_ids(result.ledger_path):
+                problems.append(prefix + "账本里没有指向这张票据的记录")
+
+            # The decisive part: take the loop over with the ticket
+            # alone. The worker is repaired and the verifier still says
+            # "fail", so the resumed loop can only close through the
+            # machine check that came back on the ticket.
+            provider.repaired = True
+            try:
+                resumed = engine.resume(ticket_id, note="人工接手")
+            except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                problems.append(prefix + "按票据接手失败：%s" % exc)
+                return problems
+
+            if not resumed.closed:
+                problems.append(
+                    prefix + "按票据接手后没有闭合（status=%s, error=%s）"
+                    % (resumed.status, resumed.error)
+                )
+            else:
+                by_id = {str(s.get("id")): s for s in (resumed.scores or [])}
+                score = by_id.get("c1") or {}
+                if score.get("source") != "rule":
+                    problems.append(
+                        prefix + "接手的闭合不是靠机检（source=%r）" % score.get("source")
+                    )
+                if not score.get("pass"):
+                    problems.append(prefix + "接手的闭合里 c1 没有通过")
+
+            final = engine.tickets.get(ticket_id) or {}
+            if final.get("state") != "resolved":
+                problems.append(
+                    prefix + "闭合后票据没有归档（state=%r）" % final.get("state")
+                )
+            final_payload = final.get("payload") or {}
+            if not str(final_payload.get("closed_run_id") or ""):
+                problems.append(prefix + "归档的票据没有记下是哪次运行闭合的")
+            if resumed.closed and str(resumed.run_id) not in list(final_payload.get("runs") or []):
+                problems.append(prefix + "归档的票据没有把闭合的那次运行记进去")
+            return problems
+
+    failures: List[str] = []
+    rounds = max(1, int(iterations))
+    for index in range(rounds):
+        failures.extend(_one_round(index))
+        if len(failures) >= 5:
+            break
+    return {
+        "name": "handover_ticket",
+        "title": "没闭合的运行会留下人能接手的东西",
+        "invariant": "升级票据带齐上下文，且票据里的验收标准能直接把循环接回来并闭合",
+        "iterations": rounds,
+        "failures": failures,
+        "ok": not failures,
+    }
+
 # ----------------------------------------------------------------- the gate
 # The short name of a check is a property of the function, so that
 # ``--only`` and the JSON output speak the same word.
@@ -1118,6 +1416,7 @@ check_a_run_keeps_its_files_with_the_deliverable.CHECK_NAME = "workspace_keeps_f
 check_mcp_handshake_answers_every_tool.CHECK_NAME = "mcp_handshake"  # type: ignore[attr-defined]
 check_a_stream_folds_into_one_answer.CHECK_NAME = "stream_folds"  # type: ignore[attr-defined]
 check_parallel_candidates_pick_the_same_winner_every_time.CHECK_NAME = "parallel_pick"  # type: ignore[attr-defined]
+check_an_escalated_run_leaves_a_ticket_a_human_can_take_over.CHECK_NAME = "handover_ticket"  # type: ignore[attr-defined]
 
 CHECKS = (
     check_relay_refusal_keeps_the_connection_usable,
@@ -1126,6 +1425,7 @@ CHECKS = (
     check_mcp_handshake_answers_every_tool,
     check_a_stream_folds_into_one_answer,
     check_parallel_candidates_pick_the_same_winner_every_time,
+    check_an_escalated_run_leaves_a_ticket_a_human_can_take_over,
 )
 
 
@@ -1143,7 +1443,7 @@ def run_selftest(
 
     results: List[Dict[str, Any]] = []
     for check in selected:
-        # Two checks run a whole loop-engine run per iteration. They are
+        # Three checks run a whole loop-engine run per iteration. They are
         # slow enough that hammering them 120 times would add minutes to
         # every install and every CI job - and they hammer a *race* that
         # is staged on purpose, so twenty rounds say as much as a
@@ -1151,6 +1451,7 @@ def run_selftest(
         if check in (
             check_a_run_keeps_its_files_with_the_deliverable,
             check_parallel_candidates_pick_the_same_winner_every_time,
+            check_an_escalated_run_leaves_a_ticket_a_human_can_take_over,
         ):
             row = check(iterations=min(int(iterations), 20))
         else:

@@ -923,21 +923,29 @@ class LoopEngine:
                     error = ""
                     break
                 if decision == "escalate":
-                    payload = {
-                        "run_id": run_id,
-                        "task_id": task_id,
-                        "goal": goal,
-                        "title": title or goal[:40],
-                        "criteria": [c.to_dict() for c in crits],
-                        "last_artifact": artifact,
-                        "issues": issues,
-                        "attempts": attempt,
-                        "iterations_total": attempt,
-                        "runs": [run_id],
-                        "history": history,
-                        "stagnation": stagnant,
-                        "reason": error or last_error or "loop could not close itself",
-                    }
+                    # The payload is built by the same helper the other
+                    # endings use. The escalation path used to spell the
+                    # payload out by hand and it drifted: it left out the
+                    # final status, so a ticket opened by a stagnant run
+                    # showed a different set of keys than a ticket opened
+                    # by a run that ran out of budget. A human reading
+                    # the queue then had to know which kind of ticket
+                    # they were looking at before they could tell what
+                    # happened. One shape, one builder.
+                    payload = self._handover_payload(
+                        run_id=run_id,
+                        task_id=task_id,
+                        goal=goal,
+                        title=title or goal[:40],
+                        crits=crits,
+                        artifact=artifact,
+                        issues=issues,
+                        attempt=attempt,
+                        history=history,
+                        stagnant=stagnant,
+                        status=STATUS_ESCALATED,
+                        reason=error or last_error or "loop could not close itself",
+                    )
                     if parent_ticket_id:
                         # A resumed loop keeps the ticket it already has.
                         # Opening a second one for the same problem would
@@ -2263,6 +2271,57 @@ class LoopEngine:
 
 
     # -------------------------------------------------------- handover ticket
+    @staticmethod
+    def _handover_payload(
+        run_id: str,
+        task_id: str,
+        goal: str,
+        title: str,
+        crits: List[Any],
+        artifact: str,
+        issues: List[str],
+        attempt: int,
+        history: List[Dict[str, Any]],
+        stagnant: int,
+        status: str,
+        reason: str,
+    ) -> Dict[str, Any]:
+        """Build the context a human needs to take a failed run over.
+
+        Every ticket a run leaves behind carries the same keys. That is
+        not tidiness - it is the difference between a handover and a
+        note: the reader has to be able to ask the same questions of
+        every ticket in the queue ("what was the goal", "what did it
+        fail on", "what did the last attempt produce", "which runs are
+        involved") without first working out which kind of failure
+        they are looking at.
+
+        The criteria are the load-bearing part. They come back as
+        machine checks, so a resumed loop can still be decided by a
+        rule instead of by the reviewer's mood. A ticket that lost them
+        would still look complete - it would still have a goal and a
+        reason - but the loop behind it would have no standards left.
+        """
+        return {
+            "run_id": run_id,
+            "task_id": task_id,
+            "goal": goal,
+            "title": title,
+            "criteria": [c.to_dict() for c in crits],
+            "last_artifact": artifact,
+            "issues": list(issues),
+            "attempts": attempt,
+            # The rounds spent on this problem so far, and the runs
+            # that spent them. The first run of a thread starts both
+            # counters at its own attempt count.
+            "iterations_total": attempt,
+            "runs": [run_id],
+            "history": history,
+            "stagnation": stagnant,
+            "reason": reason,
+            "status": status,
+        }
+
     def _open_handover_ticket(
         self,
         run_id: str,
@@ -2299,25 +2358,20 @@ class LoopEngine:
             kind = "loop_escalation"
             reason = error or last_error or "loop could not close itself"
 
-        payload = {
-            "run_id": run_id,
-            "task_id": task_id,
-            "goal": goal,
-            "title": title,
-            "criteria": [c.to_dict() for c in crits],
-            "last_artifact": artifact,
-            "issues": list(issues),
-            "attempts": attempt,
-            # The rounds spent on this problem so far, and the runs
-            # that spent them. The first run of a thread starts both
-            # counters at its own attempt count.
-            "iterations_total": attempt,
-            "runs": [run_id],
-            "history": history,
-            "stagnation": stagnant,
-            "reason": reason,
-            "status": status,
-        }
+        payload = self._handover_payload(
+            run_id=run_id,
+            task_id=task_id,
+            goal=goal,
+            title=title,
+            crits=crits,
+            artifact=artifact,
+            issues=issues,
+            attempt=attempt,
+            history=history,
+            stagnant=stagnant,
+            status=status,
+            reason=reason,
+        )
         if parent_ticket_id:
             # A resumed loop keeps the ticket it already has: one
             # problem must not be listed twice.

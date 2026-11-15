@@ -26,7 +26,7 @@ class NewChecksTest(unittest.TestCase):
         names = {getattr(c, "CHECK_NAME", c.__name__) for c in CHECKS}
         self.assertIn("mcp_handshake", names)
         self.assertIn("stream_folds", names)
-        self.assertEqual(len(CHECKS), 6)
+        self.assertGreaterEqual(len(CHECKS), 7)
 
     def test_the_mcp_check_passes_offline(self):
         from mas.selftest import check_mcp_handshake_answers_every_tool

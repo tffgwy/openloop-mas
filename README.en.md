@@ -7,6 +7,26 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.65 adds** (**a run that did not close must leave something a
+human can take over**):
+
+- **The 7th gate `handover_ticket`** - the engine promised three things: it
+  escalates instead of spinning, it opens a ticket, and that ticket carries
+  enough context to resume the loop. The first two were easy to see.
+  **The third was never kept.** Now a gate catches it.
+- **A ticket is not a note, it is a handover form** - the check *uses* the
+  ticket: it feeds the ticket's acceptance criteria back into
+  `engine.resume()` and the loop has to close for real. **The verifier in
+  this check always answers "fail"**, so the closure can only come from the
+  machine check that came back on the ticket - the model cannot fake it.
+- **A real bug was caught on the spot** - the ticket payload had drifted
+  between the two escalation paths. **Fixed at the root**: both paths now
+  share one payload builder - **a ticket has one shape**.
+- **Reverse-proofed six times** - the ticket loses its criteria, the criteria
+  survive only as prose, the ticket forgets the deliverable, the ticket
+  forgets the issues, the ticket is marked handled, the ticket is never
+  written - **all six were caught**.
+
 **What v0.7.64 adds** (**the parallel winner has to be deterministic**):
 
 - **A sixth gate, `parallel_pick`.** The engine promises that the winner
