@@ -6,12 +6,14 @@ import argparse
 import json
 import os
 import pathlib
+import re
 import sys
 from typing import Any, Dict, List
 
 from mas import __version__
 from mas.bench import format_bench, run_bench
 from mas.config import load_config, load_persisted_config, save_config
+from mas.criteria_text import criterion_reading
 from mas.demo import run_scenarios
 from mas.doctor import format_doctor, run_doctor, summarize, verdict
 from mas.engine import LoopEngine
@@ -37,6 +39,7 @@ from mas.report import (
 from mas.setup import format_verify, run_verify, run_wizard
 from mas.teams import list_teams, load_team
 from mas.util import force_utf8_output, parse_criterion_shorthand
+from mas.verdict_text import note_reading, source_reading
 
 
 def _print(payload: Any, as_json: bool = False) -> None:
@@ -221,7 +224,20 @@ def cmd_run(args: argparse.Namespace) -> int:
     for score in result.scores:
         flag = "PASS" if score["pass"] else "FAIL"
         optional = "" if score.get("blocking", True) else "，可选"
-        print(f"  [{flag}] {score['id']} ({score['source']}){optional} {score['note']}")
+        # The note is written in the engine's vocabulary
+        # ("all required strings present"). It describes the rule, and
+        # the rule is already printed below as the reading - so the
+        # line said the same thing twice, in a language the user did
+        # not write in. The reading replaces it; an untranslatable
+        # note keeps its original text.
+        reading_note = note_reading(score.get("note"))
+        source = source_reading(score.get("source"))
+        detail = reading_note or str(score.get("note") or "")
+        if source and detail:
+            detail = f"{source}：{detail}"
+        elif source:
+            detail = source
+        print(f"  [{flag}] {score['id']}{optional} {detail}")
         # The serial number alone does not tell the user which of the
         # standards they wrote this is. The reading is the sentence
         # that names it - without it, a report with three standards
@@ -459,6 +475,43 @@ def cmd_ledger(args: argparse.Namespace) -> int:
     return 0
 
 
+def _issue_reading(issue: Any, criteria: List[Dict[str, Any]]) -> str:
+    """Say what a blocking issue is, in words.
+
+    The issue reads ``c1: unjudged: ...`` - a serial number the engine
+    made up, followed by a note in the engine's vocabulary. Both are
+    replaced: the note is translated, and the serial number is looked
+    up in the criteria so the user's own standard can be named.
+    """
+    text = str(issue or "").strip()
+    if not text:
+        return ""
+    score_id = ""
+    note = text
+    head, sep, tail = text.partition(":")
+    if sep and re.fullmatch(r"c\d+", head.strip()):
+        score_id = head.strip()
+        note = tail.strip()
+    reading = note_reading(note)
+    if not reading:
+        # An untranslatable note keeps its own text - it may carry
+        # information this module cannot see.
+        reading = note
+    for criterion in criteria or []:
+        if not isinstance(criterion, dict):
+            continue
+        if str(criterion.get("id") or "") != score_id:
+            continue
+        # The criterion's own description, in words. A criterion
+        # written as a bare shorthand carries the raw text as its
+        # description, so the raw text is used - and the reading says
+        # the same thing in a language the user can read.
+        desc = criterion_reading(criterion)
+        if desc:
+            return f"{desc} - {reading}"
+        break
+    return reading
+
 def cmd_tickets(args: argparse.Namespace) -> int:
     """Show the human ticket queue - and say what to do with each one.
 
@@ -506,8 +559,9 @@ def cmd_tickets(args: argparse.Namespace) -> int:
         if len(runs) > 1:
             print(f"  关联运行：{len(runs)} 次尝试（{runs[0]} … {runs[-1]}）")
         issues = payload.get("issues") or []
+        criteria = payload.get("criteria") or []
         if issues:
-            print(f"  卡在：{issues[0]}")
+            print(f"  卡在：{_issue_reading(issues[0], criteria)}")
             if len(issues) > 1:
                 print(f"        （另有 {len(issues) - 1} 项未通过）")
         reason = payload.get("reason") or ""
@@ -578,7 +632,21 @@ def cmd_resume(args: argparse.Namespace) -> int:
         for score in result.scores:
             flag = "PASS" if score["pass"] else "FAIL"
             optional = "" if score.get("blocking", True) else "，可选"
-            print(f"  [{flag}] {score['id']}{optional} {score['note']}")
+            # Same wording as ``mas run``: the note in words, where the
+            # verdict came from, and the standard underneath. A resumed
+            # run is read by the same person, in the same session, and
+            # the two screens must not disagree about what happened.
+            reading_note = note_reading(score.get("note"))
+            source = source_reading(score.get("source"))
+            detail = reading_note or str(score.get("note") or "")
+            if source and detail:
+                detail = f"{source}：{detail}"
+            elif source:
+                detail = source
+            print(f"  [{flag}] {score['id']}{optional} {detail}")
+            reading = str(score.get("reading") or "")
+            if reading:
+                print(f"        要求：{reading}")
         if not result.closed:
             # The ticket stays open on purpose - say so, so the human
             # knows the escalation did not disappear.

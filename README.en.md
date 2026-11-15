@@ -7,6 +7,50 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.57 adds** (**the verdict says why, in words**):
+
+- **The verdict line was still the engine talking to itself** --- v0.7.56
+  brought your standard back, but the verdict above it stayed in the
+  engine's vocabulary:
+  ```
+  [PASS] c1 (rule) all required strings present
+        requirement: the body must contain 「结论」
+  ```
+  Two lines saying the same thing, in a language you did not write in;
+- **Every verdict now reads in plain language, and says where it came
+  from**:
+  ```
+  [PASS] c1 machine check: all required strings are present
+        requirement: the body must contain 「结论」
+  [FAIL] c1 file check: the file was modified 2026-11-15T11:17:06+00:00,
+         which is not later than 2099-01-01T00:00:00+00:00
+        requirement: the file out/report.md must be modified after 2099-01-01T00:00:00Z
+  ```
+- **Every note the engine writes has a reading** --- too short, a missing
+  string, a regex that did not match, a sha that differs, a section that
+  is not there, a file that is gone;
+- **An unrecognised note is left alone, never guessed** --- a note nobody
+  predicted may carry information nobody can see, and replacing it would
+  throw that away;
+- **The ledger keeps its English** --- the notes are part of the audit
+  record and scripts read them, so the translation happens at the display
+  layer only: a stored run still means what it meant when it was stored;
+- **`mas resume` now speaks the same language as `mas run`** --- the same
+  person reads both screens in the same session, and they must not
+  disagree about what happened;
+- **`mas report` says the status and the decision in words** --- "已闭环
+  （closed）", "预算用完了（budget_exhausted）" --- and keeps the raw value
+  in parentheses, because that is what a reader greps for;
+- **The ticket queue names the standard that is blocked**, not the serial
+  number the engine made up;
+- **Three real gaps in the vocabularies closed** --- the states the engine
+  actually writes when a run does not close (`escalated`, `not_closed`,
+  `incomplete`, `deliverable_ok_but_not_closed`) and the sources a
+  verdict comes from (`model-missing`, `skipped`, `model`) had no words
+  at all;
+- **32 regression tests, and 23 layers each reverted on its own** --- every
+  one of them fails the suite when it is broken.
+
 **What v0.7.56 adds** (**the verdict quotes your own standard back**):
 
 - **You wrote three standards and the verdict said "c1" and "c2"** ---

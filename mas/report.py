@@ -11,6 +11,12 @@ import pathlib
 from typing import Any, Dict, List
 
 from mas.util import now_iso
+from mas.verdict_text import (
+    decision_reading,
+    note_reading,
+    source_reading,
+    status_reading,
+)
 
 # The roles that represent a *charge*: an entry in these roles books
 # the tokens of one call the endpoint billed. The sum over these
@@ -569,9 +575,21 @@ def render_markdown(report: Dict[str, Any]) -> str:
         # a report a human can read.
         goal = str(run.get("goal") or run.get("title") or "").replace("|", "\\|")
         goal = goal[:40] + ("…" if len(goal) > 40 else "")
+        # The status and the decision in words. The raw value stays in
+        # parentheses: the words are for the reader, the raw value is
+        # what a reader greps for.
+        status_text = status_reading(status)
+        status_cell = status_text if status_text == status else (
+            f"{status_text}（{status}）" if status_text else status
+        )
+        decision = str(run.get("decision") or "-")
+        decision_text = decision_reading(decision)
+        decision_cell = decision_text if decision_text == decision else (
+            f"{decision_text}（{decision}）" if decision_text else decision
+        )
         lines.append(
-            f"| `{run.get('run_id')}` | {goal or '-'} | {icon} {status} | "
-            f"{run.get('decision') or '-'} | "
+            f"| `{run.get('run_id')}` | {goal or '-'} | {icon} {status_cell} | "
+            f"{decision_cell} | "
             f"{run.get('iterations', 0)} | {int(run.get('stagnation') or 0)} | "
             f"`{(run.get('artifact_sha') or '')[:12]}` | "
             f"{run.get('entries', 0)} | {int(run.get('tokens') or 0)} |"
@@ -729,8 +747,12 @@ def render_markdown(report: Dict[str, Any]) -> str:
                 mark = "（可选，不阻塞闭合）" if optional else ""
                 if flag == "UNDECIDED":
                     mark = "（无人判定，不能算通过）"
+                # Same rule as the CLI: the ledger keeps the English
+                # note, the report shows the Chinese one.
+                reading_note = note_reading(score.get("note"))
+                detail = reading_note or str(score.get("note") or "")
                 lines.append(
-                    f"  - [{flag}] `{score.get('id')}` {score.get('note', '')}{mark}"
+                    f"  - [{flag}] `{score.get('id')}` {detail}{mark}"
                 )
                 # Quote the standard back: the user wrote several of
                 # them, and "c2 FAIL" does not say which one failed.
@@ -745,9 +767,23 @@ def render_markdown(report: Dict[str, Any]) -> str:
         if unjudged:
             lines.append("- 无人判定的标准（不等于失败，但也不能算通过）：")
             for score in unjudged:
+                # A variable of its own: the verdict list above reuses
+                # the same note, so a shared name would make a broken
+                # translation here invisible - the loop would carry the
+                # previous iteration's words into this line.
+                unjudged_reading = note_reading(score.get("note"))
+                detail = unjudged_reading or str(score.get("note") or "")
+                raw_source = str(score.get("source") or "-")
+                source = source_reading(raw_source)
+                # The words are for the reader; the raw value stays
+                # visible so a reader can grep for it.
+                if source and source != raw_source:
+                    source = f"{source}（{raw_source}）"
+                elif not source:
+                    source = raw_source
                 lines.append(
-                    f"  - `{score.get('id')}` {score.get('note', '')}"
-                    f"（判定来源：{score.get('source') or '-'}）"
+                    f"  - `{score.get('id')}` {detail}"
+                    f"（判定来源：{source}）"
                 )
         if run.get("errors"):
             lines.append("- 错误：")

@@ -4,6 +4,63 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.57] - 2026-11-15
+
+### Added
+
+The verdict now says why, in words.
+
+v0.7.56 gave every verdict the standard back in words. But the verdict
+itself was still the engine talking to itself:
+
+    [PASS] c1 (rule) all required strings present
+          要求：正文里要出现「结论」
+
+Two lines, saying the same thing twice, in a language you did not
+write in - and the first line was the one your eye landed on.
+
+Every verdict now reads in plain language, and names where it came
+from:
+
+    [PASS] c1 机检：所有要求的字符串都在
+          要求：正文里要出现「结论」
+    [FAIL] c1 文件检查：文件的修改时间 2026-11-15T11:17:06+00:00 不晚于 2099-01-01T00:00:00+00:00
+          要求：文件 out/report.md 的修改时间要晚于 2099-01-01T00:00:00Z
+
+The note is translated wherever the engine writes one - the length of
+the text, the missing string, the regex that did not match, the sha
+that differs, the section that is not there, the file that is missing.
+A note the translator does not recognise is **left alone**, never
+replaced with a guess: an unknown note may carry information nobody
+can see.
+
+### Changed
+
+* The ledger keeps its English. The notes are part of the audit record
+  and scripts read them, so the translation happens at the display
+  layer only - a stored run still means exactly what it meant when it
+  was stored.
+* `mas resume` now says the verdict the same way `mas run` does. A
+  resumed run is read by the same person in the same session, and the
+  two screens must not disagree about what happened.
+* `mas report` says the status and the decision in words - "已闭环
+  （closed）", "预算用完了（budget_exhausted）" - and keeps the raw
+  value in parentheses, because that is what a reader greps for.
+* The ticket queue names the standard that is blocked instead of the
+  serial number the engine made up: `c1: unjudged: ...` becomes
+  "正文里要出现「结论」- 没有人判定".
+
+### Fixed
+
+* The status vocabulary did not cover the states the engine actually
+  writes when a run does not close (`escalated`, `not_closed`,
+  `incomplete`, `deliverable_ok_but_not_closed`), so the one line a
+  reader scans to see what went wrong was still in English.
+* The same for the sources a verdict comes from (`model-missing`,
+  `skipped`, `model`).
+* The report's "nobody judged it" line showed the raw source value
+  with no words at all.
+
 ## [0.7.56] - 2026-11-15
 
 ### Added
