@@ -1063,6 +1063,30 @@ def cmd_teams(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_selftest(args: argparse.Namespace) -> int:
+    """Hammer the paths that used to fail at random.
+
+    Two bugs in this project only showed up once in a while. A test
+    that runs a path once cannot catch them, so the method that found
+    them - hammer one path many times and watch the invariant - is a
+    command of its own.
+
+    Everything runs offline, against loopback servers started on the
+    spot. No endpoint, no key, no network.
+    """
+    from mas.selftest import format_selftest, run_selftest
+
+    result = run_selftest(
+        iterations=args.iterations,
+        only=args.only or None,
+    )
+    if args.json:
+        _print(result, True)
+    else:
+        print(format_selftest(result), end="")
+    return 0 if result["ok"] else 2
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     config = load_config()
     results = run_doctor(config, allow_network=not getattr(args, "no_network", False))
@@ -1240,6 +1264,25 @@ def build_parser() -> argparse.ArgumentParser:
     teams = sub.add_parser("teams", help="列出团队模板")
     add_json(teams)
     teams.set_defaults(func=cmd_teams)
+
+    selftest = sub.add_parser(
+        "selftest",
+        help="隔失门禁：重复打磈易偶发的路径（离线）",
+    )
+    selftest.add_argument(
+        "--iterations",
+        type=int,
+        default=200,
+        help="每项自检打多少次（默认 200）",
+    )
+    selftest.add_argument(
+        "--only",
+        action="append",
+        default=[],
+        help="只跑某几项（可重复使用）",
+    )
+    selftest.add_argument("--json", action="store_true", help="输出 JSON")
+    selftest.set_defaults(func=cmd_selftest)
 
     doctor = sub.add_parser("doctor", help="安装自检")
     add_json(doctor)

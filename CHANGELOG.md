@@ -4,6 +4,23 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.62] - 2026-11-16
+
+### 隔失门禁：重复打磈易偶发的路径
+
+- **两个真实的少见结果进了 CI**：中继拒绝路径时没有排空请求体（v0.7.59），
+  以及已计费的失败调用丢了用量。两者都是“测一次看不出来”的少见结果，
+  一次性的测试本来就抹涂不了它们。
+- **新增 `mas selftest`**：把“把一条路径打上千次看不变量”这个方法变成一条命令。
+  全程离线：自己在本机起回环表服务器，不要端点、不要 key、不要网络。
+- **三项保证**：
+  1. 中继拒绝越界路径不会毒染同一连接（同一 socket 上的下一个请求仍有正确答案）；
+  2. 已计费的失败调用照样带着用量；
+  3. 一次运行的产物都在同一个文件夹。
+- **门禁本身被反证过**：三个回归分别把中继、用量计账、工作区放坏打破，
+  三次全部被捕获——一个只终达入不报的门禁不叫门禁。
+- CI 新增一个步骤：`python -m mas selftest --iterations 120`。
+
 ## [0.7.61] - 2026-11-16
 
 ### 产物不再散落（统一工作区）

@@ -31,6 +31,11 @@ jobs:
         run: python -m mas bench --repeats 1
       - name: Run closure self-check
         run: python -m mas verify
+      - name: Run the flaky-bug gate
+        # The two historical bugs of this project only showed up once in
+        # a while. This step hammers the paths that used to fail at
+        # random, so a regression is caught by CI instead of by a user.
+        run: python -m mas selftest --iterations 120
       - name: Self-check
         run: python -m mas doctor
 

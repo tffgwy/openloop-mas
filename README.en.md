@@ -7,6 +7,25 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.62 adds** (**the flaky-bug gate**):
+
+- **Two real intermittent failures now live in CI**: the relay refusing a
+  path without draining the request body (v0.7.59), and a billed failing
+  call losing its usage. Both were "you only see it if you run it often"
+  failures - a one-shot test cannot cover them.
+- **New command `mas selftest`** - the method that found them ("hammer one
+  path many times and watch the invariant") becomes a command of its own:
+  ```bash
+  mas selftest                    # 200 rounds
+  mas selftest --iterations 500   # 500 rounds
+  mas selftest --only relay_refusal
+  ```
+  It runs fully offline: it starts its own loopback servers, asks for no
+  endpoint, no key and no network.
+- **The gate was counter-proven.** Three regressions - the relay, the usage
+  accounting and the workspace - were introduced one by one, and all three
+  were caught. **A gate that never turns red is decoration.**
+
 **What v0.7.61 adds** (**the output no longer scatters**):
 
 - **The output of a run used to vanish.** Before v0.7.60 the files a run wrote
@@ -1935,6 +1954,7 @@ mas tickets       # human tickets
 mas resume ID     # continue with a human note
 mas teams         # team templates
 mas doctor        # installation self-check
+mas selftest      # the flaky-bug gate: hammer the paths that used to fail at random (offline)
 mas serve         # run as an MCP stdio server
 mas http          # run as an HTTP + SSE server
 mas relay         # OpenAI-compatible relay for clients that insist on an API key (127.0.0.1:8766)
@@ -1952,6 +1972,7 @@ python -m unittest discover -s tests -v   # 213 offline tests, no network needed
 python -m mas demo                        # three closure scenarios
 python -m mas bench                       # offline benchmark
 python -m mas verify                      # real closure self-check
+python -m mas selftest                     # the flaky-bug gate (offline)
 ```
 
 Covered: machine checks, the three termination paths (closure / stagnation /
