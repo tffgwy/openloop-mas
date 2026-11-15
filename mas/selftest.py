@@ -34,6 +34,7 @@ import contextlib
 import json
 import os
 import pathlib
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -806,6 +807,308 @@ def check_a_stream_folds_into_one_answer(
     }
 
 
+# ------------------------------------------------------------------- check 6
+def check_parallel_candidates_pick_the_same_winner_every_time(
+    iterations: int = 20,
+) -> Dict[str, Any]:
+
+    """The parallel pool must pick the same winner every single time.
+
+    When several workers produce candidates at the same time, the
+    engine picks one of them. The engine's docstring promises that the
+    winner is deterministic - a replay of the same run picks the same
+    artifact. That promise was never guarded, so nothing stopped a
+    later change from letting the *race* decide: a pool that returns
+    its results in completion order, a tie broken the wrong way round
+    or a ranking that weighs the text length above the machine checks
+    would all hand over a different deliverable, and the run would
+    still report success.
+
+    The check stages the race instead of waiting for it. The three
+    candidates are chained with events, so the pool always finishes in
+    the same *reversed* order - the last candidate of the pool returns
+    first, the first candidate returns last. Nothing about the result
+    depends on the luck of the scheduler.
+
+    The three texts make the ranking do real work:
+
+    * ``direct`` passes both machine checks and is exactly as long as
+      ``thorough``, so the winner is decided by the *lowest index*;
+    * ``thorough`` passes both checks, has the same length and sits at
+      a later index - the twin that must *not* win;
+    * ``concise`` passes nothing and is the longest text - a ranking
+      that ignored the machine checks would hand it over.
+
+    A pool that returns its results in completion order, a ranking
+    that breaks the tie the other way round and a ranking that weighs
+    the text length above the checks all produce a different
+    deliverable. The gate turns red on all three.
+    """
+    import tempfile
+
+    from mas.engine import LoopEngine
+    from mas.providers import Provider
+
+    direct_text = "\u7ed3\u8bba\uff1a\u76f4\u63a5\u65b9\u6848\u6709\u6548\u3002\u8bc1\u636e\uff1a\u6765\u81ea\u76f4\u63a5\u89c6\u89d2\u7684\u89c2\u5bdf\u3002"
+    thorough_text = "\u7ed3\u8bba\uff1a\u8be6\u5c3d\u65b9\u6848\u6709\u6548\u3002\u8bc1\u636e\uff1a\u6765\u81ea\u8be6\u5c3d\u89c6\u89d2\u7684\u89c2\u5bdf\u3002"
+    concise_text = "\u53e6\u4e00\u79cd\u8bf4\u6cd5\uff0c\u8fd9\u91cc\u6ca1\u6709\u4efb\u4f55\u6807\u8bb0\u3002" + "\u8865\u5145\u8bf4\u660e\u4e00\u6b21\u3002" * 6
+
+    class _OrderedCandidateProvider(Provider):
+        """A provider that makes the parallel pool finish out of order."""
+
+        name = "selftest-parallel"
+
+        def __init__(self, model: str = "selftest-model", **options: Any) -> None:
+            super().__init__(model=model, **options)
+            self._lock = threading.Lock()
+            self._events = {
+                "concise": threading.Event(),
+                "thorough": threading.Event(),
+            }
+            # The order the candidates came back in.
+            self.completion_order: List[str] = []
+            # False when a candidate waited for a predecessor that never
+            # showed up - the race could not be staged.
+            self.race_ok = True
+
+        @staticmethod
+        def _text_for(angle: str) -> str:
+            if angle == "direct":
+                return direct_text
+            if angle == "thorough":
+                return thorough_text
+            if angle == "concise":
+                return concise_text
+            return "\u7ed3\u8bba\uff1a\u9ed8\u8ba4\u65b9\u6848\u6709\u6548\u3002\u8bc1\u636e\uff1a\u6765\u81ea\u9ed8\u8ba4\u89c6\u89d2\u7684\u89c2\u5bdf\u3002"
+
+        @staticmethod
+        def _angle_of(prompt: str) -> str:
+            """Read the candidate angle out of the worker's prompt."""
+            match = re.search(r'"angle":\s*"([a-z_]+)"', prompt)
+            return match.group(1) if match else ""
+
+        def _gate(self, angle: str) -> None:
+            """Hold the candidate until the one before it has finished."""
+            if angle == "concise":
+                with self._lock:
+                    self.completion_order.append(angle)
+                self._events["concise"].set()
+                return
+            if angle == "thorough":
+                if not self._events["concise"].wait(timeout=5):
+                    self.race_ok = False
+                with self._lock:
+                    self.completion_order.append(angle)
+                self._events["thorough"].set()
+                return
+            # ``direct`` waits for ``thorough``: it is the last to finish.
+            if not self._events["thorough"].wait(timeout=5):
+                self.race_ok = False
+            with self._lock:
+                self.completion_order.append(angle)
+
+        def complete(self, *, system: str, prompt: str, role: str = "worker",
+                     expect_json: bool = False, max_tokens: int = 4000) -> Dict[str, Any]:
+            self.calls += 1
+            usage = {"total_tokens": 10}
+            if role == "planner":
+                text = json.dumps(
+                    {"summary": "\u8ba1\u5212", "plan": ["\u5e76\u884c\u4ea7\u51fa", "\u9009\u4f18"],
+                     "risks": ["\u5b8c\u6210\u987a\u5e8f"]}
+                )
+                return {"text": text, "usage": usage, "raw": {}}
+            if role == "verifier":
+                text = json.dumps(
+                    {
+                        "verdict": "pass",
+                        "scores": [
+                            {"id": "c1", "pass": True, "note": "\u6709\u7ed3\u8bba"},
+                            {"id": "c2", "pass": True, "note": "\u6709\u8bc1\u636e"},
+                        ],
+                    }
+                )
+                return {"text": text, "usage": usage, "raw": {}}
+            if role == "reflector":
+                text = json.dumps(
+                    {"summary": "\u6539", "issues": [], "next_action": "revise"}
+                )
+                return {"text": text, "usage": usage, "raw": {}}
+            if role != "worker":
+                return {"text": "{}", "usage": usage, "raw": {}}
+            angle = self._angle_of(prompt)
+            text = self._text_for(angle)
+            self._gate(angle)
+            return {"text": text, "usage": usage, "raw": {}}
+
+    if len(direct_text) != len(thorough_text):
+        # The twin candidates have to be exactly the same length, or the
+        # tie-break is never exercised and the gate proves nothing.
+        return {
+            "name": "parallel_pick",
+            "title": "\u5e76\u884c\u5019\u9009\u9009\u4f18\u6bcf\u6b21\u90fd\u9009\u540c\u4e00\u4e2a",
+            "invariant": "\u4e24\u4e2a\u957f\u5ea6\u76f8\u540c\u7684\u5019\u9009\u5fc5\u987b\u80fd\u5237\u51fa\u5e73\u5c40",
+            "iterations": 0,
+            "failures": [
+                "\u95e8\u7981\u81ea\u8eab\u6709\u9519\uff1adirect \u4e0e thorough \u7684\u957f\u5ea6\u4e0d\u4e00\u81f4"
+                " (%d vs %d)\uff0c\u5e73\u5c40\u6d4b\u4e0d\u5230"
+                % (len(direct_text), len(thorough_text))
+            ],
+            "ok": False,
+        }
+
+    failures: List[str] = []
+    winners: set = set()
+    delivered: set = set()
+    rounds = max(1, int(iterations))
+    for index in range(rounds):
+        with tempfile.TemporaryDirectory(prefix="mas-selftest-par-") as tmp:
+            state = os.path.join(tmp, "state")
+            config = {
+                "provider": "mock",
+                "model": "selftest-model",
+                "state_dir": state,
+                "workspace": "",
+                "budget": {"max_iterations": 2, "max_tokens": 1000000, "deadline_sec": 60},
+                "orchestration": {"parallel_workers": 3, "reviewers": 1, "review_mode": "all"},
+                "team": {"language": "zh"},
+            }
+            provider = _OrderedCandidateProvider(model="selftest-model")
+            engine = LoopEngine(config, provider=provider)
+            try:
+                result = engine.run(
+                    goal="\u5199\u4e00\u4efd\u7ed3\u8bba",
+                    criteria=[
+                        {"id": "c1", "desc": "\u542b\u7ed3\u8bba",
+                         "check": {"type": "contains", "arg": "\u7ed3\u8bba"}},
+                        {"id": "c2", "desc": "\u542b\u8bc1\u636e",
+                         "check": {"type": "contains", "arg": "\u8bc1\u636e"}},
+                    ],
+                )
+            except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                failures.append(
+                    "\u7b2c %d \u6b21\uff1a\u8fd0\u884c\u62a5\u9519\uff1a%s: %s"
+                    % (index + 1, type(exc).__name__, exc)
+                )
+                continue
+
+            if not provider.race_ok:
+                failures.append(
+                    "\u7b2c %d \u6b21\uff1a\u5019\u9009\u6c60\u7684\u5b8c\u6210\u987a\u5e8f\u6ca1\u80fd\u6392\u597d"
+                    "\uff08\u6709\u5019\u9009\u7b49\u4e86\u4e00\u4e2a\u6c38\u8fdc\u4e0d\u6765\u7684\u524d\u4f19\uff09" % (index + 1)
+                )
+
+            order = list(provider.completion_order)
+            # Only the first round of the pool is looked at. A run that
+            # has to try again would produce a second round of candidates
+            # - and the order of *that* round is a different question.
+            # The first round is the one that decides the winner.
+            if order[:3] != ["concise", "thorough", "direct"]:
+                failures.append(
+                    "\u7b2c %d \u6b21\uff1a\u5019\u9009\u6c60\u7684\u5b8c\u6210\u987a\u5e8f\u4e0d\u662f\u6392\u597d\u7684"
+                    "\u9006\u5e8f\uff08%s\uff09\uff0c\u8d5b\u6b21\u6ca1\u6709\u771f\u6b63\u53d1\u751f"
+                    % (index + 1, " -> ".join(order[:3]) or "\u7a7a")
+                )
+            if int(result.iterations) != 1:
+                failures.append(
+                    "\u7b2c %d \u6b21\uff1a\u4ea4\u4ed8\u7269\u672c\u5e94\u8be5\u7b2c\u4e00\u8f6e\u5c31\u80dc\u51fa"
+                    "\uff08\u5b9e\u9645轮\u6570=%s\uff09" % (index + 1, result.iterations)
+                )
+
+            entry = _find_candidate_entry(result.ledger_path)
+            if not entry:
+                failures.append(
+                    "\u7b2c %d \u6b21\uff1a\u8d26\u672c\u91cc\u6ca1\u6709\u5019\u9009\u6c60\u7684\u8bb0\u5f55" % (index + 1)
+                )
+                continue
+            selected_angle = str(entry.get("selected_angle") or "")
+            winners.add(selected_angle)
+            if selected_angle != "direct":
+                failures.append(
+                    "\u7b2c %d \u6b21\uff1a\u9009\u4e2d\u7684\u5019\u9009\u4e0d\u662f direct\uff08%s\uff09"
+                    "\uff0c\u800c direct \u548c thorough \u901a\u8fc7\u6570\u4e0e\u957f\u5ea6\u5b8c\u5168\u76f8\u540c"
+                    % (index + 1, selected_angle or "\u7a7a")
+                )
+
+            rows = entry.get("candidates") or []
+            selected_rows = [r for r in rows if isinstance(r, dict) and r.get("selected")]
+            if not selected_rows:
+                failures.append(
+                    "\u7b2c %d \u6b21\uff1a\u8d26\u672c\u91cc\u6ca1\u6709\u6807\u8bb0\u51fa\u88ab\u9009\u4e2d\u7684\u5019\u9009" % (index + 1)
+                )
+            else:
+                chars = selected_rows[0].get("chars")
+                if int(chars or 0) != len(direct_text):
+                    failures.append(
+                        "\u7b2c %d \u6b21\uff1a\u88ab\u9009\u4e2d\u7684\u5019\u9009\u957f\u5ea6\u4e0d\u5bf9"
+                        "\uff08%s\uff0c\u5e94\u4e3a %d\uff09" % (index + 1, chars, len(direct_text))
+                    )
+
+            artifact = str(result.artifact or "")
+            delivered.add(artifact)
+            if artifact != direct_text:
+                failures.append(
+                    "\u7b2c %d \u6b21\uff1a\u4ea4\u4ed8\u7684\u6b63\u6587\u4e0d\u662f\u7b2c\u4e00\u4e2a\u5019\u9009\uff08%r\uff09"
+                    % (index + 1, artifact[:40])
+                )
+
+            workspace = str(result.workspace or "")
+            deliverable = os.path.join(workspace, "deliverable.md")
+            if not os.path.isfile(deliverable):
+                failures.append(
+                    "\u7b2c %d \u6b21\uff1a\u5de5\u4f5c\u533a\u91cc\u6ca1\u6709 deliverable.md" % (index + 1)
+                )
+            else:
+                with open(deliverable, "r", encoding="utf-8") as handle:
+                    on_disk = handle.read()
+                if on_disk != direct_text:
+                    failures.append(
+                        "\u7b2c %d \u6b21\uff1a\u843d\u76d8\u7684\u4ea4\u4ed8\u7269\u4e0d\u662f\u7b2c\u4e00\u4e2a\u5019\u9009" % (index + 1)
+                    )
+
+            if len(failures) >= 5:
+                break
+
+    if len(winners) > 1:
+        failures.append(
+            "\u4e0d\u540c\u4e00\u6b21\u8fd0\u884c\u9009\u51fa\u4e86\u4e0d\u540c\u7684\u5019\u9009\uff1a%s"
+            % ", ".join(sorted(winners))
+        )
+    if len(delivered) > 1:
+        failures.append(
+            "\u4e0d\u540c\u4e00\u6b21\u8fd0\u884c\u4ea4\u4ed8\u4e86\u4e0d\u540c\u7684\u6b63\u6587\uff1a%d \u79cd" % len(delivered)
+        )
+
+    return {
+        "name": "parallel_pick",
+        "title": "\u5e76\u884c\u5019\u9009\u6bcf\u6b21\u90fd\u9009\u540c\u4e00\u4e2a\u80dc\u8005",
+        "invariant": "\u5019\u9009\u6c60\u987a\u5e8f\u62bd\u8d70\u4e5f\u4e0d\u6539\u53d8\u9009\u4f18\uff0c"
+                     "\u4e14\u6bcf\u6b21\u90fd\u9009\u540c\u4e00\u4e2a\u5019\u9009",
+        "iterations": rounds,
+        "failures": failures,
+        "ok": not failures,
+    }
+
+
+def _find_candidate_entry(ledger_path: str) -> Optional[Dict[str, Any]]:
+    """Return the ledger entry that describes the parallel candidate pool."""
+    path = pathlib.Path(str(ledger_path or ""))
+    if not path.is_file():
+        return None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("role") or "") == "candidates" and row.get("parallel"):
+            return row
+    return None
+
+
 # ----------------------------------------------------------------- the gate
 # The short name of a check is a property of the function, so that
 # ``--only`` and the JSON output speak the same word.
@@ -814,6 +1117,7 @@ check_provider_keeps_the_usage_of_a_failed_call.CHECK_NAME = "provider_usage"  #
 check_a_run_keeps_its_files_with_the_deliverable.CHECK_NAME = "workspace_keeps_files"  # type: ignore[attr-defined]
 check_mcp_handshake_answers_every_tool.CHECK_NAME = "mcp_handshake"  # type: ignore[attr-defined]
 check_a_stream_folds_into_one_answer.CHECK_NAME = "stream_folds"  # type: ignore[attr-defined]
+check_parallel_candidates_pick_the_same_winner_every_time.CHECK_NAME = "parallel_pick"  # type: ignore[attr-defined]
 
 CHECKS = (
     check_relay_refusal_keeps_the_connection_usable,
@@ -821,6 +1125,7 @@ CHECKS = (
     check_a_run_keeps_its_files_with_the_deliverable,
     check_mcp_handshake_answers_every_tool,
     check_a_stream_folds_into_one_answer,
+    check_parallel_candidates_pick_the_same_winner_every_time,
 )
 
 
@@ -838,7 +1143,15 @@ def run_selftest(
 
     results: List[Dict[str, Any]] = []
     for check in selected:
-        if check is check_a_run_keeps_its_files_with_the_deliverable:
+        # Two checks run a whole loop-engine run per iteration. They are
+        # slow enough that hammering them 120 times would add minutes to
+        # every install and every CI job - and they hammer a *race* that
+        # is staged on purpose, so twenty rounds say as much as a
+        # hundred.
+        if check in (
+            check_a_run_keeps_its_files_with_the_deliverable,
+            check_parallel_candidates_pick_the_same_winner_every_time,
+        ):
             row = check(iterations=min(int(iterations), 20))
         else:
             row = check(iterations=int(iterations))

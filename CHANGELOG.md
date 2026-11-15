@@ -4,6 +4,25 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.64] - 2026-11-16
+
+### 并行选优必须是确定的
+
+- **第 6 项门禁 `parallel_pick`** —— 引擎的文档写着“赢家是确定的”，
+  但这条不变量一直没有被守住：候选池按完成顺序回填结果、平局反向打破、
+  或者排名把正文长度排在机检之前，都会换一个交付物交出去，而运行仍然
+  报成功。**现在它会被门禁当场抓住。**
+- **赛次是被排好的，不是靠运气** —— 检查用事件链把三个候选的完成顺序
+  钉死成逆序（`concise` → `thorough` → `direct`），所以结果跟调度器
+  的心情无关。
+- **三个候选让选优必须真干活** —— `direct` 与 `thorough` 通过的机检数
+  与正文长度**完全相同**，赢家只能靠最小序号分出；`concise` 更长但
+  一条机检都过不了。**谁赢是排出来的，不是抢出来的。**
+- **四项回归反证全部被捕获**：候选池按完成顺序回填、平局反向打破、
+  长度压过机检、赢家取“先跑完的那个”。**一个只终达入不报的门禁不叫门禁。**
+- 门禁同时检查落盘的 `deliverable.md` —— 账本说选了这个，工作区里就得
+  是这个。
+
 ## [0.7.63] - 2026-11-16
 
 ### 装完即自证（门禁接进安装流程）

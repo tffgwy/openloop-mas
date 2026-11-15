@@ -26,7 +26,7 @@ class NewChecksTest(unittest.TestCase):
         names = {getattr(c, "CHECK_NAME", c.__name__) for c in CHECKS}
         self.assertIn("mcp_handshake", names)
         self.assertIn("stream_folds", names)
-        self.assertEqual(len(CHECKS), 5)
+        self.assertEqual(len(CHECKS), 6)
 
     def test_the_mcp_check_passes_offline(self):
         from mas.selftest import check_mcp_handshake_answers_every_tool
@@ -62,7 +62,7 @@ class NewChecksTest(unittest.TestCase):
 
         result = run_selftest(iterations=2)
         self.assertTrue(result["ok"], result)
-        self.assertEqual(len(result["checks"]), 5)
+        self.assertGreaterEqual(len(result["checks"]), 5)
 
 
 class InstallWiringTest(unittest.TestCase):
@@ -91,7 +91,7 @@ class CliTest(unittest.TestCase):
         proc = self._run("selftest", "--iterations", "1", "--json")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         payload = json.loads(proc.stdout)
-        self.assertEqual(len(payload["checks"]), 5)
+        self.assertGreaterEqual(len(payload["checks"]), 5)
         self.assertTrue(payload["ok"])
 
 

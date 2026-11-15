@@ -7,6 +7,26 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.64 adds** (**the parallel winner has to be deterministic**):
+
+- **A sixth gate, `parallel_pick`.** The engine promises that the winner
+  is deterministic, but nobody guarded it: a pool that returns its
+  results in *completion order*, a tie broken the wrong way round, or a
+  ranking that weighs the *text length* above the machine checks would
+  all hand over a different deliverable - and the run would still report
+  success. **Now the gate catches it on the spot.**
+- **The race is staged, not hoped for.** The check chains the three
+  candidates with events, so the pool always finishes in the same
+  reversed order. Nothing depends on how the scheduler felt that day.
+- **The three candidates make the ranking do real work.** `direct` and
+  `thorough` pass the same number of checks and are exactly the same
+  length, so only the lowest index can separate them; `concise` is the
+  longest text and passes nothing. **The winner is ranked, not raced.**
+- **The gate was counter-proven four times**: the pool returns results
+  in completion order, the tie is broken towards the later index, the
+  length outweighs the checks, the winner is whoever finished first -
+  **all four were caught**.
+
 **What v0.7.63 adds** (**the installation proves itself**):
 
 - **The install scripts now run the gate themselves.** `install.ps1` and
