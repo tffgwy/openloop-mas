@@ -34,16 +34,34 @@ from mas.report import (
     render_markdown,
     replay_trace,
     run_summary,
+    verdict_word,
 )
 from mas.setup import format_verify, run_verify, run_wizard
 from mas.teams import list_teams, load_team
 from mas.util import force_utf8_output, parse_criterion_shorthand
 from mas.verdict_text import (
+    decision_reading,
     issue_reading,
     note_reading,
+    role_reading,
     source_reading,
     status_reading,
 )
+
+
+def _both(raw: Any, reading: str) -> str:
+    """Show the word and the raw name, side by side.
+
+    "规划 (planner)" reads as a sentence and still greps. The reader
+    gets the meaning without a lookup; the script gets the exact token
+    the engine wrote.
+    """
+    raw_text = str(raw or "").strip()
+    if not raw_text:
+        return ""
+    if not reading or reading == raw_text:
+        return raw_text
+    return f"{reading} ({raw_text})"
 
 
 def _print(payload: Any, as_json: bool = False) -> None:
@@ -512,13 +530,27 @@ def cmd_ledger(args: argparse.Namespace) -> int:
         print("  想先看样例：mas demo")
         return 0
     for row in rows:
-        print(
-            f"#{row.get('seq')} {row.get('ts')} {row.get('role'):<9} "
-            f"iter={row.get('iteration')} {row.get('verdict', '')} {row.get('decision', '')} "
-            f"sha={str(row.get('artifact_sha', ''))[:10]}"
-        )
+        # Every column used to carry the engine's own word: the role
+        # ("closure"), the verdict ("pass"), the decision ("close"). A
+        # reader who has not read the source code cannot tell whether
+        # "closure" is a good thing. The columns now say what they
+        # mean, and the raw values stay in the ledger and in --json.
+        role = _both(row.get("role"), role_reading(row.get("role")))
+        verdict = _both(row.get("verdict"), verdict_word(row.get("verdict")))
+        decision = _both(row.get("decision"), decision_reading(row.get("decision")))
+        bits = [f"#{row.get('seq')}", str(row.get("ts") or ""), role]
+        bits.append(f"第{row.get('iteration')}轮")
+        if verdict:
+            bits.append(verdict)
+        if decision:
+            bits.append(decision)
+        sha = str(row.get("artifact_sha") or "")
+        if sha:
+            bits.append(f"产物 {sha[:10]}")
+        print("  ".join(bits))
     print()
     print(f"共 {len(rows)} 条记录（完整账本：{engine.ledger.path}）")
+    print("  提示：加 --json 可以拿到原始字段（脚本用）")
     return 0
 
 
@@ -735,7 +767,7 @@ def cmd_artifacts(args: argparse.Namespace) -> int:
         # the task is what the reader is looking for.
         label = item["title"] or item["goal"] or "-"
         print(
-            f"  [{flag}] {label}  {item['status']:<12} "
+            f"  [{flag}] {label}  {_both(item['status'], status_reading(item['status']))}  "
             f"{item['chars']:>6} 字  {item['iterations']} 轮"
         )
         print(f"        {item['run_id']}  {item['path']}")

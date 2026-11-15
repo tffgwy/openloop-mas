@@ -7,6 +7,12 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.60 adds** (**the ledger speaks too**):
+
+- `mas ledger` used to print the engine's own words: `closure   iter=1 pass close`.
+  It now prints **`验收 (closure) 第1轮 通过 (pass) 闭环了 (close)`** - the word first,
+  the raw name after it: a person can read it and a script can still grep it.
+
 **What v0.7.59 fixes** (**the relay no longer breaks connections at random**):
 
 - After v0.7.58 CI caught an intermittent failure: when the relay refused an unknown

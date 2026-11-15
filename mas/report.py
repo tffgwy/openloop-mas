@@ -16,6 +16,7 @@ from mas.verdict_text import (
     decision_reading,
     issue_reading,
     note_reading,
+    role_reading,
     source_reading,
     status_reading,
 )
@@ -962,11 +963,20 @@ VERDICT_WORD = {
 }
 
 
-def _verdict_word(value: str) -> str:
-    """The reading of a round verdict, or the value itself."""
+def verdict_word(value: str) -> str:
+    """The reading of a round verdict, or the value itself.
+
+    Public because the ledger listing needs the same word the report
+    uses: two screens that describe the same round must not use two
+    different vocabularies.
+    """
     if not value:
         return "-"
     return VERDICT_WORD.get(value, value)
+
+
+#: The old private name, kept so nothing that imported it breaks.
+_verdict_word = verdict_word
 
 
 def _human_detail(row: Dict[str, Any]) -> str:
@@ -1098,16 +1108,45 @@ def _short_detail(row: Dict[str, Any]) -> str:
     return ""
 
 
+def _both(raw: Any, reading: str) -> str:
+    """Show the word and the raw name, side by side.
+
+    A table that only shows the raw name makes the reader look the
+    name up. A table that only shows the word makes the reader unable
+    to grep for the thing they saw in the log. The exported table is
+    used for both - it is pasted into an issue as often as it is read
+    - so it keeps both.
+    """
+    raw_text = str(raw or "").strip()
+    if not raw_text:
+        return ""
+    if not reading or reading == raw_text:
+        return raw_text
+    return f"{reading} ({raw_text})"
+
+
 def ledger_markdown(rows: List[Dict[str, Any]]) -> str:
-    """Render raw ledger rows as a Markdown table."""
+    """Render raw ledger rows as a Markdown table.
+
+    The table is what a person opens when they want to see what the
+    loop actually did. It used to print the engine's own identifiers
+    in the role column - "closure", "review", "reflector" - which is
+    the vocabulary of the source code, not of the reader. The role now
+    says what the agent did, and the verdict and the decision say what
+    came out of it.
+    """
     lines = [
-        "| # | 时间 | 运行 | 迭代 | 角色 | 摘要 |",
-        "|---|---|---|---|---|---|",
+        "| # | 时间 | 运行 | 迭代 | 角色 | 判定 | 决策 | 摘要 |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for row in rows:
+        verdict = str(row.get("verdict") or "").strip()
+        decision = str(row.get("decision") or "").strip()
         lines.append(
             f"| {row.get('seq', '')} | {row.get('ts', '')} | `{row.get('run_id', '')}` | "
-            f"{row.get('iteration', '')} | {row.get('role', '')} | "
+            f"{row.get('iteration', '')} | {_both(row.get('role'), role_reading(row.get('role')))} | "
+            f"{_both(verdict, verdict_word(verdict)) if verdict else ''} | "
+            f"{_both(decision, decision_reading(decision)) if decision else ''} | "
             f"{_short_detail(row).replace('|', '/')} |"
         )
     return "\n".join(lines) + "\n"

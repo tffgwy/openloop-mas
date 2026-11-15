@@ -4,6 +4,19 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.60] - 2026-11-15
+
+### Added
+
+- 新增角色词典（`role_reading`）：planner/write/review/closure/reflector/run_end 等引擎内部角色名都有对应人话
+- `mas ledger` 列表改为「验收 (closure) 第1轮 通过 (pass) 闭环了 (close)」——人话在前，原名在后
+- `mas export` 导出的表格新增「判定」「决策」两列
+- `mas artifacts` 列表的状态列改为人话
+
+### Fixed
+
+- 加固 provider 用量测试：传输层失败与响应形状错误是两回事，只有后者才可能携带 usage，测试不再因连接重置误报
+
 ## [0.7.59] - 2026-11-15
 
 ### Fixed

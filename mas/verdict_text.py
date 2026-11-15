@@ -78,6 +78,40 @@ SOURCE_READING: Dict[str, str] = {
 }
 
 
+#: Which agent did what, in words. The ledger records the role under
+#: its internal name (``planner``, ``write``, ``closure``); a reader
+#: scanning the ledger sees a column of English identifiers and has to
+#: look them up to learn that ``closure`` is the line that says
+#: whether the run passed.
+ROLE_READING: Dict[str, str] = {
+    "planner": "规划",
+    "plan": "规划",
+    "write": "执行",
+    "work": "执行",
+    "review": "评审",
+    "verify": "验证",
+    "closure": "验收",
+    "reflector": "复盘",
+    "reflect": "复盘",
+    "candidates": "候选方案",
+    "lead": "主线",
+    "reask": "补问",
+    "reask_failed": "补问失败",
+    "truncated": "输出被截断",
+    "error": "出错",
+    "run_end": "收尾",
+    "artifact": "交付物",
+}
+
+
+def role_reading(role: Any) -> str:
+    """The plain reading of a role, or "" when unknown."""
+    key = str(role or "").strip()
+    if not key:
+        return ""
+    return ROLE_READING.get(key, key)
+
+
 def status_reading(status: Any) -> str:
     """The plain reading of a run status, or "" when unknown."""
     key = str(status or "").strip()

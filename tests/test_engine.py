@@ -2439,9 +2439,29 @@ class ProviderErrorUsageTest(unittest.TestCase):
             provider = OpenAICompatProvider(
                 model="m", base_url=f"http://127.0.0.1:{server.server_port}",
             )
-            with self.assertRaises(Exception) as ctx:
-                provider.complete(system="s", prompt="p")
-            exc = ctx.exception
+            # A *transport* failure and a *shape* failure are two
+            # different things, and only the second one can carry a
+            # usage report: if the response never arrived, nobody knows
+            # what was billed. The old test ran the call once and
+            # demanded 100 tokens, so a connection that was reset
+            # anywhere on the way - which happens on a busy machine -
+            # failed the test for the wrong reason.
+            #
+            # So the call is repeated until it gets as far as the
+            # broken shape. A transport failure is retried; a shape
+            # failure is the answer, and it must carry the usage.
+            exc = None
+            for _ in range(5):
+                try:
+                    provider.complete(system="s", prompt="p")
+                except Exception as caught:  # noqa: BLE001
+                    exc = caught
+                    if "unexpected response shape" in str(caught):
+                        break
+                    continue
+                exc = None
+                break
+            self.assertIsNotNone(exc, "the broken shape must raise")
             self.assertEqual(getattr(exc, "tokens", 0), 100)
         finally:
             server.shutdown()
