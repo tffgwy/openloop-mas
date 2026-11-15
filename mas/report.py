@@ -732,6 +732,11 @@ def render_markdown(report: Dict[str, Any]) -> str:
                 lines.append(
                     f"  - [{flag}] `{score.get('id')}` {score.get('note', '')}{mark}"
                 )
+                # Quote the standard back: the user wrote several of
+                # them, and "c2 FAIL" does not say which one failed.
+                reading = str(score.get("reading") or "")
+                if reading:
+                    lines.append(f"    要求：{reading}")
         if run.get("issues"):
             lines.append("- 未通过原因：")
             for issue in run["issues"]:

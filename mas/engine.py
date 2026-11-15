@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from mas.ceiling import call_ceiling
+from mas.criteria_text import criterion_reading
 from mas.filechecks import (
     FILE_CHECK_TYPES,
     FileCheckError,
@@ -2007,6 +2008,13 @@ class LoopEngine:
         # same length. ``strict=True`` makes a mismatch loud instead of
         # silently dropping the trailing criteria.
         for criterion, check in zip(crits, checks, strict=True):
+            # Every score carries the sentence that says what this
+            # criterion asked for. The score alone was a serial number
+            # (``c1``) plus an English note; the user wrote several
+            # standards and could not tell which one the answer was
+            # about. The reading travels with the score into the
+            # ledger, so the report can quote it back.
+            reading = criterion_reading(criterion)
             if not criterion.required:
                 # An optional criterion never blocks the closure, but its
                 # result is still worth recording. Discarding it and
@@ -2026,6 +2034,7 @@ class LoopEngine:
                             "source": str(check.get("source") or "rule"),
                             "optional": True,
                             "blocking": False,
+                            "reading": reading,
                         }
                     )
                     continue
@@ -2041,6 +2050,7 @@ class LoopEngine:
                             "source": "invalid",
                             "optional": True,
                             "blocking": False,
+                            "reading": reading,
                         }
                     )
                     continue
@@ -2060,6 +2070,7 @@ class LoopEngine:
                             "source": "skipped",
                             "optional": True,
                             "blocking": False,
+                            "reading": reading,
                         }
                     )
                 else:
@@ -2071,6 +2082,7 @@ class LoopEngine:
                             "source": review.get("source", "model"),
                             "optional": True,
                             "blocking": False,
+                            "reading": reading,
                         }
                     )
                 continue
@@ -2082,6 +2094,7 @@ class LoopEngine:
                         "note": str(check.get("note", "")),
                         "source": str(check.get("source") or "rule"),
                         "blocking": True,
+                        "reading": reading,
                     }
                 )
                 continue
@@ -2097,6 +2110,7 @@ class LoopEngine:
                         "note": str(check.get("note", "")),
                         "source": "invalid",
                         "blocking": True,
+                        "reading": reading,
                     }
                 )
                 continue
@@ -2109,6 +2123,7 @@ class LoopEngine:
                         "note": "unjudged: 评审没有给出该标准的判定",
                         "source": "model-missing",
                         "blocking": True,
+                        "reading": reading,
                     }
                 )
             else:
@@ -2127,6 +2142,7 @@ class LoopEngine:
                                     + str(review.get("pass")) + "）",
                             "source": "model-missing",
                             "blocking": True,
+                            "reading": reading,
                         }
                     )
                     continue
@@ -2136,6 +2152,7 @@ class LoopEngine:
                     "note": str(review.get("note", "")),
                     "source": review.get("source", "model"),
                     "blocking": True,
+                    "reading": reading,
                 }
                 if with_votes:
                     entry["votes"] = review.get("votes", "")

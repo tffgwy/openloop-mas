@@ -26,6 +26,9 @@ except ImportError:  # loaded as a top-level module (unittest -s tests)
 
 import contextlib
 import io
+import os
+import pathlib
+import tempfile
 import unittest
 
 from mas.cli import DEMO_SCENARIO_MEANING, main
@@ -39,7 +42,37 @@ class _Capture:
         return code, out.getvalue(), err.getvalue()
 
 
-class StatusExplainsItselfTest(_Capture, unittest.TestCase):
+class _EmptyLedgerTestCase(unittest.TestCase):
+    """A machine on which nothing has ever run.
+
+    The session-wide isolation gives every test the same state
+    directory, and another test in the same session may have run a
+    task in it. A test that checks "the report on an *empty* ledger"
+    then reads a ledger with two runs in it and fails for a reason that
+    has nothing to do with the code under test. These tests own their
+    own empty state directory instead.
+    """
+
+    def setUp(self):
+        self._saved = {
+            name: os.environ.get(name)
+            for name in ("MAS_CONFIG_PATH", "MAS_STATE_DIR")
+        }
+        self._root = tempfile.mkdtemp(prefix="mas-empty-ledger-")
+        self._state = pathlib.Path(self._root) / "state"
+        self._state.mkdir(parents=True, exist_ok=True)
+        os.environ["MAS_STATE_DIR"] = str(self._state)
+        os.environ["MAS_CONFIG_PATH"] = str(pathlib.Path(self._root) / "config.json")
+
+    def tearDown(self):
+        for name, value in self._saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
+
+class StatusExplainsItselfTest(_Capture, _EmptyLedgerTestCase):
     def test_the_offline_mode_is_named_in_words(self):
         code, out, _err = self.cap(["status"])
         self.assertEqual(code, 0)
@@ -82,7 +115,7 @@ class DemoExplainsItselfTest(_Capture, unittest.TestCase):
         self.assertIn("下一步", out)
 
 
-class ReportOnAnEmptyLedgerTest(_Capture, unittest.TestCase):
+class ReportOnAnEmptyLedgerTest(_Capture, _EmptyLedgerTestCase):
     def test_the_report_names_the_next_command(self):
         code, out, _err = self.cap(["report"])
         self.assertEqual(code, 0)

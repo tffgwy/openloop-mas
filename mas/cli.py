@@ -222,6 +222,14 @@ def cmd_run(args: argparse.Namespace) -> int:
         flag = "PASS" if score["pass"] else "FAIL"
         optional = "" if score.get("blocking", True) else "，可选"
         print(f"  [{flag}] {score['id']} ({score['source']}){optional} {score['note']}")
+        # The serial number alone does not tell the user which of the
+        # standards they wrote this is. The reading is the sentence
+        # that names it - without it, a report with three standards
+        # says "c1 PASS, c2 FAIL" and the reader has to guess which
+        # one failed.
+        reading = str(score.get("reading") or "")
+        if reading:
+            print(f"        要求：{reading}")
     if result.ticket_id:
         print(f"已升级为人工工单：{result.ticket_id}")
         print(f"  继续：mas resume {result.ticket_id} --note \"你的意见\"")

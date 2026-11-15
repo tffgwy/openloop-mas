@@ -4,6 +4,68 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.56] - 2026-11-15
+
+### Added
+
+The acceptance criteria now say what they asked for.
+
+When you write three standards and run the loop, the verdict used to
+come back as
+
+    [PASS] c1 (rule) all required strings present
+    [FAIL] c2 (rule) required string missing
+
+`c1` is not one of your standards - it is a serial number the engine
+made up. `all required strings present` is the engine talking to
+itself. Nothing in that output told you *which* of the standards you
+wrote was checked, and nothing told you what "required" meant for the
+one it named.
+
+Every verdict now carries the standard back in words:
+
+    [PASS] c1 (rule) all required strings present
+          要求：正文里要出现「结论」
+    [FAIL] c2 (file) mtime 2026-11-15T11:14:06+00:00 is not newer than 2099-01-01T00:00:00+00:00
+          要求：文件 out/report.md 的修改时间要晚于 2099-01-01T00:00:00Z
+
+Three kinds of standard read three different ways, because they mean
+three different things:
+
+* a **written description** wins - if you wrote "must have a conclusion
+  section", that sentence is kept, and the machine rule is appended so
+  you can see what will actually be checked;
+* a **bare shorthand** (``contains:结论``) is replaced by its
+  reading instead of being echoed twice - the raw text told you nothing
+  you did not already know;
+* an **optional** standard is marked as optional, so you can tell
+  "this did not block" from "this was never checked".
+
+The reading is also stored in the ledger next to the score, so
+`mas report` and `mas report --json` quote the same standard back.
+
+### Fixed
+
+A file-level check printed its argument as a Python dict.
+
+The file checks carry their argument as ``{"path": ..., "value": ...}``,
+and the first version of the reading stringified whatever it was given.
+So the requirement line came out as
+
+    文件 {'path': 'out/report.md', 'value': '2099-01-01T00:00:00Z'} 的修改时间要晚于 {'path': ...}
+
+which is a repr, not a sentence. The file checks now have their own
+templates and their argument is resolved before formatting, so the path
+and the expectation each get their own place in the sentence.
+
+### Tests
+
+* `tests/test_criteria_talk_to_people.py` - the reading of every check
+  type, the precedence between a written description and the machine
+  rule, the optional marker, the CLI line and the report line.
+* `tests/test_file_check_reading.py` - the dict leak, pinned: no
+  file check may print a brace or a quote.
+
 ## [0.7.55] - 2026-11-15
 
 ### Changed

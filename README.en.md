@@ -7,6 +7,41 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.56 adds** (**the verdict quotes your own standard back**):
+
+- **You wrote three standards and the verdict said "c1" and "c2"** ---
+  `c1` is not one of your standards, it is a serial number the engine
+  made up; nothing in that output told you *which* of the standards you
+  wrote was judged;
+- **Every verdict now carries the standard back in words**:
+  ```
+    [PASS] c1 (rule) all required strings present
+          requirement: the body must contain 「结论」
+    [FAIL] c2 (file) mtime 2026-11-15T11:14:06+00:00 is not newer than 2099-01-01T00:00:00+00:00
+          requirement: the file out/report.md must be modified after 2099-01-01T00:00:00Z
+  ```
+- **Three kinds of standard read three different ways**, because they
+  are three different things:
+  - **a written description wins** --- your own sentence is kept and
+    the machine rule is appended, so you can see what will actually be
+    checked;
+  - **a bare shorthand** (`contains:结论`) is replaced by its
+    reading instead of being echoed twice --- the raw text told you
+    nothing you did not already know;
+  - **an optional standard is marked as optional**, so you can tell
+    "this did not block" from "this was never checked";
+- **The sentence is stored in the ledger too** --- `mas report` and
+  `mas report --json` quote the same standard back;
+- **A real defect fixed along the way** --- a file-level check printed
+  its argument as a Python dict:
+  ```
+  file {'path': 'out/report.md', 'value': '2099-01-01T00:00:00Z'} must be modified after {...}
+  ```
+  The path and the expectation now each get their own place in the
+  sentence, and no dict is printed any more;
+- **20 regression tests**, **nine layers individually reverted and
+  re-proven** --- the matching tests fail every time.
+
 **What v0.7.53 adds** (**"not found" now says "not found"**):
 
 - **Four commands reported a missing run as an empty ledger** --- and
