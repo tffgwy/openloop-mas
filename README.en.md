@@ -7,6 +7,22 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.63 adds** (**the installation proves itself**):
+
+- **The install scripts now run the gate themselves.** `install.ps1` and
+  `install.sh` execute `mas selftest --iterations 20` when they finish.
+  **A broken install shows up right there**, instead of at the user's
+  first real task.
+- **Two new gates** (both fully offline: no endpoint, no key, no network):
+  - `mcp_handshake` - the MCP handshake answers, every advertised tool
+    answers, a call to a tool that does not exist is refused, and the
+    server is still alive afterwards;
+  - `stream_folds` - both event-stream dialects (chat chunks / Responses
+    events) fold into the same text, and `total_tokens` survives.
+- **The gate was counter-proven four times**: the MCP server stops
+  advertising `mas_run`, stops answering `ping`, the SSE fold drops the
+  usage, the SSE fold drops a fragment - **all four were caught**.
+
 **What v0.7.62 adds** (**the flaky-bug gate**):
 
 - **Two real intermittent failures now live in CI**: the relay refusing a

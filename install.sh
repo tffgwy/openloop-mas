@@ -383,6 +383,9 @@ step "Running the offline benchmark"
 step "Running the closure self-check"
 "$PYTHON_BIN" "$MAS_MAIN" verify || warn "verify reported issues"
 
+step "Running the flaky-path gate (mas selftest)"
+"$PYTHON_BIN" "$MAS_MAIN" selftest --iterations 20 || warn "selftest reported issues"
+
 printf '\nInstallation finished.\n\nNext steps:\n'
 printf '  1) open a new terminal, then run:  mas demo\n'
 printf '  2) configure interactively:  mas init --wizard\n'

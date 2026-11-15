@@ -391,17 +391,21 @@ if (-not $SkipDemo) {
 
     Write-Step "Running the closure self-check"
     $verifyExit = Invoke-MasStep @("verify")
+
+    Write-Step "Running the flaky-path gate (mas selftest)"
+    $selftestExit = Invoke-MasStep @("selftest", "--iterations", "20")
 } else {
     $demoExit = 0
     $benchExit = 0
     $verifyExit = 0
+    $selftestExit = 0
 }
 
 Write-Host ""
-if ($doctorExit -eq 0 -and $demoExit -eq 0 -and $benchExit -eq 0 -and $verifyExit -eq 0) {
+if ($doctorExit -eq 0 -and $demoExit -eq 0 -and $benchExit -eq 0 -and $verifyExit -eq 0 -and $selftestExit -eq 0) {
     Write-Host "Installation finished." -ForegroundColor Green
 } else {
-    Write-Host "Installation finished with warnings (doctor=$doctorExit demo=$demoExit bench=$benchExit verify=$verifyExit)." -ForegroundColor Yellow
+    Write-Host "Installation finished with warnings (doctor=$doctorExit demo=$demoExit bench=$benchExit verify=$verifyExit selftest=$selftestExit)." -ForegroundColor Yellow
 }
 Write-Host ""
 Write-Host "Next steps:"

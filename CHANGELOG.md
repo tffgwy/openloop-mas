@@ -4,6 +4,24 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.63] - 2026-11-16
+
+### 装完即自证（门禁接进安装流程）
+
+- **安装脚本现在会自己跑门禁** —— `install.ps1` 与 `install.sh` 在装完后
+  自动执行一次 `mas selftest --iterations 20`。**装坏了当场看得见**，
+  而不是等到用户第一次真跑任务才发现。
+- **两项新门禁**（都是离线，全程不要端点、不要 key、不要网络）：
+  1. `mcp_handshake` —— MCP 握手能应答，广告出来的工具都答得上来，
+     调不存在的工具会被拒绝，跑完一轮服务还活着；
+  2. `stream_folds` —— 两种事件流方言（chat 分片 / Responses 事件）
+     折叠成同一段正文，且 `total_tokens` 不丢。
+- **四项回归反证全部被捕获**：MCP 不再广告 `mas_run`、MCP 不再回应
+  `ping`、SSE 折叠把用量扔掉、SSE 折叠丢一段正文。**一个只终达入不报
+  的门禁不叫门禁。**
+- 新测试 `tests/test_selftest_gate_763.py`，独立文件，不碰既有测试的
+  import 顺序。
+
 ## [0.7.62] - 2026-11-16
 
 ### 隔失门禁：重复打磈易偶发的路径

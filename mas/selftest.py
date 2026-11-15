@@ -32,7 +32,10 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
+import pathlib
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.request import Request, urlopen
@@ -513,17 +516,311 @@ def check_a_run_keeps_its_files_with_the_deliverable(
     }
 
 
+# ------------------------------------------------------------------- check 4
+def check_mcp_handshake_answers_every_tool(
+    iterations: int = DEFAULT_ITERATIONS,
+) -> Dict[str, Any]:
+
+    """The MCP handshake must answer, and every advertised tool must work.
+
+    This is the surface an agent actually touches. If the handshake
+    breaks, the agent sees a dead server and the whole loop is
+    unreachable - but the failure is invisible from the CLI, because the
+    CLI never speaks MCP.
+
+    The invariant:
+
+    * ``initialize`` answers with a protocol version and a server name;
+    * ``tools/list`` advertises the tools, including ``mas_run``;
+    * every advertised tool answers a call - a tool that never comes
+      back is a tool the agent can only find out about in the middle of
+      a task;
+    * a call to a tool that does not exist is refused with an error
+      instead of crashing the server;
+    * the server is still alive afterwards - one broken tool may not
+      take the other tools down with it.
+
+    The server is driven exactly the way a host drives it: newline
+    delimited JSON-RPC over stdio, one long lived pipe.
+    """
+    import queue
+    import subprocess
+    import sys
+    import tempfile
+    import threading
+
+    from mas.mcp_server import PROTOCOL_VERSION, SERVER_NAME, TOOLS
+
+    failures: List[str] = []
+    names = [str(t.get("name") or "") for t in TOOLS if t.get("name")]
+
+    with tempfile.TemporaryDirectory(prefix="mas-selftest-mcp-") as tmp:
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(pathlib.Path(__file__).resolve().parents[1])
+        env["PYTHONUTF8"] = "1"
+        env["MAS_STATE_DIR"] = os.path.join(tmp, "state")
+        script = "from mas.mcp_server import serve\nserve()\n"
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, "-X", "utf8", "-c", script],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, env=env, text=True, encoding="utf-8",
+            )
+        except OSError as exc:
+            return {
+                "name": "mcp_handshake",
+                "title": "MCP 握手能应答，广告出来的工具都答得上来",
+                "invariant": "initialize / tools/list 有正确回应，每个工具都有回应",
+                "iterations": iterations,
+                "failures": ["起不来 MCP 服务进程：%s" % exc],
+                "ok": False,
+            }
+        # A stdio server is a pipe, not a request/response socket: the
+        # host writes messages whenever it likes and reads the answers
+        # whenever they come. The reader thread is what makes that
+        # possible - a single ``communicate`` would close the pipe.
+        lines: "queue.Queue[str]" = queue.Queue()
+
+        def pump() -> None:
+            try:
+                for line in proc.stdout:  # type: ignore[union-attr]
+                    lines.put(line)
+            except Exception:  # noqa: BLE001 - the pipe closing is normal
+                return
+
+        threading.Thread(target=pump, daemon=True).start()
+
+        def ask(batch: List[Dict[str, Any]], expect: int, timeout: float = 60.0) -> Dict[Any, Dict[str, Any]]:
+            """Send a batch of JSON-RPC messages and read their answers."""
+            try:
+                for message in batch:
+                    proc.stdin.write(json.dumps(message, ensure_ascii=False) + "\n")  # type: ignore[union-attr]
+                proc.stdin.flush()  # type: ignore[union-attr]
+            except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                failures.append("写不进服务：%s: %s" % (type(exc).__name__, exc))
+                return {}
+
+            replies: Dict[Any, Dict[str, Any]] = {}
+            deadline = time.monotonic() + timeout
+            while len(replies) < expect and time.monotonic() < deadline:
+                try:
+                    line = lines.get(timeout=1.0)
+                except queue.Empty:
+                    continue
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    reply = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(reply, dict):
+                    replies[reply.get("id")] = reply
+            return replies
+
+        replies = ask(
+            [
+                {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+                {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+            ],
+            2,
+        )
+
+        init = replies.get(1) or {}
+        result = init.get("result") or {}
+        if result.get("protocolVersion") != PROTOCOL_VERSION:
+            failures.append("initialize 的协议版本不对：%r" % result.get("protocolVersion"))
+        info = result.get("serverInfo") or {}
+        if info.get("name") != SERVER_NAME:
+            failures.append("initialize 的服务名不对：%r" % info.get("name"))
+
+        listed = replies.get(2) or {}
+        tools = ((listed.get("result") or {}).get("tools")) or []
+        if not tools:
+            failures.append("tools/list 没有广告任何工具")
+        advertised = [str(t.get("name") or "") for t in tools if t.get("name")]
+        if "mas_run" not in advertised:
+            failures.append("tools/list 里没有 mas_run（这是最核心的工具）")
+        if sorted(advertised) != sorted(names):
+            failures.append(
+                "tools/list 广告的工具和真实的不一样：广告 %s / 实际 %s"
+                % (", ".join(sorted(advertised)), ", ".join(sorted(names)))
+            )
+        # Every advertised tool has to answer. A tool that never comes
+        # back is a tool the agent cannot use - and the agent finds out
+        # at the worst possible moment, in the middle of a task. The
+        # answer may carry an error (a tool that needs arguments has to
+        # say so); what it may not do is vanish.
+        calls: List[Dict[str, Any]] = []
+        for index, name in enumerate(advertised):
+            calls.append({
+                "jsonrpc": "2.0", "id": 10 + index, "method": "tools/call",
+                "params": {"name": name, "arguments": {}},
+            })
+        calls.append({
+            "jsonrpc": "2.0", "id": 99, "method": "tools/call",
+            "params": {"name": "no_such_tool", "arguments": {}},
+        })
+        replies2 = ask(calls, len(calls), timeout=120.0)
+
+        for index, name in enumerate(advertised):
+            reply = replies2.get(10 + index)
+            if not reply:
+                failures.append("工具 %s 没有回应" % name)
+                continue
+            if not (reply.get("result") is not None or reply.get("error")):
+                failures.append("工具 %s 的回应既不是结果也不是错误：%r" % (name, reply))
+
+        unknown = replies2.get(99) or {}
+        if not (unknown.get("error") or (unknown.get("result") or {}).get("isError")):
+            failures.append("调用不存在的工具没有被拒绝")
+
+        # The server has to survive all of that: one broken tool may not
+        # take the other tools down with it.
+        alive = ask([{"jsonrpc": "2.0", "id": 500, "method": "ping"}], 1)
+        if not alive.get(500):
+            failures.append("跑完一轮工具调用之后，服务不再应答了")
+
+    return {
+        "name": "mcp_handshake",
+        "title": "MCP 握手能应答，广告出来的工具都答得上来",
+        "invariant": "initialize / tools/list 有正确回应，每个工具都有回应，服务不会被打死",
+        "iterations": iterations,
+        "failures": failures,
+        "ok": not failures,
+    }
+# ------------------------------------------------------------------- check 5
+class _SseUpstream(BaseHTTPRequestHandler):
+    """An endpoint that answers with an SSE event stream.
+
+    Two dialects show up in the wild: the chat streaming chunks and
+    the Responses events. Both have to fold back into one plain answer,
+    and the usage has to survive the fold.
+    """
+
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args: Any) -> None:
+        return
+
+    def do_POST(self) -> None:  # noqa: N802 - http.server API
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length else b""
+        try:
+            request = json.loads(body.decode("utf-8") or "{}")
+        except ValueError:
+            request = {}
+        dialect = str(request.get("dialect") or "responses")
+        if dialect == "chat":
+            events = [
+                {"choices": [{"delta": {"content": "第一段"}}]},
+                {"choices": [{"delta": {"content": "第二段"}}]},
+                {
+                    "choices": [{"delta": {}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7},
+                },
+            ]
+        else:
+            events = [
+                {"type": "response.created", "response": {"model": "selftest-model"}},
+                {"type": "response.output_text.delta", "delta": "第一段"},
+                {"type": "response.output_text.delta", "delta": "第二段"},
+                {
+                    "type": "response.completed",
+                    "response": {
+                        "model": "selftest-model",
+                        "usage": {"input_tokens": 3, "output_tokens": 4, "total_tokens": 7},
+                    },
+                },
+            ]
+        lines = []
+        for event in events:
+            lines.append("data: " + json.dumps(event, ensure_ascii=False))
+        lines.append("data: [DONE]")
+        payload = ("\n\n".join(lines) + "\n\n").encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+
+def check_a_stream_folds_into_one_answer(
+    iterations: int = DEFAULT_ITERATIONS,
+) -> Dict[str, Any]:
+
+    """A streamed answer must fold into one answer, with its usage.
+
+    Gateways answer with an event stream on the chat route even when
+    the client did not ask for one. The provider folds the stream back
+    into a plain answer. If the fold loses a fragment, the deliverable
+    is silently shorter than what the model wrote; if the fold loses
+    the usage, the run reports a call that cost money as a free call.
+
+    The invariant: both stream dialects fold into the exact same text,
+    and the usage survives the fold.
+    """
+    from mas.providers import OpenAICompatProvider
+
+    server, port = _serve(_SseUpstream)
+    failures: List[str] = []
+    try:
+        provider = OpenAICompatProvider(
+            model="selftest-model", base_url="http://127.0.0.1:%d" % port
+        )
+        for index in range(iterations):
+            for dialect in ("responses", "chat"):
+                try:
+                    payload = provider.complete(
+                        system="s", prompt="p", role="worker"
+                    )
+                except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                    failures.append(
+                        "第 %d 次（%s）：流没被折叠成答案：%s: %s"
+                        % (index + 1, dialect, type(exc).__name__, exc)
+                    )
+                    break
+                text = str(payload.get("text") or "")
+                if text != "第一段第二段":
+                    failures.append(
+                        "第 %d 次（%s）：折叠出来的正文不对：%r" % (index + 1, dialect, text)
+                    )
+                usage = payload.get("usage") or {}
+                if int(usage.get("total_tokens") or 0) != 7:
+                    failures.append(
+                        "第 %d 次（%s）：折叠把用量弄丢了（tokens=%r，应为 7）"
+                        % (index + 1, dialect, usage.get("total_tokens"))
+                    )
+            if len(failures) >= 5:
+                break
+    finally:
+        _stop(server)
+
+    return {
+        "name": "stream_folds",
+        "title": "流式回答折叠成一段完整正文，用量不丢",
+        "invariant": "两种事件流方言折叠出同一段正文，且 total_tokens 保持 7",
+        "iterations": iterations,
+        "failures": failures,
+        "ok": not failures,
+    }
+
+
 # ----------------------------------------------------------------- the gate
 # The short name of a check is a property of the function, so that
 # ``--only`` and the JSON output speak the same word.
 check_relay_refusal_keeps_the_connection_usable.CHECK_NAME = "relay_refusal"  # type: ignore[attr-defined]
 check_provider_keeps_the_usage_of_a_failed_call.CHECK_NAME = "provider_usage"  # type: ignore[attr-defined]
 check_a_run_keeps_its_files_with_the_deliverable.CHECK_NAME = "workspace_keeps_files"  # type: ignore[attr-defined]
+check_mcp_handshake_answers_every_tool.CHECK_NAME = "mcp_handshake"  # type: ignore[attr-defined]
+check_a_stream_folds_into_one_answer.CHECK_NAME = "stream_folds"  # type: ignore[attr-defined]
 
 CHECKS = (
     check_relay_refusal_keeps_the_connection_usable,
     check_provider_keeps_the_usage_of_a_failed_call,
     check_a_run_keeps_its_files_with_the_deliverable,
+    check_mcp_handshake_answers_every_tool,
+    check_a_stream_folds_into_one_answer,
 )
 
 

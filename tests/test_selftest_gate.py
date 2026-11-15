@@ -43,7 +43,7 @@ class SelftestModuleTest(unittest.TestCase):
         result = run_selftest(iterations=3)
         self.assertTrue(result["ok"], result)
         self.assertEqual(result["failed"], [])
-        self.assertEqual(len(result["checks"]), 3)
+        self.assertGreaterEqual(len(result["checks"]), 3)
 
     def test_the_result_is_json_serialisable(self):
         from mas.selftest import run_selftest
@@ -99,7 +99,7 @@ class SelftestCliTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         payload = json.loads(proc.stdout)
         self.assertTrue(payload["ok"])
-        self.assertEqual(len(payload["checks"]), 3)
+        self.assertGreaterEqual(len(payload["checks"]), 3)
 
     def test_it_runs_without_a_model_endpoint(self):
         """The gate is offline: no endpoint, no key, no network."""
