@@ -126,6 +126,13 @@ class Roles:
         plan = state.get("plan") or {}
         checks = state.get("checks") or []
         artifact = str(state.get("candidate_artifact") or "")
+        # The deliverable of the *previous* attempt. A resumed run
+        # starts its attempt counter at one again, so the "rewrite the
+        # issues above" instruction - which is keyed on the attempt
+        # number - never fires, and the worker was asked for the
+        # deliverable from scratch. The work that was already done was
+        # in the ticket the whole time.
+        previous = str(state.get("previous_artifact") or "")
 
         out: list[str] = []
 
@@ -299,6 +306,31 @@ class Roles:
             out.append(
                 "请针对上面列出的问题改写交付物。" if zh
                 else "Rewrite the deliverable to address the issues above."
+            )
+
+        if role == "worker" and previous:
+            # The previous deliverable, and what is expected of it. A
+            # takeover is not a fresh start: the human is asking for
+            # the *same* deliverable, improved. Showing the old text
+            # without saying what to do with it lets the model treat
+            # it as background and start over.
+            out.append("")
+            out.append(
+                "### 上一轮的交付物 / PREVIOUS DELIVERABLE" if zh
+                else "### PREVIOUS DELIVERABLE"
+            )
+            out.append("<<PREVIOUS>>")
+            out.append(previous)
+            out.append("<<END PREVIOUS>>")
+            out.append("")
+            out.append(
+                "这是上一轮已经交付的内容。请在此基础上改写并改进它，"
+                "不要从零重写——保留仍然成立的部分，修掉上面列出的问题。"
+                if zh
+                else
+                "This is what the previous attempt delivered. Improve it "
+                "from here: keep what still holds and fix the issues "
+                "listed above. Do not start over from nothing."
             )
 
         return "\n".join(out)

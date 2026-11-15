@@ -32,7 +32,7 @@ source, so a new reason cannot silently lose its reading.
 from __future__ import annotations
 
 import re
-from typing import Any, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from mas.verdict_text import issue_reading, status_reading
 
@@ -218,6 +218,106 @@ def reason_hint(reason: Any) -> str:
             "\u8981\u7ee7\u7eed\u52a0\u65f6\u95f4\uff1amas init --deadline-sec <\u66f4\u5927\u7684\u6570>"
         )
     return ""
+
+
+#: The ceilings a takeover can widen, and how much each one grows.
+#:
+#: A run that stopped at a ceiling cannot be continued with the same
+#: ceiling - it stops at exactly the same place, and the takeover is a
+#: formality. The continuation command therefore has to come with a
+#: wider ceiling, or the human has to guess how much wider.
+#:
+#: The growth factors are deliberately generous: a takeover that still
+#: hits the ceiling is still a dead end, and a human who has to run
+#: the takeover three times in a row has stopped taking the problem
+#: over and started fighting the tool.
+_CEILING_GROWTH = {
+    "max_iterations": 4,
+    "deadline_sec": 4,
+    "max_tokens": 4,
+}
+
+#: The smallest ceiling a takeover ever gets.
+#:
+#: A multiple of the ceiling that stopped the run is not enough on its
+#: own: a run that stopped at ``max_tokens=1`` and is continued with
+#: ``max_tokens=4`` stops at the very same wall, one round later. A
+#: takeover that cannot work is worse than no takeover, because it
+#: looks like progress. So every widened ceiling also gets a floor -
+#: a ceiling below which no loop of this shape can do any work at all.
+_CEILING_FLOOR = {
+    "max_iterations": 8,
+    "deadline_sec": 60,
+    "max_tokens": 20000,
+}
+
+
+def widen_budget(reason: Any, budget: Any = None) -> Dict[str, int]:
+    """The ceilings to raise, and by how much, for this reason.
+
+    ``budget`` is the budget the stopped run actually ran under (as
+    recorded on the ticket). Without it the widening is expressed in
+    multiples of the machine default; with it, in absolute numbers -
+    which is what the reader needs in order to judge whether the
+    takeover has a chance.
+
+    An unrecognised reason yields an empty mapping: nothing is
+    invented, and a reason that names no ceiling has no ceiling to
+    widen.
+    """
+    text = _reason_text(reason)
+    if not text:
+        return {}
+    limits: Dict[str, int] = {}
+    match = re.match(r"^budget: reached max_iterations=(?P<n>\d+)$", text)
+    if match:
+        limits["max_iterations"] = int(match.group("n"))
+    match = re.match(r"^budget: exceeded deadline_sec=(?P<n>\d+)", text)
+    if match:
+        limits["deadline_sec"] = int(match.group("n"))
+    match = re.match(r"^budget: tokens (?P<used>\d+) >= (?P<limit>\d+)$", text)
+    if match:
+        limits["max_tokens"] = int(match.group("limit"))
+    if not limits:
+        return {}
+    current = budget if isinstance(budget, dict) else {}
+    widened: Dict[str, int] = {}
+    for name, value in limits.items():
+        base = int(current.get(name) or value)
+        widened[name] = max(
+            max(base, value) * _CEILING_GROWTH[name],
+            _CEILING_FLOOR[name],
+        )
+    return widened
+
+
+def continuation_command(
+    ticket_id: str,
+    reason: Any = "",
+    budget: Any = None,
+    note: str = "",
+) -> str:
+    """The command that continues this ticket - and does not dead-end.
+
+    A ticket that stopped on a ceiling used to print exactly one
+    thing: ``mas resume <id> --note "..."``. That command inherits the
+    ceilings of the machine-wide configuration, so it stopped at the
+    same ceiling again. The command now carries a wider budget for
+    the ceiling that actually stopped the run - the human can see what
+    they are getting and can drop the flags if they disagree.
+    """
+    command = "mas resume %s" % ticket_id
+    widened = widen_budget(reason, budget)
+    for name in ("max_iterations", "deadline_sec", "max_tokens"):
+        if name in widened:
+            # The flag has to be the one the command line actually
+            # accepts. The command line spells them with a dash
+            # (``--max-tokens``), and a command printed with an
+            # underscore is a command that fails when it is pasted -
+            # which is exactly when a human needs it to work.
+            command += " --%s %d" % (name.replace("_", "-"), widened[name])
+    command += ' --note "%s"' % (note or "你的意见")
+    return command
 
 
 def reason_text(reason: Any) -> str:

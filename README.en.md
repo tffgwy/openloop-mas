@@ -7,6 +7,38 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.66 adds** (**a takeover sees the work of the last attempt, and
+gets a budget of its own**):
+
+- **The 8th gate `takeover_handover`** - v0.7.65 made the ticket carry the
+  context, but **the run that took it over could not use that context at
+  all.** This release fixes the takeover itself, and a gate catches it on
+  the spot.
+- **Four real defects (each measured first, then fixed)**:
+  1. **A run that ran out of tokens was filed as "the loop could not close
+     itself"** - a budget stop was filed in the `loop_escalation` queue, so
+     the human went looking for a stuck worker when the real cause was a
+     budget that was too small. **A budget stop is now
+     `budget_exhausted`.**
+  2. **The takeover could not see the previous deliverable** - a resumed run
+     restarts its attempt counter at one and empties its issue list, so the
+     worker was asked for the deliverable from nothing. **The previous
+     deliverable is now handed to the worker of the takeover.**
+  3. **A ticket that stopped on a ceiling stopped there again on resume** -
+     **all three ceilings can now be given for that one run**, and they do
+     not leak into the next run on the same engine.
+  4. **The "continue this" command on screen was a dead end** - **the
+     continuation command now comes with a wider ceiling** (and a floor, so
+     the widened budget can actually do work).
+- **The flags on the command are spelled the way the command line accepts
+  them** - a command that is printed has to work when it is pasted:
+  `--max-tokens`, not `--max_tokens`. The gate caught this on the spot.
+- **Reverse-proofed six times** - the deliverable is hidden, the budget
+  override is dropped, the token stop is filed as an escalation again, the
+  widening is removed, the takeover sees nothing, the ticket loses its
+  budget - **all six were caught**. Fully offline: no endpoint, no key, no
+  network.
+
 **What v0.7.65 adds** (**a run that did not close must leave something a
 human can take over**):
 

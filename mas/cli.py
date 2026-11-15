@@ -24,7 +24,7 @@ from mas.installer import (
     run_uninstall,
 )
 from mas.orchestration import CANDIDATE_ANGLES
-from mas.reason_text import reason_hint, reason_text
+from mas.reason_text import continuation_command, reason_hint, reason_text
 from mas.relay import serve_relay
 from mas.report import (
     build_report,
@@ -293,7 +293,14 @@ def cmd_run(args: argparse.Namespace) -> int:
             print(f"        要求：{reading}")
     if result.ticket_id:
         print(f"已升级为人工工单：{result.ticket_id}")
-        print(f"  继续：mas resume {result.ticket_id} --note \"你的意见\"")
+        print(
+            "  继续："
+            + continuation_command(
+                str(result.ticket_id),
+                result.error,
+                result.to_dict().get("budget"),
+            )
+        )
     if result.error:
         # The reason the run stopped, in words. The engine writes
         # it in its own vocabulary ("budget: reached
@@ -396,6 +403,14 @@ def cmd_status(args: argparse.Namespace) -> int:
         )
     waiting = [t["id"] for t in tickets if t.get("state") == "waiting_human"]
     resolved = [t["id"] for t in tickets if t.get("state") == "resolved"]
+    # The payload of every waiting ticket. The continuation command
+    # needs the reason and the budget of the stopped run to build a
+    # command that can actually work.
+    ticket_payloads = {
+        t["id"]: (t.get("payload") or {})
+        for t in tickets
+        if t.get("state") == "waiting_human"
+    }
     # A ticket id on its own does not say which problem is waiting.
     # Keep the title next to the id so the status page names the
     # problem, not just its serial number.
@@ -493,7 +508,14 @@ def cmd_status(args: argparse.Namespace) -> int:
             label = ticket_titles.get(ticket_id) or ""
             if label:
                 print(f"  {ticket_id}  {label}")
-            print(f"    →  mas resume {ticket_id} --note \"你的意见\"")
+            print(
+                "    →  "
+                + continuation_command(
+                    ticket_id,
+                    (ticket_payloads.get(ticket_id) or {}).get("reason"),
+                    (ticket_payloads.get(ticket_id) or {}).get("budget"),
+                )
+            )
     else:
         print("待处理工单：0 个")
     if resolved:
@@ -653,9 +675,17 @@ def cmd_tickets(args: argparse.Namespace) -> int:
         if decision:
             print(f"  处理结果：{decision}")
         if ticket.get("state") == "waiting_human":
+            # The command has to be one that can work. A ticket that
+            # stopped on a ceiling continued with the same ceiling
+            # stops at the same place again, so the command now comes
+            # with a wider budget for the ceiling that stopped it.
             print(
-                f"  接着干：mas resume {ticket['id']} "
-                f"--note \"你的意见\""
+                "  接着干："
+                + continuation_command(
+                    str(ticket["id"]),
+                    reason,
+                    payload.get("budget"),
+                )
             )
         print()
 
@@ -676,7 +706,13 @@ def cmd_resume(args: argparse.Namespace) -> int:
     config = load_config()
     engine = _engine(config)
     try:
-        result = engine.resume(args.ticket_id, args.note or "")
+        result = engine.resume(
+            args.ticket_id,
+            args.note or "",
+            max_iterations=getattr(args, "max_iterations", None),
+            deadline_sec=getattr(args, "deadline_sec", None),
+            max_tokens=getattr(args, "max_tokens", None),
+        )
     except KeyError as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -1226,6 +1262,23 @@ def build_parser() -> argparse.ArgumentParser:
     resume = sub.add_parser("resume", help="带着人工意见继续一个被升级的循环")
     resume.add_argument("ticket_id")
     resume.add_argument("--note", default="")
+    # A takeover needs a budget of its own. The run that opened the
+    # ticket stopped at a ceiling; continuing with the same ceiling
+    # stops at the same place again. These three flags give *this*
+    # run a different ceiling, without changing the machine-wide
+    # default for every other task.
+    resume.add_argument(
+        "--max-iterations", type=int,
+        help="这一轮最多跑多少轮（覆盖本机默认，不改配置）",
+    )
+    resume.add_argument(
+        "--deadline-sec", type=int,
+        help="这一轮最多用多少秒（覆盖本机默认，不改配置）",
+    )
+    resume.add_argument(
+        "--max-tokens", type=int,
+        help="这一轮最多用多少 token（覆盖本机默认，不改配置）",
+    )
     add_json(resume)
     resume.set_defaults(func=cmd_resume)
 

@@ -1407,6 +1407,356 @@ def check_an_escalated_run_leaves_a_ticket_a_human_can_take_over(
         "ok": not failures,
     }
 
+def check_a_takeover_sees_the_work_and_gets_a_fresh_budget(
+    iterations: int = 10,
+) -> Dict[str, Any]:
+
+    """A takeover must see the work, and must get a budget of its own.
+
+    Two promises broke at the same time, and both of them made a
+    takeover a formality:
+
+    * **the takeover could not see the work.** The last deliverable
+      lived on the ticket, but the resumed run started its attempt
+      counter at one again and its issue list empty, so the worker was
+      asked for the deliverable from nothing. The result was the same
+      bytes over and over, and the loop never converged on the work
+      that had already been done.
+    * **the takeover could not get a budget.** The resumed run reused
+      the ceilings of the machine-wide configuration, so a problem that
+      did not fit into those ceilings stopped at exactly the same
+      ceiling again. The human was told to "continue", and continuing
+      meant hitting the same wall.
+
+    The check takes a run that stopped on a ceiling, reads the ticket
+    it left behind, and then:
+
+    * every way of stopping leaves a ticket a human can pick up, and
+      the ticket says *which* stop it was - a budget stop is not an
+      escalation, and the two need different human reactions;
+    * the ticket carries the budget the run actually ran under;
+    * the continuation command comes with a *wider* ceiling for the
+      one that stopped the run;
+    * the worker of the resumed run is shown the deliverable of the
+      previous attempt;
+    * and the resumed run really closes - through the machine check
+      that came back on the ticket, not through the reviewer's mood.
+    """
+    import tempfile
+
+    from mas.engine import LoopEngine
+    from mas.providers import Provider, ProviderError
+    from mas.reason_text import continuation_command, widen_budget
+
+    class _RepairableProvider(Provider):
+        """A worker whose text the human can repair.
+
+        The verifier always answers "fail", so a resumed loop can only
+        close through the machine check that came back on the ticket -
+        the model cannot fake it.
+        """
+
+        name = "selftest-takeover"
+
+        def __init__(self, model: str = "selftest-model", **options: Any) -> None:
+            super().__init__(model=model, **options)
+            # False: the worker writes the same text every round, so the
+            # deliverable is wrong and the loop cannot close.
+            self.repaired = False
+            # Every prompt the worker was given. The takeover has to
+            # show up in here.
+            self.worker_prompts: List[str] = []
+
+        def complete(self, *, system: str, prompt: str, role: str = "worker",
+                     expect_json: bool = False, max_tokens: int = 4000) -> Dict[str, Any]:
+            self.calls += 1
+            usage = {"total_tokens": 10}
+            if role == "planner":
+                text = json.dumps(
+                    {"summary": "计划", "plan": ["写交付物"], "risks": ["写不好"]}
+                )
+                return {"text": text, "usage": usage, "raw": {}}
+            if role == "verifier":
+                text = json.dumps(
+                    {"verdict": "fail",
+                     "scores": [{"id": "c1", "pass": False, "note": "不过"}]}
+                )
+                return {"text": text, "usage": usage, "raw": {}}
+            if role == "reflector":
+                text = json.dumps(
+                    {"summary": "复盘", "issues": [], "next_action": "revise"}
+                )
+                return {"text": text, "usage": usage, "raw": {}}
+            if role == "worker":
+                self.worker_prompts.append(prompt)
+                text = "结论。数据是 42。" if self.repaired else "结论。数据是 41。"
+                return {"text": text, "usage": usage, "raw": {}}
+            return {"text": "{}", "usage": usage, "raw": {}}
+
+    class _BrokenProvider(Provider):
+        """A backend that is simply not there."""
+
+        name = "selftest-takeover-broken"
+
+        def complete(self, *, system: str, prompt: str, role: str = "worker",
+                     expect_json: bool = False, max_tokens: int = 4000) -> Dict[str, Any]:
+            raise ProviderError("the endpoint is not reachable")
+    def _config(tmp: str, **budget: Any) -> Dict[str, Any]:
+        base = {"max_iterations": 6, "max_tokens": 1000000, "deadline_sec": 60}
+        base.update(budget)
+        return {
+            "provider": "mock",
+            "model": "selftest-model",
+            "state_dir": os.path.join(tmp, "state"),
+            "workspace": "",
+            "budget": base,
+            "orchestration": {
+                "parallel_workers": 1, "reviewers": 1, "review_mode": "all",
+            },
+            "team": {"language": "zh"},
+            "stagnation_limit": 2,
+        }
+
+    #: The standards every scenario of this check uses.
+    criteria = [
+        {
+            "id": "c1",
+            "desc": "正文里要出现 42",
+            "check": {"type": "contains", "arg": "42"},
+        }
+    ]
+
+    def _ticket_of(engine: Any, result: Any) -> Dict[str, Any]:
+        if not result.ticket_id:
+            return {}
+        return engine.tickets.get(str(result.ticket_id)) or {}
+
+    def _check_stop(
+        label: str,
+        engine: Any,
+        result: Any,
+        expect_status: str,
+        expect_kind: str,
+        expect_reason: str,
+    ) -> List[str]:
+        """Every way of stopping has to leave a ticket that fits."""
+        problems: List[str] = []
+        if result.closed:
+            problems.append(label + "：这一轮竟然闭合了")
+        if result.status != expect_status:
+            problems.append(
+                "%s：状态不是 %s（而是 %s）" % (label, expect_status, result.status)
+            )
+        ticket = _ticket_of(engine, result)
+        if not ticket:
+            problems.append(label + "：没有留下可接手的票据")
+            return problems
+        if ticket.get("state") != "waiting_human":
+            problems.append(
+                "%s：票据不是等人接手的状态（%r）" % (label, ticket.get("state"))
+            )
+        if ticket.get("kind") != expect_kind:
+            problems.append(
+                "%s：票据类型不是 %s（而是 %s）"
+                % (label, expect_kind, ticket.get("kind"))
+            )
+        payload = ticket.get("payload") or {}
+        if payload.get("status") != expect_status:
+            problems.append(
+                "%s：票据里的状态和运行的状态对不上（%r / %r）"
+                % (label, payload.get("status"), expect_status)
+            )
+        reason = str(payload.get("reason") or "")
+        if expect_reason not in reason:
+            problems.append(
+                "%s：票据没有说清为什么停（reason=%r）" % (label, reason)
+            )
+        if not (payload.get("budget") or {}):
+            problems.append(label + "：票据没有记下这一轮跑在什么预算下")
+        return problems
+
+    def _takeover(
+        label: str,
+        engine: Any,
+        result: Any,
+        provider: Any,
+    ) -> List[str]:
+        """Take the ticket over, and see whether the takeover can work."""
+        problems: List[str] = []
+        ticket = _ticket_of(engine, result)
+        payload = ticket.get("payload") or {}
+        budget = payload.get("budget") or {}
+        ticket_id = str(result.ticket_id)
+
+        # The continuation command has to be one that can work. A
+        # takeover that inherits the ceiling of the run that failed
+        # stops at the same place again.
+        command = continuation_command(ticket_id, payload.get("reason"), budget)
+        if not command.startswith("mas resume " + ticket_id):
+            problems.append(label + "：续跑命令指错了票据（%s）" % command)
+        widened = widen_budget(payload.get("reason"), budget)
+        for name, value in widened.items():
+            if value <= 0:
+                problems.append(label + "：放宽后的 %s 是 %r，不是更宽" % (name, value))
+            if "--%s %d" % (name.replace("_", "-"), value) not in command:
+                problems.append(
+                    "%s：续跑命令没有带上放宽后的 %s（%s）" % (label, name, command)
+                )
+
+        # The worker of the takeover has to see the deliverable of the
+        # last attempt. Otherwise the takeover rewrites the same text
+        # from nothing, forever.
+        provider.repaired = True
+        try:
+            resumed = engine.resume(ticket_id, note="人工接手", **widened)
+        except Exception as exc:  # noqa: BLE001 - the failure is the subject
+            return [*problems, label + "：按票据接手失败：%s" % exc]
+
+        prompts = list(getattr(provider, "worker_prompts", []) or [])
+        # Only a run that actually produced something can show it. A run
+        # that stopped before its first round has no deliverable to
+        # hand over, and asking the takeover to see one would be
+        # asking for the impossible.
+        if str(payload.get("last_artifact") or "").strip():
+            if not prompts:
+                problems.append(label + "：接手的运行没有调用 worker")
+            else:
+                last_prompt = prompts[-1]
+                if "PREVIOUS" not in last_prompt:
+                    problems.append(label + "：接手的 worker 没有看到上一轮的交付物")
+                if "数据是 41" not in last_prompt:
+                    problems.append(
+                        label + "：接手的 worker 拿不到上一轮交付物的内容"
+                    )
+
+        if not resumed.closed:
+            problems.append(
+                "%s：用放宽后的预算接手后没有闭合（status=%s, error=%s）"
+                % (label, resumed.status, resumed.error)
+            )
+            return problems
+        by_id = {str(s.get("id")): s for s in (resumed.scores or [])}
+        score = by_id.get("c1") or {}
+        if score.get("source") != "rule":
+            problems.append(
+                "%s：接手的闭合不是靠机检（source=%r）" % (label, score.get("source"))
+            )
+        if not score.get("pass"):
+            problems.append(label + "：接手的闭合里 c1 没有通过")
+        final = engine.tickets.get(ticket_id) or {}
+        if final.get("state") != "resolved":
+            problems.append(
+                "%s：闭合后票据没有归档（state=%r）" % (label, final.get("state"))
+            )
+        return problems
+    def _one_round(index: int) -> List[str]:
+        """Stop four different ways, then take every ticket over."""
+        problems: List[str] = []
+        prefix = "第 %d 次：" % (index + 1)
+
+        # 1. The token ceiling. A run that ran out of tokens used to be
+        #    filed as an escalation - "the loop could not close itself" -
+        #    which sends the human looking for a stuck worker instead of
+        #    a budget that was too small.
+        with tempfile.TemporaryDirectory(prefix="mas-selftest-takeover-") as tmp:
+            provider = _RepairableProvider(model="selftest-model")
+            engine = LoopEngine(_config(tmp, max_tokens=1), provider=provider)
+            try:
+                result = engine.run(goal="写一份 Q3 报告", criteria=criteria)
+            except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                return [prefix + "运行报错：%s" % exc]
+            problems.extend(
+                _check_stop(
+                    prefix + "触顶（token）",
+                    engine, result,
+                    "budget_exhausted", "budget_exhausted", "tokens",
+                )
+            )
+            problems.extend(_takeover(prefix + "触顶（token）", engine, result, provider))
+
+        # 2. The iteration ceiling.
+        with tempfile.TemporaryDirectory(prefix="mas-selftest-takeover-") as tmp:
+            provider = _RepairableProvider(model="selftest-model")
+            engine = LoopEngine(_config(tmp, max_iterations=1), provider=provider)
+            try:
+                result = engine.run(goal="写一份 Q3 报告", criteria=criteria)
+            except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                return [prefix + "运行报错：%s" % exc]
+            problems.extend(
+                _check_stop(
+                    prefix + "触顶（轮数）",
+                    engine, result,
+                    "budget_exhausted", "budget_exhausted", "max_iterations",
+                )
+            )
+            problems.extend(_takeover(prefix + "触顶（轮数）", engine, result, provider))
+
+        # 3. The wall-clock ceiling.
+        with tempfile.TemporaryDirectory(prefix="mas-selftest-takeover-") as tmp:
+            provider = _RepairableProvider(model="selftest-model")
+            engine = LoopEngine(_config(tmp, deadline_sec=0), provider=provider)
+            try:
+                result = engine.run(goal="写一份 Q3 报告", criteria=criteria)
+            except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                return [prefix + "运行报错：%s" % exc]
+            problems.extend(
+                _check_stop(
+                    prefix + "触顶（时间）",
+                    engine, result,
+                    "budget_exhausted", "budget_exhausted", "deadline_sec",
+                )
+            )
+            problems.extend(_takeover(prefix + "触顶（时间）", engine, result, provider))
+
+        # 4. The backend dies. This one cannot be taken over into a
+        #    closed loop - there is no model to close it - but it still
+        #    has to leave a ticket that says what happened, and the
+        #    ticket must not pretend the problem was solved.
+        with tempfile.TemporaryDirectory(prefix="mas-selftest-takeover-") as tmp:
+            engine = LoopEngine(_config(tmp), provider=_BrokenProvider(model="selftest-model"))
+            try:
+                result = engine.run(goal="写一份 Q3 报告", criteria=criteria)
+            except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                return [prefix + "运行报错：%s" % exc]
+            problems.extend(
+                _check_stop(
+                    prefix + "后端报错",
+                    engine, result,
+                    "error", "run_error", "provider error",
+                )
+            )
+            ticket = _ticket_of(engine, result)
+            payload = ticket.get("payload") or {}
+            command = continuation_command(
+                str(result.ticket_id), payload.get("reason"), payload.get("budget")
+            )
+            if not command.startswith("mas resume "):
+                problems.append(prefix + "后端报错：续跑命令指错了票据（%s）" % command)
+            if ticket.get("state") != "waiting_human":
+                problems.append(
+                    prefix + "后端报错：票据不等人接手（%r）" % ticket.get("state")
+                )
+        return problems
+
+    failures: List[str] = []
+    rounds = max(1, int(iterations))
+    for index in range(rounds):
+        failures.extend(_one_round(index))
+        if len(failures) >= 5:
+            break
+
+    return {
+        "name": "takeover_handover",
+        "title": "接手的运行看得见上一轮的成果，并且能换一份预算",
+        "invariant": (
+            "每种停法都留下说清原因的票据；续跑命令带更宽的预算；"
+            "接手的 worker 看得见上一轮的交付物，并能用新预算闭合"
+        ),
+        "iterations": rounds,
+        "failures": failures,
+        "ok": not failures,
+    }
+
 # ----------------------------------------------------------------- the gate
 # The short name of a check is a property of the function, so that
 # ``--only`` and the JSON output speak the same word.
@@ -1417,6 +1767,7 @@ check_mcp_handshake_answers_every_tool.CHECK_NAME = "mcp_handshake"  # type: ign
 check_a_stream_folds_into_one_answer.CHECK_NAME = "stream_folds"  # type: ignore[attr-defined]
 check_parallel_candidates_pick_the_same_winner_every_time.CHECK_NAME = "parallel_pick"  # type: ignore[attr-defined]
 check_an_escalated_run_leaves_a_ticket_a_human_can_take_over.CHECK_NAME = "handover_ticket"  # type: ignore[attr-defined]
+check_a_takeover_sees_the_work_and_gets_a_fresh_budget.CHECK_NAME = "takeover_handover"  # type: ignore[attr-defined]
 
 CHECKS = (
     check_relay_refusal_keeps_the_connection_usable,
@@ -1426,6 +1777,7 @@ CHECKS = (
     check_a_stream_folds_into_one_answer,
     check_parallel_candidates_pick_the_same_winner_every_time,
     check_an_escalated_run_leaves_a_ticket_a_human_can_take_over,
+    check_a_takeover_sees_the_work_and_gets_a_fresh_budget,
 )
 
 
@@ -1443,7 +1795,7 @@ def run_selftest(
 
     results: List[Dict[str, Any]] = []
     for check in selected:
-        # Three checks run a whole loop-engine run per iteration. They are
+        # Four checks run a whole loop-engine run per iteration. They are
         # slow enough that hammering them 120 times would add minutes to
         # every install and every CI job - and they hammer a *race* that
         # is staged on purpose, so twenty rounds say as much as a
@@ -1452,6 +1804,7 @@ def run_selftest(
             check_a_run_keeps_its_files_with_the_deliverable,
             check_parallel_candidates_pick_the_same_winner_every_time,
             check_an_escalated_run_leaves_a_ticket_a_human_can_take_over,
+            check_a_takeover_sees_the_work_and_gets_a_fresh_budget,
         ):
             row = check(iterations=min(int(iterations), 20))
         else:

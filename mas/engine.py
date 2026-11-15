@@ -177,6 +177,11 @@ class RunResult:
     # situations with the same word - "not closed" - hides from the user
     # which half of the system failed.
     deliverable_ok: bool = False
+    # The budget this run actually ran under. A run that stopped on a
+    # ceiling says which one - and the continuation command can then
+    # offer a wider one instead of sending the next run into the same
+    # wall.
+    budget: Dict[str, int] = field(default_factory=dict)
 
     @property
     def closed(self) -> bool:
@@ -204,6 +209,7 @@ class RunResult:
             "finished_at": self.finished_at,
             "error": self.error,
             "deliverable_ok": self.deliverable_ok,
+            "budget": dict(self.budget),
         }
 
 
@@ -510,6 +516,10 @@ class LoopEngine:
         review_mode: Optional[str] = None,
         perspective: str = "",
         parent_ticket_id: Optional[str] = None,
+        previous_artifact: str = "",
+        max_iterations: Optional[int] = None,
+        deadline_sec: Optional[float] = None,
+        max_tokens: Optional[int] = None,
     ) -> RunResult:
         # Per-run overrides win over the configured defaults, so the CLI can
         # ask for a heavier setup for one task without touching the config.
@@ -552,10 +562,38 @@ class LoopEngine:
             )
 
         budget = dict(self.config.get("budget") or {})
-        max_iterations = int(budget.get("max_iterations", 8))
-        deadline_sec = float(budget.get("deadline_sec", 900))
-        max_tokens = int(budget.get("max_tokens", 200000))
+        # The budget of *this* run. A run that takes over a problem it
+        # cannot solve with the budget it inherited is a dead end: it
+        # stops at exactly the same ceiling and produces exactly the
+        # same failure. So the three ceilings can be overridden per
+        # run - a resumed run may be given a bigger budget without
+        # changing the machine-wide default for every other task.
+        #
+        # The override is per run and not per engine: the engine is
+        # reused, and a ceiling that stuck to it would leak into the
+        # next run on the same object.
+        if max_iterations is not None:
+            max_iterations = max(1, int(max_iterations))
+        else:
+            max_iterations = int(budget.get("max_iterations", 8))
+        if deadline_sec is not None:
+            deadline_sec = float(deadline_sec)
+        else:
+            deadline_sec = float(budget.get("deadline_sec", 900))
+        if max_tokens is not None:
+            max_tokens = max(1, int(max_tokens))
+        else:
+            max_tokens = int(budget.get("max_tokens", 200000))
         stagnation_limit = max(1, int(self.config.get("stagnation_limit", 3)))
+        # The budget this run actually ran under. The ticket carries it
+        # so the human can see *which* ceiling stopped the run - and so
+        # the "continue this" command can come with a wider one instead
+        # of sending the next run into the same wall.
+        effective_budget = {
+            "max_iterations": int(max_iterations),
+            "deadline_sec": int(deadline_sec),
+            "max_tokens": int(max_tokens),
+        }
 
         started_at = now_iso()
         start = self.clock()
@@ -592,6 +630,12 @@ class LoopEngine:
         # first iteration - still has to be described in the ledger, so
         # the value starts out empty instead of being undefined.
         decision = ""
+        # The status of a stop that happened *inside* the scoring round
+        # rather than between rounds. The token ceiling fires there, and
+        # it is a budget stop - not the "the loop could not close
+        # itself" escalation the status used to claim. Empty means "no
+        # such stop happened".
+        stop_status = ""
 
         while True:
             if attempt >= max_iterations:
@@ -631,6 +675,15 @@ class LoopEngine:
                 "human_note": human_note,
                 "plan": plan_payload,
             }
+            # What the previous attempt delivered. A resumed loop is a
+            # *new* run: the attempt counter starts at one again and
+            # the issue list starts empty, so without this the worker
+            # would never see the work that was already done and would
+            # rewrite the deliverable from scratch, forever. The
+            # deliverable of the last attempt is the thing the next
+            # attempt has to improve on.
+            if previous_artifact:
+                state["previous_artifact"] = previous_artifact
             # A criterion that demands a file creates an obligation the
             # worker has to know about: without this the worker only ever
             # *talks* about writing the file, and the file check - which
@@ -857,6 +910,21 @@ class LoopEngine:
                 if tokens >= max_tokens:
                     decision = "escalate"
                     error = f"budget: tokens {tokens} >= {max_tokens}"
+                    # The token ceiling is a budget, exactly like the
+                    # iteration ceiling and the wall-clock ceiling. It
+                    # used to set no status at all, so the escalation
+                    # branch stamped ``escalated`` over it: a run that
+                    # ran out of tokens was filed as "the loop could
+                    # not close itself", and the human queue could not
+                    # tell a budget problem from a stuck worker. The
+                    # two need different reactions - raise the ceiling
+                    # versus change the plan.
+                    #
+                    # The stop is recorded in its own variable, because
+                    # ``status`` is initialised to the budget status
+                    # before the loop starts - reading it here would
+                    # call every stagnation a budget stop.
+                    stop_status = STATUS_BUDGET
                 # The wall-clock deadline is a ceiling, so it is checked
                 # at the moment the closure is decided - not only at the
                 # top of the loop. A run whose last call overran the
@@ -943,9 +1011,23 @@ class LoopEngine:
                         attempt=attempt,
                         history=history,
                         stagnant=stagnant,
-                        status=STATUS_ESCALATED,
+                        # The status of the run, not a hard-coded
+                        # "escalated": a run that stopped on the token
+                        # ceiling is a budget stop, and its ticket has
+                        # to say so. A stagnation - the deliverable
+                        # stopped changing - is still the escalation it
+                        # has always been.
+                        status=(stop_status or STATUS_ESCALATED),
                         reason=error or last_error or "loop could not close itself",
+                        budget=effective_budget,
                     )
+                    # The status of this run is settled here, before
+                    # anything records it, so the reason written on
+                    # the ticket and the status stored in its payload
+                    # cannot drift apart. A run that stopped on a
+                    # ceiling is a budget stop everywhere, not an
+                    # escalation with a budget-shaped excuse.
+                    status = stop_status or STATUS_ESCALATED
                     if parent_ticket_id:
                         # A resumed loop keeps the ticket it already has.
                         # Opening a second one for the same problem would
@@ -964,9 +1046,13 @@ class LoopEngine:
                             ),
                         )
                     else:
-                        ticket = self.tickets.create("loop_escalation", payload)
+                        kind = (
+                            "budget_exhausted"
+                            if stop_status == STATUS_BUDGET
+                            else ("run_error" if stop_status == STATUS_ERROR else "loop_escalation")
+                        )
+                        ticket = self.tickets.create(kind, payload)
                         ticket_id = ticket["id"]
-                    status = STATUS_ESCALATED
                     break
             except TruncatedAnswer as exc:
                 # The model ran out of output tokens. The answer is
@@ -1094,6 +1180,7 @@ class LoopEngine:
                 error=error or last_error,
                 last_error=last_error,
                 parent_ticket_id=parent_ticket_id,
+                budget=effective_budget,
             )
 
         self._log(
@@ -1165,6 +1252,7 @@ class LoopEngine:
             finished_at=now_iso(),
             error=error,
             deliverable_ok=deliverable_ok,
+            budget=dict(effective_budget),
         )
 
     # ------------------------------------------------- parallel candidates
@@ -2285,6 +2373,7 @@ class LoopEngine:
         stagnant: int,
         status: str,
         reason: str,
+        budget: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Build the context a human needs to take a failed run over.
 
@@ -2320,6 +2409,10 @@ class LoopEngine:
             "stagnation": stagnant,
             "reason": reason,
             "status": status,
+            # The budget this run ran under. A ticket that says "it
+            # stopped" but not "it stopped *here*" leaves the reader
+            # guessing which ceiling to raise.
+            "budget": dict(budget or {}),
         }
 
     def _open_handover_ticket(
@@ -2338,6 +2431,7 @@ class LoopEngine:
         error: str,
         last_error: str,
         parent_ticket_id: Optional[str] = None,
+        budget: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Open a human ticket for a run that did not close.
 
@@ -2371,6 +2465,7 @@ class LoopEngine:
             stagnant=stagnant,
             status=status,
             reason=reason,
+            budget=budget,
         )
         if parent_ticket_id:
             # A resumed loop keeps the ticket it already has: one
@@ -2381,7 +2476,34 @@ class LoopEngine:
         return str(ticket["id"])
 
     # --------------------------------------------------------------- resume
-    def resume(self, ticket_id: str, note: str = "") -> RunResult:
+    def resume(
+        self,
+        ticket_id: str,
+        note: str = "",
+        max_iterations: Optional[int] = None,
+        deadline_sec: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> RunResult:
+        """Take a ticket over, with the work that was already done.
+
+        A resumed loop is a *new* run - the attempt counter starts at
+        one again, the issue list starts empty. Two things used to be
+        missing from it, and both made a takeover impossible:
+
+        * **The deliverable of the last attempt.** The ticket stored
+          it under ``last_artifact`` and nobody read it. The worker
+          was therefore asked to produce the deliverable from nothing,
+          and the loop never converged on the work that was already
+          done. The deliverable is now handed to the worker as the
+          thing to improve on.
+        * **A budget of its own.** The resumed run reused the
+          ceilings of the machine-wide configuration. A problem that
+          could not be solved within those ceilings therefore stopped
+          at exactly the same ceiling again - the takeover was a
+          formality. The three ceilings can now be given for this
+          run only, so a human can say "try again with more rounds"
+          without changing the default for every other task.
+        """
         ticket = self.tickets.get(ticket_id)
         if ticket is None:
             raise KeyError(f"unknown ticket: {ticket_id}")
@@ -2394,6 +2516,12 @@ class LoopEngine:
             title=str(payload.get("title", "")),
             human_note=note or str(ticket.get("note") or ""),
             parent_ticket_id=ticket_id,
+            # What the last attempt delivered. This is the difference
+            # between taking a problem over and starting it again.
+            previous_artifact=str(payload.get("last_artifact") or ""),
+            max_iterations=max_iterations,
+            deadline_sec=deadline_sec,
+            max_tokens=max_tokens,
         )
         # A resumed loop that still cannot close must NOT look finished.
         # Marking the ticket resolved anyway would empty the human queue:

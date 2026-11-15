@@ -130,6 +130,14 @@ TOOLS: List[Dict[str, Any]] = [
             "properties": {
                 "ticket_id": {"type": "string"},
                 "note": {"type": "string"},
+                # A takeover needs a budget of its own: the run that
+                # opened the ticket stopped at a ceiling, and
+                # continuing with the same ceiling stops at the same
+                # place again. These three give *this* run a different
+                # ceiling without changing the machine-wide default.
+                "max_iterations": {"type": "integer"},
+                "deadline_sec": {"type": "integer"},
+                "max_tokens": {"type": "integer"},
             },
             "required": ["ticket_id"],
         },
@@ -253,7 +261,13 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
 
     if name == "mas_resume":
         engine = _engine(config)
-        result = engine.resume(str(arguments.get("ticket_id")), str(arguments.get("note", "")))
+        result = engine.resume(
+            str(arguments.get("ticket_id")),
+            str(arguments.get("note", "")),
+            max_iterations=arguments.get("max_iterations"),
+            deadline_sec=arguments.get("deadline_sec"),
+            max_tokens=arguments.get("max_tokens"),
+        )
         return result.to_dict()
 
     if name == "mas_report":
