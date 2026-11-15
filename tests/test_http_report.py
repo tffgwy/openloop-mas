@@ -30,6 +30,9 @@ class TestHTTPTransport(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.mkdtemp(prefix="mas-http-test-")
+        # Remember what was there: this class points the runtime at a
+        # throw-away directory, and the next test must not inherit it.
+        cls._saved_state_dir = os.environ.get("MAS_STATE_DIR")
         os.environ["MAS_STATE_DIR"] = cls.tmp
         cls.server = _QuietThreadingHTTPServer(("127.0.0.1", 0), MASRequestHandler)
         cls.server.daemon_threads = True
@@ -42,6 +45,10 @@ class TestHTTPTransport(unittest.TestCase):
     def tearDownClass(cls):
         cls.server.shutdown()
         cls.server.server_close()
+        if cls._saved_state_dir is None:
+            os.environ.pop("MAS_STATE_DIR", None)
+        else:
+            os.environ["MAS_STATE_DIR"] = cls._saved_state_dir
 
     def _get(self, path):
         with urllib.request.urlopen(self.base + path, timeout=10) as resp:

@@ -184,7 +184,10 @@ def cmd_init(args: argparse.Namespace) -> int:
         config["api_key_env"] = args.api_key_env
     if args.max_iterations:
         config["budget"]["max_iterations"] = args.max_iterations
-    path = save_config(config)
+    # A state directory the user named on the command line is a
+    # decision, not an injection - it survives the temporary-directory
+    # guard even when it points into the system temp folder.
+    path = save_config(config, explicit_state_dir=args.state_dir)
     _print({"config_path": str(path), "config": config}, args.json)
     return 0
 

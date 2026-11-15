@@ -51,12 +51,27 @@ class OneProblemOneThreadTest(unittest.TestCase):
     def setUp(self):
         self.state_dir = tempfile.mkdtemp(prefix="mas-thread-")
         self._saved_config_path = os.environ.get("MAS_CONFIG_PATH")
+        self._saved_state_dir = os.environ.get("MAS_STATE_DIR")
 
     def tearDown(self):
         if self._saved_config_path is None:
             os.environ.pop("MAS_CONFIG_PATH", None)
         else:
             os.environ["MAS_CONFIG_PATH"] = self._saved_config_path
+        # The state directory this module pointed at must not survive the
+        # test: the next module would otherwise read a throw-away
+        # directory as if it were the user's own configuration.
+        if self._saved_state_dir is None:
+            os.environ.pop("MAS_STATE_DIR", None)
+        else:
+            os.environ["MAS_STATE_DIR"] = self._saved_state_dir
+        # The state directory this module pointed at must not survive the
+        # test: the next module would otherwise read a throw-away
+        # directory as if it were the user's own configuration.
+        if self._saved_state_dir is None:
+            os.environ.pop("MAS_STATE_DIR", None)
+        else:
+            os.environ["MAS_STATE_DIR"] = self._saved_state_dir
 
     def _config_with_budget(self, **budget):
         """Write an isolated config for this state dir."""

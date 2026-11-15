@@ -10,9 +10,20 @@ import re
 import tempfile
 from typing import Any, Dict
 
-# The directory name that tempfile.mkdtemp() generates: "tmp" plus 8
-# random letters, digits or underscores.
-_TEMP_DIR_NAME_RE = re.compile(r"^tmp[A-Za-z0-9_]{8}$")
+# The shape of the directory name that tempfile.mkdtemp() generates: a
+# caller-supplied prefix plus 8 random letters, digits or underscores.
+# The prefix is *not* part of the contract - ``mkdtemp(prefix="tmp")``
+# happens to start with "tmp", but a test suite that says
+# ``mkdtemp(prefix="mas-handover-")`` produces a directory that is just
+# as disposable. So the guard looks at the random tail, not at the name.
+#
+# The prefix has to end in a separator (or be the bare "tmp"), because
+# that is how mkdtemp() is called in practice. Without that requirement
+# a directory a person named themselves - "%TEMP%\\myproject" - would
+# match on its length alone and be thrown away.
+_TEMP_DIR_NAME_RE = re.compile(
+    r"^(?:tmp|[A-Za-z0-9_-]*[-_])[A-Za-z0-9_]{8}$"
+)
 
 APP_NAME = "openloop-mas"
 CONFIG_FILENAME = "config.json"
@@ -187,7 +198,11 @@ def load_persisted_config(path: str | os.PathLike | None = None) -> Dict[str, An
     return load_config(path, apply_env=False)
 
 
-def persistable_config(config: Dict[str, Any]) -> Dict[str, Any]:
+def persistable_config(
+    config: Dict[str, Any],
+    *,
+    explicit_state_dir: str | os.PathLike | None = None,
+) -> Dict[str, Any]:
     """Strip environment-owned values so the config can be written to disk.
 
     Two things must never be frozen into the configuration file:
@@ -197,6 +212,11 @@ def persistable_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
     The API key is replaced by the name of the environment variable that
     holds it, which is exactly what ``resolve_api_key`` reads back.
+
+    ``explicit_state_dir`` is the value the *user* asked for on the
+    command line. It is kept even when it points into the system temp
+    folder, because a person who types a path meant it - the guard is
+    there to stop an injection, not to overrule a decision.
     """
     payload = copy.deepcopy(config)
     env_name = str(payload.get("api_key_env") or "MAS_API_KEY")
@@ -205,6 +225,10 @@ def persistable_config(config: Dict[str, Any]) -> Dict[str, Any]:
         payload["api_key"] = ""
     payload["api_key_env"] = env_name
     state = str(payload.get("state_dir") or "")
+    explicit = str(explicit_state_dir or "")
+    if explicit and _same_path(state, explicit):
+        # The user named this directory. Keep it.
+        return payload
     if os.environ.get("MAS_STATE_DIR") and state == os.environ["MAS_STATE_DIR"]:
         payload["state_dir"] = DEFAULT_STATE_DIR
     elif state and _is_ephemeral_state_dir(state):
@@ -216,12 +240,32 @@ def persistable_config(config: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
+def _same_path(left: str, right: str) -> bool:
+    """True when two paths point at the same place.
+
+    ``C:\\Users\\ADMINI~1\\...`` and ``C:\\Users\\Administrator\\...``
+    are the same directory written two ways, and the config file may hold
+    either spelling.
+    """
+    try:
+        a = pathlib.Path(os.path.expanduser(os.path.expandvars(left))).resolve()
+        b = pathlib.Path(os.path.expanduser(os.path.expandvars(right))).resolve()
+    except (OSError, ValueError):  # pragma: no cover - defensive
+        return False
+    return os.path.normcase(str(a)) == os.path.normcase(str(b))
+
+
 def _is_ephemeral_state_dir(state: str) -> bool:
     """True when ``state`` is an auto-generated temporary directory.
 
-    Only the ``tmpXXXXXXXX`` shape that :func:`tempfile.mkdtemp` produces
-    counts. A directory the user named themselves inside the temp folder
-    is a deliberate choice and is kept.
+    A directory the user named themselves inside the temp folder is a
+    deliberate choice and is kept - but a directory that *looks* like
+    :func:`tempfile.mkdtemp` output is not, whatever prefix the caller
+    used. The old guard only recognised the literal ``tmpXXXXXXXX``
+    shape, so every test that said ``mkdtemp(prefix="mas-handover-")``
+    slipped through and wrote its throw-away state directory into the
+    user's real configuration - where the operating system is free to
+    delete it later, taking the ledger with it.
     """
     try:
         resolved = pathlib.Path(os.path.expanduser(os.path.expandvars(state))).resolve()
@@ -237,20 +281,33 @@ def _is_ephemeral_state_dir(state: str) -> bool:
         return False
     name = parts[0]
     # tempfile.mkdtemp() uses 8 random characters from letters, digits and
-    # underscore, so the whole name is exactly "tmp" plus 8 characters.
+    # underscore, appended to whatever prefix the caller asked for.
     return _TEMP_DIR_NAME_RE.match(name) is not None
 
 
-def save_config(config: Dict[str, Any], path: str | os.PathLike | None = None) -> pathlib.Path:
+def save_config(
+    config: Dict[str, Any],
+    path: str | os.PathLike | None = None,
+    *,
+    explicit_state_dir: str | os.PathLike | None = None,
+) -> pathlib.Path:
     """Write the configuration to disk.
 
     The payload is passed through :func:`persistable_config` first, so an
     environment-provided API key or a temporary ``MAS_STATE_DIR`` is never
     persisted.
+
+    ``explicit_state_dir`` names the directory the *user* asked for, so
+    the temporary-directory guard does not overrule them.
     """
     target = pathlib.Path(path) if path else user_config_path()
     target.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(persistable_config(config), ensure_ascii=False, indent=2, sort_keys=True)
+    payload = json.dumps(
+        persistable_config(config, explicit_state_dir=explicit_state_dir),
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    )
     target.write_text(payload + "\n", encoding="utf-8")
     return target
 

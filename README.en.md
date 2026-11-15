@@ -7,6 +7,54 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.52 adds** (**your ledger will not vanish on its own**):
+
+- **The ledger is the only evidence a loop-engineering run leaves
+  behind, and it could vanish** --- **nothing crashed, nothing warned,
+  it was just gone**; the tool reported an empty history for work that
+  had actually happened;
+
+- **Reproduced on the real machine: the user's `~/.mas/config.json`
+  pointed into the system temp folder** ---
+  `C:\Users\ADMINI~1\AppData\Local\Temp\mas-handover-n2d4xr0z`,
+  **a directory `mkdtemp()` had created for one test run**; when the
+  operating system cleaned the temp folder, the ledger went with it;
+
+- **Both guards failed at the same time** --- (1) the guard only
+  recognised the literal `tmpXXXXXXXX` shape, **while the project's own
+  suite used `mas-handover-` / `mas-state-` / `mas-ledger-` prefixes
+  and walked straight past it**; (2) it compared strings, **so the same
+  directory spelled `ADMINI~1` and `Administrator` stopped matching**;
+
+- **The guard now looks at the random tail, not the word in front of
+  it** --- a directory under the temp folder whose name ends in eight
+  random characters after a separator is disposable and is not written
+  to disk; **a folder you named yourself - `%TEMP%\myproject` - is
+  still yours and is kept**;
+
+- **The guard now compares paths, not strings** --- short spellings,
+  trailing slashes and letter case all resolve to the same directory;
+
+- **A directory you named is always kept** --- `mas init --state-dir
+  <dir>` writes it even when it lives under the temp folder, **because
+  a path a person typed is a decision; the guard stops an injection,
+  it does not overrule you**;
+
+- **An environment-injected directory is never persisted** ---
+  `MAS_STATE_DIR` decides where *this* run writes; it does not become a
+  permanent fact about the installation;
+
+- **The test suite can no longer poison the next test** --- modules
+  that pointed `MAS_STATE_DIR` at a throw-away directory and forgot to
+  undo it made later tests read that rubbish as the user's
+  configuration; **the guard now wraps `unittest.TestCase.run()`**, the
+  one entry point every test goes through, **so it holds under the
+  standard-library runner as well as pytest, even when a subclass
+  overrides `setUp`**;
+
+- 22 regression tests, **seven changes reverted one at a time** to
+  confirm the matching test fails.
+
 **What v0.7.51 adds** (**the replay talks like a person**):
 
 - **The replay was the last place that still spoke only in runs** ---

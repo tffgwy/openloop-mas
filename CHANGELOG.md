@@ -4,6 +4,73 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.52] - 2026-11-15
+
+### Fixed
+
+The ledger is the only thing that makes a loop-engineering run worth
+anything, and it can vanish. The user's own configuration file pointed at
+`C:\Users\ADMINI~1\AppData\Local\Temp\mas-handover-n2d4xr0z` - a
+directory that `tempfile.mkdtemp()` had created for one test run. The
+operating system cleans the temp folder whenever it feels like it, and
+when that happened the ledger went with it: the tool reported an empty
+history for work that had actually happened, and every new run started
+from zero. Nothing crashed, nothing warned. The work was simply gone.
+
+Two guards were supposed to prevent this, and neither did.
+
+* **The guard recognised one spelling of "temporary".** It matched the
+  literal `tmpXXXXXXXX` shape that `mkdtemp(prefix="tmp")` produces. The
+  project's own test suite never used that prefix - it used
+  `mas-handover-`, `mas-state-`, `mas-ledger-`, `mas-envstate-`,
+  `mas-wizard-home-` - so every single one of them walked straight past
+  the guard and wrote its throw-away directory into the user's real
+  configuration.
+
+* **The guard compared strings.** It fired only when `MAS_STATE_DIR`
+  happened to be character-for-character equal to the value in the file.
+  The same directory spelled `C:\Users\ADMINI~1\...` in one place and
+  `C:\Users\Administrator\...` in another is still the same directory,
+  and the second spelling slipped through.
+
+Measured on the live machine: after a full test run the real
+`~/.mas/config.json` said `"state_dir":
+"C:\Users\ADMINI~1\AppData\Local\Temp\mas-handover-n2d4xr0z"`. A
+second full run pointed it somewhere else. The user's ledger was
+somewhere under the temp folder, one cleanup away from gone.
+
+* **The guard now looks at the random tail, not the word in front of
+  it.** A directory under the temp folder whose name ends in eight
+  random characters after a separator is treated as disposable,
+  whatever the prefix was. The prefix has to end in a separator so that
+  a folder a person named themselves - `%TEMP%\myproject` - is still
+  their own and is kept.
+
+* **The guard now compares paths, not strings.** `pathlib.Path.resolve()`
+  expands the 8.3 short form, eats a trailing slash and normalises the
+  case, so the same directory in two spellings is recognised as one.
+
+* **A directory the user named is a decision, not an injection.**
+  `mas init --state-dir <dir>` keeps the directory even when it lives
+  under the temp folder - a person who typed a path meant it. The guard
+  is there to stop an injection, not to overrule a decision.
+
+* **An environment-injected state directory is never written to disk.**
+  `MAS_STATE_DIR` decides where the *current* run writes; it does not
+  become a permanent fact about the installation.
+
+* **The test suite can no longer poison the next test.** Several test
+  modules pointed `MAS_STATE_DIR` at a directory of their own and forgot
+  to put it back, so a later test read a throw-away directory as if it
+  were the user's configuration. The guard now wraps
+  `unittest.TestCase.run()` - the one entry point every test goes
+  through - so it holds under the standard-library runner as well as
+  under pytest, no matter how a subclass overrides `setUp`.
+
+Regression tests: 22 in a dedicated module, plus a mutation framework
+that reverts each of the seven changes on its own and confirms the
+matching test fails.
+
 ## [0.7.51] - 2026-11-15
 
 ### Fixed

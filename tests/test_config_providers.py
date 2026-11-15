@@ -369,7 +369,9 @@ class ConfigLocationTest(unittest.TestCase):
         config = json.loads(json.dumps(DEFAULT_CONFIG))
         config["state_dir"] = state
         config["model"] = "kept-model"
-        saved = save_config(config)
+        # The user named this directory, so the temporary-directory guard
+        # must not overrule them.
+        saved = save_config(config, explicit_state_dir=state)
         self.assertTrue(saved.exists())
         # Read the file as it is on disk, without the environment override.
         persisted = load_persisted_config(saved)
@@ -516,12 +518,29 @@ class ConfigPersistenceHygieneTest(unittest.TestCase):
         payload = persistable_config(config)
         self.assertEqual(payload["state_dir"], DEFAULT_STATE_DIR)
 
-    def test_a_user_named_temp_dir_is_kept(self):
+    def test_a_temp_dir_that_looks_automatic_is_not_kept(self):
+        """A ``mkdtemp``-shaped directory is disposable, whatever prefix it has.
+
+        The old guard only recognised the literal ``tmpXXXXXXXX`` shape, so
+        every ``mkdtemp(prefix="mas-ledger-")`` slipped through and wrote
+        its throw-away state directory into the user's real configuration
+        - where the operating system is free to delete it later, taking
+        the ledger with it.
+        """
         import tempfile as _tf
         tmp_state = _tf.mkdtemp(prefix="mas-ledger-")
         config = json.loads(json.dumps(DEFAULT_CONFIG))
         config["state_dir"] = tmp_state
         payload = persistable_config(config)
+        self.assertEqual(payload["state_dir"], DEFAULT_STATE_DIR)
+
+    def test_a_user_named_temp_dir_is_kept(self):
+        """An explicitly chosen directory survives, even inside the temp folder."""
+        import tempfile as _tf
+        tmp_state = _tf.mkdtemp(prefix="mas-ledger-")
+        config = json.loads(json.dumps(DEFAULT_CONFIG))
+        config["state_dir"] = tmp_state
+        payload = persistable_config(config, explicit_state_dir=tmp_state)
         self.assertEqual(payload["state_dir"], tmp_state)
 
     def test_a_real_state_dir_is_kept(self):
