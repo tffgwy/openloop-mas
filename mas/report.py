@@ -8,11 +8,13 @@ here invents data - every number comes from the ledger.
 from __future__ import annotations
 
 import pathlib
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
+from mas.reason_text import reason_hint, reason_text
 from mas.util import now_iso
 from mas.verdict_text import (
     decision_reading,
+    issue_reading,
     note_reading,
     source_reading,
     status_reading,
@@ -117,6 +119,54 @@ def _iteration_of(row: Dict[str, Any], fallback: int) -> int:
         return fallback
 
 
+def _reflection_reading(
+    entry: Dict[str, Any], criteria: Optional[List[Dict[str, Any]]] = None
+) -> str:
+    """A round's reflection, with its issues read in words.
+
+    The reflection text was assembled when the report was built, and
+    at that point the run's standards were not known. The raw issues
+    are kept next to it, so the standards can be used here.
+    """
+    text = str(entry.get("reflection") or "")
+    raw_issues = entry.get("reflection_issues") or []
+    if not raw_issues:
+        return text
+    read = [issue_reading(issue, criteria) for issue in raw_issues]
+    # The issues are the second part of the reflection text, after
+    # the summary. They are replaced where they are, so the sentence
+    # keeps its shape.
+    for issue, reading in zip(raw_issues, read, strict=False):
+        if str(issue) in text:
+            text = text.replace(str(issue), reading, 1)
+    return text
+
+
+def _criteria_from_scores(scores: Any) -> List[Dict[str, Any]]:
+    """The standards of a run, rebuilt from its scores.
+
+    The report keeps the scores rather than the criteria, and each
+    score carries the reading of its standard - the sentence that
+    names it. That is what the issue reader needs, so the criteria
+    are rebuilt from it.
+    """
+    criteria: List[Dict[str, Any]] = []
+    for score in scores or []:
+        if not isinstance(score, dict):
+            continue
+        score_id = str(score.get("id") or "")
+        if not score_id:
+            continue
+        criteria.append(
+            {
+                "id": score_id,
+                "desc": str(score.get("reading") or ""),
+                "check": {},
+            }
+        )
+    return criteria
+
+
 def _reflection_payload(row: Dict[str, Any] | None) -> Dict[str, Any]:
     """The reflection body of a reflector row, whatever shape it has."""
     if not row:
@@ -137,8 +187,16 @@ def _reflection_summary(row: Dict[str, Any] | None) -> str:
     return ""
 
 
-def _reflection_text(row: Dict[str, Any] | None) -> str:
-    """The reflection of a round, ready to be printed."""
+def _reflection_text(
+    row: Dict[str, Any] | None,
+    criteria: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """The reflection of a round, ready to be printed.
+
+    The reflection names the failed criteria in the engine's issue
+    format. Those are read in words too - a verdict in words next to a
+    raw note is a line that contradicts itself.
+    """
     payload = _reflection_payload(row)
     if not payload:
         return ""
@@ -148,7 +206,9 @@ def _reflection_text(row: Dict[str, Any] | None) -> str:
         parts.append(summary)
     issues = payload.get("issues") or []
     if isinstance(issues, list) and issues:
-        parts.append("；".join(str(i) for i in issues))
+        parts.append(
+            "；".join(issue_reading(i, criteria) for i in issues)
+        )
     next_action = payload.get("next_action")
     if isinstance(next_action, str) and next_action.strip():
         parts.append(f"下一步：{next_action.strip()}")
@@ -329,6 +389,13 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
                 # of its own, so the reader sees cause and effect next
                 # to each other.
                 "reflection": _reflection_text(_reflection_for(reflections, iteration)),
+                # The raw issues of that reflection. The reflection
+                # text is assembled here, but the standards of the
+                # run are not known yet - so the issues are kept
+                # and read at the display layer.
+                "reflection_issues": list(
+                    (_reflection_payload(_reflection_for(reflections, iteration)) or {}).get("issues") or []
+                ),
                 "reflection_summary": _reflection_summary(
                     _reflection_for(reflections, iteration)
                 ),
@@ -599,6 +666,10 @@ def render_markdown(report: Dict[str, Any]) -> str:
     for run in runs:
         lines.append(f"## 运行 `{run.get('run_id')}`")
         lines.append("")
+        # The standards of this run, so the issue lines below can
+        # name the standard that failed and not just its serial
+        # number.
+        criteria = _criteria_from_scores(run.get("scores"))
         # Say what this run was about, before the dates. A reader who
         # opens a report of forty runs needs the task before the
         # timestamps.
@@ -638,7 +709,14 @@ def render_markdown(report: Dict[str, Any]) -> str:
         # entirely. An escalated run whose reason is invisible sends the
         # human looking for the wrong thing.
         if run.get("error"):
-            lines.append(f"- 未闭合原因：{run.get('error')}")
+            # In words. The report is the screen a beginner reads
+            # after the run, and the reason is the one line that
+            # says what to do next - in the engine's vocabulary it
+            # says nothing a newcomer can use.
+            lines.append(f"- 未闭合原因：{reason_text(run.get('error'))}")
+            hint = reason_hint(run.get("error"))
+            if hint:
+                lines.append(f"  - 下一步：{hint}")
         elif run.get("status") == "escalated":
             lines.append("- 未闭合原因：运行升级人工处理（账本未记录具体原因）")
         if run.get("stagnation"):
@@ -684,10 +762,19 @@ def render_markdown(report: Dict[str, Any]) -> str:
                 )
                 issues = entry.get("issues") or []
                 for issue in issues:
-                    lines.append(f"    - 未过：{issue}")
+                    # In words, next to the verdict that is
+                    # already in words. The raw issue stays in
+                    # the report payload - the ledger never
+                    # changes.
+                    lines.append(
+                        f"    - 未过：{issue_reading(issue, criteria)}"
+                    )
                 reflection = entry.get("reflection") or ""
                 if reflection:
-                    lines.append(f"    - 💭 反思：{reflection}")
+                    lines.append(
+                        f"    - 💭 反思："
+                        f"{_reflection_reading(entry, criteria)}"
+                    )
         elif timeline:
             # A single round: the loop did not iterate, so say that
             # instead of pretending there was a process.
@@ -762,7 +849,7 @@ def render_markdown(report: Dict[str, Any]) -> str:
         if run.get("issues"):
             lines.append("- 未通过原因：")
             for issue in run["issues"]:
-                lines.append(f"  - {issue}")
+                lines.append(f"  - {issue_reading(issue, criteria)}")
         unjudged = run.get("unjudged") or []
         if unjudged:
             lines.append("- 无人判定的标准（不等于失败，但也不能算通过）：")
@@ -830,7 +917,10 @@ def replay_trace(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "artifact_sha": row.get("artifact_sha"),
                 "verdict": row.get("verdict"),
                 "closed": row.get("closed"),
+                # Two details: the machine one for the exported
+                # table, the human one for the replay screen.
                 "detail": _short_detail(row),
+                "detail_reading": _human_detail(row),
             }
         )
     # The runs in the trace, each with the outcome the ledger booked.
@@ -863,6 +953,82 @@ def replay_trace(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         "threads": threads,
         "problems_open": len([t for t in threads if not t.get("closed")]),
     }
+
+
+#: How a round's verdict reads.
+VERDICT_WORD = {
+    "pass": "通过",
+    "fail": "没通过",
+}
+
+
+def _verdict_word(value: str) -> str:
+    """The reading of a round verdict, or the value itself."""
+    if not value:
+        return "-"
+    return VERDICT_WORD.get(value, value)
+
+
+def _human_detail(row: Dict[str, Any]) -> str:
+    """A ledger row's detail, in words.
+
+    The exported table keeps the machine's wording - it is read by
+    scripts. The replay is read by a person, so its detail says what
+    happened in words.
+    """
+    detail = _short_detail(row)
+    role = str(row.get("role", ""))
+    if role == "closure":
+        verdict = str(row.get("verdict") or "").strip()
+        decision = str(row.get("decision") or "").strip()
+        parts: List[str] = []
+        if verdict:
+            parts.append("判定=" + _verdict_word(verdict))
+        if decision:
+            parts.append("决策=" + decision_reading(decision))
+        scores = row.get("scores") or []
+        if scores:
+            passed = [s for s in scores if s.get("pass")]
+            parts.append(f"通过 {len(passed)}/{len(scores)}")
+            for item in scores:
+                if item.get("pass"):
+                    continue
+                note = str(item.get("note") or "")
+                reading = note_reading(note) or note
+                if reading:
+                    parts.append(f"未过 {item.get('id')}: {reading}")
+        issues = row.get("issues") or []
+        if issues:
+            parts.append(
+                "; ".join(issue_reading(i) for i in issues)
+            )
+        if parts:
+            return "; ".join(parts)[:300]
+    if role == "run_end":
+        status = str(row.get("status") or "").strip()
+        decision = str(row.get("decision") or "").strip()
+        parts = []
+        if status:
+            parts.append("状态=" + status_reading(status))
+        if decision:
+            parts.append("决策=" + decision_reading(decision))
+        reason = str(row.get("error") or "")
+        if reason:
+            parts.append(reason_text(reason))
+        if parts:
+            return "; ".join(parts)[:300]
+    if role == "error":
+        reason = str(row.get("error") or "")
+        if reason:
+            return reason_text(reason)[:300]
+    if role == "reflector":
+        payload = _reflection_payload(row)
+        issues = payload.get("issues") or []
+        if isinstance(issues, list) and issues:
+            return (
+                "\uff1b".join(issue_reading(i) for i in issues)
+            )[:300]
+    return detail
 
 
 def _short_detail(row: Dict[str, Any]) -> str:

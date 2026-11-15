@@ -6,14 +6,12 @@ import argparse
 import json
 import os
 import pathlib
-import re
 import sys
 from typing import Any, Dict, List
 
 from mas import __version__
 from mas.bench import format_bench, run_bench
 from mas.config import load_config, load_persisted_config, save_config
-from mas.criteria_text import criterion_reading
 from mas.demo import run_scenarios
 from mas.doctor import format_doctor, run_doctor, summarize, verdict
 from mas.engine import LoopEngine
@@ -26,6 +24,7 @@ from mas.installer import (
     run_uninstall,
 )
 from mas.orchestration import CANDIDATE_ANGLES
+from mas.reason_text import reason_hint, reason_text
 from mas.relay import serve_relay
 from mas.report import (
     build_report,
@@ -39,7 +38,12 @@ from mas.report import (
 from mas.setup import format_verify, run_verify, run_wizard
 from mas.teams import list_teams, load_team
 from mas.util import force_utf8_output, parse_criterion_shorthand
-from mas.verdict_text import note_reading, source_reading
+from mas.verdict_text import (
+    issue_reading,
+    note_reading,
+    source_reading,
+    status_reading,
+)
 
 
 def _print(payload: Any, as_json: bool = False) -> None:
@@ -187,6 +191,12 @@ def cmd_init(args: argparse.Namespace) -> int:
         config["api_key_env"] = args.api_key_env
     if args.max_iterations:
         config["budget"]["max_iterations"] = args.max_iterations
+    if args.deadline_sec:
+        config["budget"]["deadline_sec"] = args.deadline_sec
+    if args.max_tokens:
+        config["budget"]["max_tokens"] = args.max_tokens
+    if args.stagnation_limit:
+        config["stagnation_limit"] = args.stagnation_limit
     # A state directory the user named on the command line is a
     # decision, not an injection - it survives the temporary-directory
     # guard even when it points into the system temp folder.
@@ -214,7 +224,17 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.json:
         _print(result.to_dict(), True)
         return 0 if result.closed else 2
-    print(f"状态：{result.status}（迭代 {result.iterations} 次，token {result.tokens_used}）")
+    # The status in words, with the raw value kept visible: the
+    # words are for the reader, the raw value is what a reader
+    # greps for. A status the engine never wrote keeps its own
+    # text - nothing is invented here.
+    status_text = status_reading(result.status)
+    status_cell = (
+        status_text
+        if status_text == result.status
+        else f"{status_text}（{result.status}）"
+    )
+    print(f"状态：{status_cell}（迭代 {result.iterations} 次，token {result.tokens_used}）")
     print(f"账本：{result.ledger_path}")
     # Say where the deliverable landed. The preview below is a teaser;
     # the file is the product, and the user has to be able to open it
@@ -250,7 +270,17 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"已升级为人工工单：{result.ticket_id}")
         print(f"  继续：mas resume {result.ticket_id} --note \"你的意见\"")
     if result.error:
-        print(f"说明：{result.error}")
+        # The reason the run stopped, in words. The engine writes
+        # it in its own vocabulary ("budget: reached
+        # max_iterations=1"); a reader who does not know that
+        # vocabulary learns nothing from the line - it says that
+        # something happened, not what to do about it. The reading
+        # also names the command that raises the ceiling. An
+        # unknown reason keeps its own text.
+        print(f"说明：{reason_text(result.error)}")
+        hint = reason_hint(result.error)
+        if hint:
+            print(f"  {hint}")
     print("--- 交付物预览 ---")
     print(result.artifact[:1500])
     return 0 if result.closed else 2
@@ -275,8 +305,25 @@ def cmd_demo(args: argparse.Namespace) -> int:
             flag = "OK " if row.get("ok") else "FAIL"
             meaning = DEMO_SCENARIO_MEANING.get(row["scenario"], "")
             print(f"{meaning}")
+            # The expectation and the outcome in words. The demo is
+            # the first screen a beginner sees, and "expect=closed
+            # actual=closed" is machine truth: it says what the
+            # tool recorded, not what the demo proved. The raw
+            # values stay visible so a reader can grep for them.
+            expect_text = status_reading(row["expect"])
+            actual_text = status_reading(row["status"])
+            expect_cell = (
+                expect_text
+                if expect_text == row["expect"]
+                else f"{expect_text}（{row['expect']}）"
+            )
+            actual_cell = (
+                actual_text
+                if actual_text == row["status"]
+                else f"{actual_text}（{row['status']}）"
+            )
             print(
-                f"[{flag}] {row['scenario']:<11} 期望={row['expect']:<18} 实际={row['status']:<18} "
+                f"[{flag}] {row['scenario']:<11} 期望={expect_cell} 实际={actual_cell} "
                 f"迭代={row.get('iterations')} 票={row.get('ticket_id') or '-'}"
             )
             print("")
@@ -475,42 +522,10 @@ def cmd_ledger(args: argparse.Namespace) -> int:
     return 0
 
 
-def _issue_reading(issue: Any, criteria: List[Dict[str, Any]]) -> str:
-    """Say what a blocking issue is, in words.
-
-    The issue reads ``c1: unjudged: ...`` - a serial number the engine
-    made up, followed by a note in the engine's vocabulary. Both are
-    replaced: the note is translated, and the serial number is looked
-    up in the criteria so the user's own standard can be named.
-    """
-    text = str(issue or "").strip()
-    if not text:
-        return ""
-    score_id = ""
-    note = text
-    head, sep, tail = text.partition(":")
-    if sep and re.fullmatch(r"c\d+", head.strip()):
-        score_id = head.strip()
-        note = tail.strip()
-    reading = note_reading(note)
-    if not reading:
-        # An untranslatable note keeps its own text - it may carry
-        # information this module cannot see.
-        reading = note
-    for criterion in criteria or []:
-        if not isinstance(criterion, dict):
-            continue
-        if str(criterion.get("id") or "") != score_id:
-            continue
-        # The criterion's own description, in words. A criterion
-        # written as a bare shorthand carries the raw text as its
-        # description, so the raw text is used - and the reading says
-        # the same thing in a language the user can read.
-        desc = criterion_reading(criterion)
-        if desc:
-            return f"{desc} - {reading}"
-        break
-    return reading
+#: The reading of a blocking issue. The implementation lives in
+#: ``verdict_text`` so the report can use it too - the report cannot
+#: import this module, because this module imports the report.
+_issue_reading = issue_reading
 
 def cmd_tickets(args: argparse.Namespace) -> int:
     """Show the human ticket queue - and say what to do with each one.
@@ -566,7 +581,13 @@ def cmd_tickets(args: argparse.Namespace) -> int:
                 print(f"        （另有 {len(issues) - 1} 项未通过）")
         reason = payload.get("reason") or ""
         if reason:
-            print(f"  原因：{reason}")
+            # In words, for the same reason as the run screen: the
+            # ticket is what a human picks up, so its reason is
+            # read by a human.
+            print(f"  原因：{reason_text(reason)}")
+            hint = reason_hint(reason)
+            if hint:
+                print(f"    {hint}")
         attempts = payload.get("attempts")
         if attempts:
             # The wording of this line is part of the tool's contract
@@ -623,7 +644,15 @@ def cmd_resume(args: argparse.Namespace) -> int:
     if args.json:
         _print(result.to_dict(), True)
     else:
-        print(f"状态：{result.status}（迭代 {result.iterations} 次）")
+        # Same wording as ``mas run``: the status in words, the raw
+        # value kept visible.
+        resume_status = status_reading(result.status)
+        resume_cell = (
+            resume_status
+            if resume_status == result.status
+            else f"{resume_status}（{result.status}）"
+        )
+        print(f"状态：{resume_cell}（迭代 {result.iterations} 次）")
         # A resumed loop is the expected path for an escalated run, so
         # its result was the one most likely to be lost. Say where the
         # deliverable is.
@@ -830,9 +859,10 @@ def cmd_replay(args: argparse.Namespace) -> int:
     # twice or two problems once - the grouping does.
     for block in trace.get("runs") or []:
         print()
+        raw_status = block.get("status") or ""
         print(
             f"── 运行 {block.get('run_id')}"
-            f"（{block.get('status')}"
+            f"（{status_reading(raw_status)}（{raw_status}）"
             f"，{block.get('iterations')} 轮"
             f"，{block.get('tokens')} token）"
         )
@@ -843,9 +873,10 @@ def cmd_replay(args: argparse.Namespace) -> int:
             if step.get("run_id") != block.get("run_id"):
                 continue
             mark = "*" if step.get("closed") else "-"
+            detail = step.get("detail_reading") or step.get("detail") or ""
             print(
                 f"  {mark} #{step.get('seq')} iter={step.get('iteration')} "
-                f"{step.get('role')} {step.get('decision') or ''} {step.get('detail') or ''}".rstrip()
+                f"{step.get('role')} {step.get('decision') or ''} {detail}".rstrip()
             )
         # An unfinished run needs somebody to pick it up. The replay
         # used to stop at the last line of the trace, so a reader who
@@ -1036,6 +1067,13 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--state-dir")
     init.add_argument("--api-key-env")
     init.add_argument("--max-iterations", type=int)
+    # The other three ceilings the loop has. They are settable
+    # here for the same reason --max-iterations is: the reason a
+    # run did not close points the reader at exactly one of them,
+    # so the command it names has to exist.
+    init.add_argument("--deadline-sec", type=int, help="这轮最多用多少秒")
+    init.add_argument("--max-tokens", type=int, help="这轮最多用多少 token")
+    init.add_argument("--stagnation-limit", type=int, help="交付物连续几次没变化就停下来")
     add_json(init)
     init.set_defaults(func=cmd_init)
 

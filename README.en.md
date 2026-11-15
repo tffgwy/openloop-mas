@@ -7,6 +7,53 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.58 adds** (**why the loop did not close, in words**):
+
+- **The line that says why the run stopped was still the engine talking
+  to itself** --- v0.7.57 made the *verdict* speak plainly, but the one
+  line a beginner most needs is the one that says why the run stopped:
+  ```
+  [FAIL] closure  not closed (status budget_exhausted): budget: reached max_iterations=1
+  - unclosed reason: budget: reached max_iterations=1
+  ```
+  "budget: reached max_iterations=1" says *that* something happened, not
+  *what* happened: not that the loop used up its rounds, not how many
+  rounds it had, and not what to do about it. A reader who does not know
+  what `max_iterations` is learns nothing at all;
+- **Every reason the engine can write now reads in plain language, and
+  names the command that raises the ceiling**:
+  ```
+  status: budget ran out (not finished - stopped for you to take over) (budget_exhausted)
+  reason: budget ran out: this round was allowed 1 round, and it used them all.
+    to raise the round count: mas init --max-iterations <a bigger number>
+  ```
+- **The reason is read on every screen where a human looks for it** ---
+  `mas run`, `mas resume`, `mas tickets`, `mas report` and `mas replay`;
+- **The ledger keeps its English** --- the reason is part of the audit
+  record, and scripts read it, so the translation happens at the display
+  layer only;
+- **`mas init` gained the three ceilings the reasons point at** ---
+  `--deadline-sec`, `--max-tokens` and `--stagnation-limit`. Before this
+  release the reading said "raise the ceiling" and the ceiling had no
+  switch;
+- **`mas replay` now says each step in words**, not only the exported
+  table;
+- **Three real bugs fixed**:
+  - **the translator translated reason strings the engine never writes**
+    --- it knew `budget: exceeded max_tokens=`, while the strings the
+    engine *does* write (`budget: tokens {used} >= {limit}` and
+    `budget: wall-clock budget exhausted after {n}s`) had no reading at
+    all: the two most common ways a run stops were the two it missed;
+  - **the comparison direction was reversed** --- `length 48 < 999999`
+    became "the body is only 48 characters, which *exceeds* 999999",
+    the exact opposite of the truth, so the reader went looking for the
+    wrong problem; the byte count had the same bug;
+  - **the reason line could not be read on one line** --- the sentence
+    and the "raise the ceiling" hint were joined by a line break, so a
+    one-line display (the ticket queue) broke apart;
+- **31 regression tests**, **twenty-eight layers each broken on their
+  own to prove the tests catch them**.
+
 **What v0.7.57 adds** (**the verdict says why, in words**):
 
 - **The verdict line was still the engine talking to itself** --- v0.7.56

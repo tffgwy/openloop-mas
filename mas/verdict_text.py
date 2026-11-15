@@ -31,6 +31,8 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional
 
+from mas.criteria_text import criterion_reading
+
 #: How the run ended, in words.
 STATUS_READING: Dict[str, str] = {
     "closed": "\u5df2\u95ed\u73af",
@@ -173,7 +175,13 @@ def note_reading(note: Any) -> str:
             return "\u6b63\u6587 {0} \u5b57\uff0c\u4e0d\u5c11\u4e8e {1} \u5b57".format(length, limit)
         if op == "<=":
             return "\u6b63\u6587 {0} \u5b57\uff0c\u4e0d\u591a\u4e8e {1} \u5b57".format(length, limit)
-        return "\u6b63\u6587\u53ea\u6709 {0} \u5b57\uff0c\u8d85\u8fc7\u4e86 {1} \u5b57".format(length, limit)
+        # The comparison says which side the body fell on. A body
+        # of 48 characters against a limit of 999999 is too short,
+        # not too long - and the old wording said the opposite,
+        # sending the reader after the wrong problem.
+        if op == "<":
+            return "\u6b63\u6587\u53ea\u6709 {0} \u5b57\uff0c\u4e0d\u5230 {1} \u5b57".format(length, limit)
+        return "\u6b63\u6587\u6709 {0} \u5b57\uff0c\u8d85\u8fc7\u4e86 {1} \u5b57".format(length, limit)
 
     match = _LINES_NOTE.match(text)
     if match:
@@ -203,6 +211,10 @@ def note_reading(note: Any) -> str:
             return "\u6587\u4ef6 {0} \u5b57\u8282\uff0c\u4e0d\u5c11\u4e8e {1} \u5b57\u8282".format(size, limit)
         if op == "<=":
             return "\u6587\u4ef6 {0} \u5b57\u8282\uff0c\u4e0d\u591a\u4e8e {1} \u5b57\u8282".format(size, limit)
+        # Same rule as the length note: the comparison says which
+        # side the file fell on.
+        if op == "<":
+            return "\u6587\u4ef6 {0} \u5b57\u8282\uff0c\u4e0d\u5230 {1} \u5b57\u8282".format(size, limit)
         return "\u6587\u4ef6 {0} \u5b57\u8282\uff0c\u8d85\u8fc7\u4e86 {1} \u5b57\u8282".format(size, limit)
 
     match = _SHA_NOTE.match(text)
@@ -248,6 +260,66 @@ def note_reading(note: Any) -> str:
         return "\u8fd9\u4e0d\u662f\u4e00\u4e2a\u6587\u4ef6\uff1a" + text[len("path is not a file: "):]
 
     return ""
+
+
+#: The sentence ``criterion_reading`` uses when a standard has
+#: no description of its own. It is a placeholder, not a
+#: description - see ``issue_reading`` below.
+_NO_DESCRIPTION = "\uff08\u8fd9\u6761\u6807\u51c6\u6ca1\u6709\u5199\u6587\u5b57\u8bf4\u660e\uff09"
+
+
+def issue_reading(issue: Any, criteria: Optional[List[Dict[str, Any]]] = None) -> str:
+    """Say what a blocking issue is, in words.
+
+    The issue reads ``c1: unjudged: ...`` - a serial number the engine
+    made up, followed by a note in the engine's vocabulary. Both are
+    replaced: the note is translated, and the serial number is looked
+    up in the criteria so the user's own standard can be named.
+
+    An issue this module cannot read keeps its own text. The criteria
+    are optional: without them the note is still translated.
+    """
+    raw = str(issue or "").strip()
+    if not raw:
+        return ""
+    score_id = ""
+    note = raw
+    head, sep, tail = raw.partition(":")
+    if sep and re.fullmatch(r"c\d+", head.strip()):
+        score_id = head.strip()
+        note = tail.strip()
+    reading = note_reading(note)
+    if not reading:
+        # An untranslatable note keeps its own text - it may carry
+        # information this module cannot see.
+        reading = note
+    for criterion in criteria or []:
+        if not isinstance(criterion, dict):
+            continue
+        if str(criterion.get("id") or "") != score_id:
+            continue
+        # The criterion's own description, in words. A criterion
+        # written as a bare shorthand carries the raw text as its
+        # description, so the raw text is used - and the reading says
+        # the same thing in a language the user can read.
+        desc = criterion_reading(criterion)
+        # ``criterion_reading`` answers "this standard has no
+        # description" with a placeholder sentence. That placeholder
+        # is not a description of the standard, and putting it in
+        # front of the issue would bury the one thing the issue
+        # says: what actually went wrong. A standard without a
+        # description falls back to the plain note, with its serial
+        # number still attached.
+        if desc and not desc.startswith(_NO_DESCRIPTION):
+            return f"{desc} - {reading}"
+        break
+    if score_id:
+        # The serial number is part of the issue: it points at the
+        # standard the reader wrote. Dropping it leaves the reader
+        # with a sentence and no way to find the standard it is
+        # about.
+        return f"{score_id}: {reading}"
+    return reading
 
 
 def verdict_text(score: Optional[Dict[str, Any]]) -> str:

@@ -41,7 +41,12 @@ class NoteReadingTest(unittest.TestCase):
         self.assertNotIn("'", reading)
 
     def test_a_length_note_says_which_side_it_fell_on(self):
-        self.assertIn("\u8d85\u8fc7", note_reading("length 42 < 80"))
+        # The engine writes ``length 42 < 80`` when the body is
+        # *shorter* than the limit: the check failed because there
+        # was not enough of it. The old wording said the opposite
+        # and sent the reader after the wrong problem.
+        self.assertIn("\u4e0d\u5230", note_reading("length 42 < 80"))
+        self.assertNotIn("\u8d85\u8fc7", note_reading("length 42 < 80"))
         self.assertIn("\u4e0d\u5c11\u4e8e", note_reading("length 100 >= 80"))
 
     def test_a_file_note_names_the_file(self):

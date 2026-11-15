@@ -25,6 +25,7 @@ from mas.config import (
 )
 from mas.engine import LoopEngine
 from mas.probe import probe_from_config, probe_instruction_echo
+from mas.reason_text import reason_text
 from mas.teams import load_team
 
 BACKENDS: List[Dict[str, str]] = [
@@ -321,7 +322,8 @@ def run_verify(
         add(
             "closure",
             False,
-            f"未闭环（状态 {result.status}）：{result.error or '; '.join(result.issues) or '无'}",
+            f"未闭环（状态 {result.status}）："
+            f"{reason_text(result.error) if result.error else ('; '.join(result.issues) or '无')}",
             "fail",
         )
 

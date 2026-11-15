@@ -4,6 +4,69 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.58] - 2026-11-15
+
+### Added
+
+Why the loop did not close now says so, in words.
+
+v0.7.57 made the *verdict* speak plainly. But the line that matters
+most to a beginner is the one that says why the run stopped - and
+that line was still the engine talking to itself:
+
+    [FAIL] closure  not closed (status budget_exhausted): budget: reached max_iterations=1
+    - unclosed reason: budget: reached max_iterations=1
+
+"budget: reached max_iterations=1" says *that* something happened, not
+*what* happened: not that the loop used up its rounds, not how many
+rounds it had, and not what to do about it. A reader who does not know
+what `max_iterations` is learns nothing at all from the line.
+
+Every reason the engine can write now reads in plain language, and
+names the command that would raise the ceiling:
+
+    status: budget ran out (not finished - stopped for you to take over) (budget_exhausted)
+    reason: budget ran out: this round was allowed 1 round, and it used them all.
+      to raise the round count: mas init --max-iterations <a bigger number>
+
+The reason is read on every screen where a human looks for it: `mas
+run`, `mas resume`, `mas tickets`, `mas report` and `mas replay`. The
+ledger keeps its English - the reason is part of the audit record, and
+scripts read it.
+
+### Added
+
+* `mas init` gained the three ceilings the reasons point at:
+  `--deadline-sec`, `--max-tokens` and `--stagnation-limit`. Before
+  this release the reading named a command that did not exist, so the
+  reader was told to run something that failed. The reason said
+  "raise the ceiling" and the ceiling had no switch.
+* `mas replay` shows each step in words, not only in the exported
+  table.
+
+### Fixed
+
+* `mas/reason_text.py` translated reason strings the engine **never
+  writes** - `budget: exceeded max_tokens=` - while the strings the
+  engine *does* write (`budget: tokens {used} >= {limit}` and
+  `budget: wall-clock budget exhausted after {n}s`) had no reading at
+  all. The two most common ways a run stops were the two the
+  translator missed.
+* The comparison direction was reversed. `length 48 < 999999` was
+  translated into "the body is only 48 characters, which *exceeds*
+  999999" - the exact opposite of the truth. A reader went looking
+  for the wrong problem. The same bug affected the byte count.
+* The reason line could not be read on one line: the sentence and the
+  "raise the ceiling" hint were joined by a line break, so a
+  one-line display (the ticket queue) broke apart. The hint now lives
+  in its own function and sits on its own line.
+* A blocked issue that named a standard with no description of its own
+  was printed with a placeholder in front of it, which buried the one
+  thing the issue said: what actually went wrong. It now falls back to
+  the plain note, with the serial number still attached.
+* The reason of a resumed run kept the English of the run it
+  resumed, in the middle of a Chinese sentence.
+
 ## [0.7.57] - 2026-11-15
 
 ### Added

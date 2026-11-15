@@ -250,6 +250,14 @@ class ResumeThatDoesNotCloseTest(unittest.TestCase):
     def test_the_new_reason_is_recorded(self):
         _invoke(["resume", self.ticket_id, "--note", "再试一次"], self.state_dir)
         _code, out = _invoke(["tickets"], self.state_dir)
+        # v0.7.58: the queue reads the reason in words now. The
+        # English stays in the audit record - the JSON output and the
+        # ledger keep it - but the screen says what happened.
+        self.assertIn("续跑之后仍未闭环", out)
+
+    def test_the_audit_record_keeps_the_english_reason(self):
+        _invoke(["resume", self.ticket_id, "--note", "再试一次"], self.state_dir)
+        _code, out = _invoke(["tickets", "--json"], self.state_dir)
         self.assertIn("resume did not close the loop", out)
 
     def test_the_human_note_is_kept(self):
