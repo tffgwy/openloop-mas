@@ -436,6 +436,12 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         # something a human can open. Now the report names the file.
         "artifact_path": str(end.get("artifact_path") or "") if end else "",
         "artifact_chars": int(end.get("artifact_chars") or 0) if end else 0,
+        # The folder the run worked in, and the files it wrote there.
+        # The deliverable alone was not the whole output - a run that
+        # wrote three notes produced three notes, and the report used
+        # to name only the deliverable.
+        "workspace": str(end.get("workspace") or "") if end else "",
+        "files": list(end.get("files") or []) if end else [],
         # What this run was about. Without it a reader sees a run id
         # and a hash and has to guess which task they are looking at.
         "goal": str(end.get("goal") or "") if end else "",
@@ -740,6 +746,15 @@ def render_markdown(report: Dict[str, Any]) -> str:
                 f"- 交付物已保存：`{run.get('artifact_path')}`"
                 f"（{chars} 字，可直接打开取用）"
             )
+        # The files the run produced. A closed run that wrote three
+        # notes produced three notes - the report named only the
+        # deliverable, so the rest of the work was invisible.
+        files = run.get("files") or []
+        if files:
+            names = "、".join(
+                str(row.get("path") or "") for row in files if row.get("path")
+            )
+            lines.append(f"- 本次生成的文件：{names}")
         # The loop, round by round. The verdict of the last round was
         # the only one the report showed, so a run that revised itself
         # three times looked like a run that got it right first time.

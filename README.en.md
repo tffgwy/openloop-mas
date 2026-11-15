@@ -7,6 +7,26 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.61 adds** (**the output no longer scatters**):
+
+- **The output of a run used to vanish.** Before v0.7.60 the files a run wrote
+  landed in the system temp folder (`...\Temp\tmpXXXXX\ws\notes\...`) and were
+  gone when the process ended, while the deliverable note was saved somewhere
+  else entirely (`<state_dir>/artifacts/<run_id>.md`). **Two halves, two places.**
+- **Every run now owns a folder**: `<state_dir>/artifacts/<run_id>/`. The
+  deliverable is `deliverable.md` inside it, and every file the workers wrote
+  sits next to it. **One folder holds everything a run produced - and it
+  survives the process.**
+- **A workspace you name still wins.** `mas run --workspace ./my-project` keeps
+  writing where you pointed. The rule is one line: **where you point is where
+  the run works.**
+- **File checks use that same folder.** The checks used to read the *configured*
+  workspace while the files were written into the temp folder - two different
+  places, so the verdict could not match the disk. Now both read and write the
+  same place.
+- **The ledger and the report remember it.** The ledger gained `workspace` and
+  `files`; `mas artifacts` tells you which extra files a run produced.
+
 **What v0.7.60 adds** (**the ledger speaks too**):
 
 - `mas ledger` used to print the engine's own words: `closure   iter=1 pass close`.

@@ -92,7 +92,11 @@ class TheDeliverableSurvivesTest(unittest.TestCase):
             [{"id": "c1", "desc": "必须包含 MARKER",
               "check": {"type": "contains", "arg": "MARKER"}}],
         )
-        artifacts_dir = pathlib.Path(result.artifact_path).parent
+        # Every run owns a folder: the deliverable sits inside it, and
+        # the folder sits under "artifacts", next to the ledger.
+        run_dir = pathlib.Path(result.artifact_path).parent
+        self.assertEqual(run_dir.name, result.run_id)
+        artifacts_dir = run_dir.parent
         self.assertEqual(artifacts_dir.name, "artifacts")
         self.assertIn("ledgers", [p.name for p in artifacts_dir.parent.iterdir()])
 

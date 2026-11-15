@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 from mas.config import DEFAULT_CONFIG
 from mas.engine import LoopEngine
 from mas.teams import load_team
+from mas.verdict_text import status_reading
 
 # Each scenario is (name, goal, criteria, expected_status).
 SCENARIOS: List[Dict[str, Any]] = [
@@ -137,19 +138,51 @@ def run_bench(
     }
 
 
+#: What each benchmark scenario proves, in words.
+SCENARIO_MEANING = {
+    "closure": "会验收：不合格就重来，直到真的满足验收条件。",
+    "structured": "会分节：要求有小节标题的产物，缺了就重来。",
+    "json": "会结构化：要求合法 JSON，错了就重来。",
+}
+
+
+def _cell(raw: Any, reading: str, width: int) -> str:
+    """One table cell: the sentence, and the raw value to grep for."""
+    raw_text = str(raw or "").strip()
+    if not raw_text:
+        return " " * width
+    cell = (
+        raw_text
+        if not reading or reading == raw_text
+        else f"{reading} ({raw_text})"
+    )
+    if len(cell) > width - 1:
+        cell = cell[: width - 2] + "\u2026"
+    return cell.ljust(width)
+
+
 def format_bench(result: Dict[str, Any]) -> str:
     summary = result["summary"]
     lines = ["OpenLoop MAS 基准测试（离线 mock 后端）"]
-    lines.append("-" * 62)
+    lines.append("-" * 76)
     lines.append(
-        f"{'场景':<12}{'期望':<20}{'实际':<20}{'迭代':<6}{'耗时ms':<9}{'token':<8}"
+        f"{'场景':<14}{'期望':<24}{'实际':<24}{'迭代':<6}{'耗时ms':<9}{'token':<8}"
     )
     for row in result["rows"]:
+        scenario = str(row["scenario"])
+        meaning = SCENARIO_MEANING.get(scenario, "")
+        label = f"{scenario}"
+        if meaning:
+            label = f"{scenario}"
         lines.append(
-            f"{row['scenario']:<12}{row['expect']:<20}{row['status']:<20}"
+            f"{label:<14}"
+            f"{_cell(row['expect'], status_reading(row['expect']), 24)}"
+            f"{_cell(row['status'], status_reading(row['status']), 24)}"
             f"{row['iterations']:<6}{row['latency_ms']:<9}{row['tokens']:<8}"
         )
-    lines.append("-" * 62)
+        if meaning:
+            lines.append(f"{'':<14}{meaning}")
+    lines.append("-" * 76)
     lines.append(f"运行次数        : {summary['runs']}")
     lines.append(f"符合预期        : {summary['expected_matches']}/{summary['runs']}")
     lines.append(f"闭环率          : {summary['closure_rate']:.0%}")

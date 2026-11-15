@@ -259,6 +259,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     # without going hunting through the state directory.
     if result.artifact_path:
         print(f"交付物：{result.artifact_path}")
+    # The files the run wrote. The deliverable is one file; a run that
+    # wrote three notes produced three notes, and the user could not
+    # see the other two.
+    files = _result_files(result)
+    if files:
+        names = "、".join(str(row.get("path") or "") for row in files)
+        print(f"本次生成的文件：{names}")
     for score in result.scores:
         flag = "PASS" if score["pass"] else "FAIL"
         optional = "" if score.get("blocking", True) else "，可选"
@@ -690,6 +697,10 @@ def cmd_resume(args: argparse.Namespace) -> int:
         # deliverable is.
         if result.artifact_path:
             print(f"交付物：{result.artifact_path}")
+        files = _result_files(result)
+        if files:
+            names = "、".join(str(row.get("path") or "") for row in files)
+            print(f"本次生成的文件：{names}")
         for score in result.scores:
             flag = "PASS" if score["pass"] else "FAIL"
             optional = "" if score.get("blocking", True) else "，可选"
@@ -713,6 +724,18 @@ def cmd_resume(args: argparse.Namespace) -> int:
             # knows the escalation did not disappear.
             print(f"工单 {args.ticket_id} 仍未解决，仍在人工队列里：mas tickets")
     return 0 if result.closed else 2
+
+
+def _result_files(result: Any) -> List[Dict[str, Any]]:
+    """The files a run wrote, read back from the ledger.
+
+    The engine books them on the run's end entry, so the CLI shows
+    what is *on the disk* and not what the run believes it wrote.
+    """
+    files = getattr(result, "files", None)
+    if isinstance(files, list):
+        return [row for row in files if isinstance(row, dict)]
+    return []
 
 
 def cmd_artifacts(args: argparse.Namespace) -> int:
@@ -752,6 +775,11 @@ def cmd_artifacts(args: argparse.Namespace) -> int:
                 "tokens": int(summary.get("tokens") or 0),
                 "iterations": int(summary.get("iterations") or 0),
                 "finished_at": summary.get("finished_at") or "",
+                # The folder the run worked in, and the files it
+                # wrote. Without them the list showed the deliverable
+                # only, and the rest of the output was invisible.
+                "workspace": str(summary.get("workspace") or ""),
+                "files": list(summary.get("files") or []),
             }
         )
     if args.json:
@@ -771,6 +799,12 @@ def cmd_artifacts(args: argparse.Namespace) -> int:
             f"{item['chars']:>6} 字  {item['iterations']} 轮"
         )
         print(f"        {item['run_id']}  {item['path']}")
+        files = item.get("files") or []
+        if files:
+            names = "、".join(
+                str(row.get("path") or "") for row in files if row.get("path")
+            )
+            print(f"        另外生成：{names}")
     missing = [i for i in items if not i["exists"]]
     if missing:
         print()

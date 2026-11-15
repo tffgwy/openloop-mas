@@ -4,6 +4,24 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.61] - 2026-11-16
+
+### 产物不再散落（统一工作区）
+
+- **每次运行一个自己的文件夹**：`<state_dir>/artifacts/<run_id>/`。
+  以前运行的产物写在调用方当前目录（自动化运行里通常是临时目录，进程
+  一结束就没了），交付物写在另一个地方；现在两者在同一处，跑完就留得住。
+- **用户指定的 `--workspace` 仍然优先**：用户点名了目录，就用那个目录，
+  不偷换。
+- **交付物改名** `deliverable.md`，放在运行目录里，和它写的文件放在一起。
+- **账本记录** `workspace` 与 `files`（本次生成的文件清单）。
+- **`mas run` / `mas resume` / `mas artifacts`** 都会显示本次生成的文件。
+
+### 兼容性
+
+- `mas artifacts` 仍按交付物列出全部运行，只是路径深了一层。
+- 未指定 workspace 的运行，产物从「调用方目录」改为「运行自己的目录」。
+
 ## [0.7.60] - 2026-11-15
 
 ### Added

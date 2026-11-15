@@ -29,6 +29,7 @@ CHECK_PLAIN_LANGUAGE: Dict[str, str] = {
     "config": "你的设置文件在不在（没有也能跑，用默认的 mock）",
     "orchestration": "几个智能体并行、几个评审、用哪种投票规则",
     "state_dir": "账本、工单和交付物存放的目录",
+    "workspace": "每次运行的产物落在哪个文件夹（跑完就留得住）",
     "ledger": "账本文件能不能写（历史记录存这儿）",
     "skills_source": "包内自带的 skill 模板在不在（安装用的源）",
     "skill_codex": "给 Codex 装的 skill：让 Codex 会用这个闭环工具",
@@ -49,7 +50,9 @@ OPTIONAL_CHECKS = frozenset(
 )
 
 #: The checks that decide whether the loop can run at all.
-ESSENTIAL_CHECKS = frozenset({"python", "package", "state_dir", "ledger", "file_checks"})
+ESSENTIAL_CHECKS = frozenset(
+    {"python", "package", "state_dir", "ledger", "workspace", "file_checks"}
+)
 
 #: The checks that are neither required nor optional: the loop runs
 #: without them, but a real user is expected to act on them. The config
@@ -122,6 +125,22 @@ def run_doctor(config: Dict[str, Any] | None = None, allow_network: bool = True)
         results.append(_check("ledger", "ok", str(ledger)))
     except OSError as exc:
         results.append(_check("ledger", "fail", f"不可写: {exc}"))
+
+    # Where the runs write. A run that cannot make its own folder still
+    # runs, but its files land in the caller's directory - which is
+    # usually a temporary one, and the output is gone when the process
+    # ends. So the folder has to be there and has to be writable.
+    from mas.workspace import ensure_workspace, resolve_workspace
+
+    workspace = resolve_workspace(root, "probe", config.get("workspace"))
+    try:
+        ensure_workspace(workspace)
+        probe = pathlib.Path(workspace) / ".doctor-write-test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        results.append(_check("workspace", "ok", str(workspace)))
+    except OSError as exc:
+        results.append(_check("workspace", "fail", f"不可写: {exc}"))
 
     # The skills travel inside the package. If they are missing from the
     # installed runtime, `mas install` cannot do its job - and that is a

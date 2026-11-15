@@ -23,6 +23,7 @@ check fall back to the model verifier's judgement.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import pathlib
 import re
@@ -70,6 +71,11 @@ from mas.util import (
     sha256_text,
     short_sha,
     strip_reasoning,
+)
+from mas.workspace import (
+    DELIVERABLE_NAME,
+    ensure_workspace,
+    resolve_workspace,
 )
 
 STATUS_CLOSED = "closed"
@@ -155,6 +161,11 @@ class RunResult:
     # Where the finished deliverable was written. Empty when the run
     # produced no artifact at all.
     artifact_path: str = ""
+    # The folder the run worked in. Everything the run produced is
+    # there: the deliverable and the files it wrote.
+    workspace: str = ""
+    # The files the run wrote, relative to the workspace.
+    files: List[Dict[str, Any]] = field(default_factory=list)
     history: List[Dict[str, Any]] = field(default_factory=list)
     started_at: str = ""
     finished_at: str = ""
@@ -186,6 +197,8 @@ class RunResult:
             "tokens_used": self.tokens_used,
             "ledger_path": self.ledger_path,
             "artifact_path": self.artifact_path,
+            "workspace": self.workspace,
+            "files": list(self.files),
             "history": self.history,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
@@ -434,6 +447,16 @@ class LoopEngine:
         self.ledger = ledger or Ledger(self.ledger_path(config))
         self.tickets = tickets or TicketStore(self.tickets_dir(config))
         self.clock = clock or time.time
+        # The config the checks resolve their paths against. It is a
+        # copy: the run's own folder replaces the caller's directory,
+        # but the caller's configuration must not be changed by that.
+        self._check_config: Dict[str, Any] = dict(config)
+        # The folder this run owns. It is empty until a run id is
+        # known, and it is created lazily - a run that never writes
+        # anything should not leave an empty folder behind.
+        self._workspace: Optional[pathlib.Path] = None
+        # The files the run wrote, in the order they were written.
+        self._written_files: List[Dict[str, Any]] = []
 
         orchestration = dict(self.config.get("orchestration") or {})
         # How many workers produce candidates in parallel. 1 keeps the
@@ -498,6 +521,24 @@ class LoopEngine:
             self.review_mode = str(review_mode)
         self.perspective = str(perspective or "")
         run_id = run_id or "R-" + uuid.uuid4().hex[:10]
+        # The workspace is named after the run id, so the engine has to
+        # know the id before the first write happens.
+        self._run_id = str(run_id)
+        self._written_files = []
+        self._workspace = None
+        # From now on the file level checks look into the run's own
+        # folder. Before this point they would have looked into the
+        # caller's directory - a place the run does not write to.
+        self._check_config = dict(self.config)
+        self._check_config["workspace"] = self._run_workspace_path()
+        # The folder is created here, before the first check reads the
+        # disk: a file check against a folder that does not exist yet
+        # would report "not found" for a file the run is about to
+        # write, and the loop would never close.
+        # A run that cannot make its own folder still has to run -
+        # the checks then fall back to the caller's directory.
+        with contextlib.suppress(OSError):
+            ensure_workspace(self._run_workspace_path())
         task_id = f"{run_id}-1"
         crits = [Criterion.from_raw(raw, index) for index, raw in enumerate(criteria or [])]
         if not crits:
@@ -636,7 +677,9 @@ class LoopEngine:
                 artifact = candidates["artifact"]
                 tokens += candidates["tokens"]
 
-                checks = [evaluate_check(c, artifact, self.config) for c in crits]
+                checks = [
+                    evaluate_check(c, artifact, self._check_config) for c in crits
+                ]
                 verify_state = dict(state)
                 verify_state["candidate_artifact"] = artifact
                 verify_state["checks"] = checks
@@ -1082,6 +1125,13 @@ class LoopEngine:
                 # something a human can open.
                 "artifact_path": artifact_path,
                 "artifact_chars": len(artifact),
+                # Where the work landed. The deliverable used to be
+                # the only thing on disk, and the files it was built
+                # from could be anywhere - or already deleted. The
+                # folder is booked so a reader can open the run and
+                # see everything it produced.
+                "workspace": self._run_workspace_path(),
+                "files": list(self._written_files),
                 "issues": list(issues),
                 "tokens_total": int(tokens),
             },
@@ -1100,6 +1150,8 @@ class LoopEngine:
             tokens_used=tokens,
             ledger_path=str(self.ledger.path),
             artifact_path=artifact_path,
+            workspace=self._run_workspace_path(),
+            files=list(self._written_files),
             history=history,
             started_at=started_at,
             finished_at=now_iso(),
@@ -1134,6 +1186,7 @@ class LoopEngine:
                 written = applied["written"]
                 write_errors = applied["errors"]
                 if written:
+                    self._record_written(written)
                     self._log(
                         state["run_id"], state["task_id"], state["attempt"], "write",
                         {"written": written},
@@ -1263,7 +1316,9 @@ class LoopEngine:
                 # candidate ranking would be decided by the wrong
                 # evidence. The winner is picked on this ranking, so a
                 # wrong workspace meant the *wrong candidate* won.
-                outcome = evaluate_check(crit, artifact, self.config, overlay)
+                outcome = evaluate_check(
+                    crit, artifact, self._check_config, overlay
+                )
                 if outcome.get("pass"):
                     passed_count += 1
             summary.append(
@@ -1324,6 +1379,7 @@ class LoopEngine:
             written = applied["written"]
             errors.extend(applied["errors"])
             if written or applied["errors"]:
+                self._record_written(written)
                 self._log(
                     state["run_id"], state["task_id"], state["attempt"], "write",
                     {"written": written, "errors": applied["errors"]},
@@ -1387,7 +1443,43 @@ class LoopEngine:
         return paths
 
     def _write_workspace(self) -> Any:
-        return workspace_root(self.config)
+        """The folder this run writes into.
+
+        It used to be the caller's current directory (or the directory
+        named by ``--workspace``), which meant the files a run produced
+        ended up wherever the process happened to stand - and, in an
+        automated run, in a temporary folder that did not survive the
+        run. Now it is the run's own folder under the state directory,
+        so the output stays together and stays.
+        """
+        if self._workspace is None:
+            self._workspace = ensure_workspace(self._run_workspace_path())
+        return self._workspace
+
+    def _run_workspace_path(self) -> str:
+        """The folder of the current run, as a string (may not exist yet)."""
+        return str(
+            resolve_workspace(
+                self.state_root(self.config),
+                self._run_id or "run",
+                self.config.get("workspace"),
+            )
+        )
+
+    def _record_written(self, written: List[Dict[str, Any]]) -> None:
+        """Remember the files this run wrote, for the ledger."""
+        for row in written or []:
+            if not isinstance(row, dict):
+                continue
+            if not row.get("written"):
+                continue
+            self._written_files.append(
+                {
+                    "path": str(row.get("path") or ""),
+                    "absolute": str(row.get("absolute") or ""),
+                    "bytes": int(row.get("bytes") or 0),
+                }
+            )
 
     # ------------------------------------------------------ adversarial review
     def _review(self, verify_state: Dict[str, Any]) -> Dict[str, Any]:
@@ -1748,12 +1840,14 @@ class LoopEngine:
         if not artifact:
             return ""
         try:
-            target_dir = pathlib.Path(self.artifacts_dir(self.config))
-            target_dir.mkdir(parents=True, exist_ok=True)
-            safe_run = "".join(
-                ch if (ch.isalnum() or ch in "-_") else "_" for ch in str(run_id)
-            )
-            target = target_dir / f"{safe_run}.md"
+            # The deliverable lives in the run's own workspace, next to
+            # the files the run produced. A closed run therefore hands
+            # over *one folder* holding everything it made - not a
+            # deliverable in one place and its supporting files in
+            # another (or in a temporary directory that is already
+            # gone).
+            target_dir = self._write_workspace()
+            target = pathlib.Path(target_dir) / DELIVERABLE_NAME
             target.write_text(artifact, encoding="utf-8")
             return str(target)
         except OSError:
