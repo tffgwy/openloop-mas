@@ -7,6 +7,54 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.53 adds** (**"not found" now says "not found"**):
+
+- **Four commands reported a missing run as an empty ledger** --- and
+  that is exactly the sentence a beginner meets first; a mistyped run
+  id, or a ticket that points at a run from another machine, both land
+  on the same untrue sentence;
+
+- **Reproduced on the live machine: the ledger held twenty-two rows**
+  --- `mas replay --run-id R-does-not-exist` answered "账本为空，没有可回放的运行。";
+  `mas export --run-id R-does-not-exist` printed a table header and
+  nothing else; `mas report --run-id R-does-not-exist` wrote "账本为空，
+  暂无运行记录。" into a full Markdown report;
+
+- **The commands now say what does exist** --- so the reader can fix the
+  typo instead of wondering whether the work ever happened:
+
+  ```
+  没有找到运行 R-does-not-exist。
+    账本里有这些运行：R-7e4af659ba
+    用 mas status 看一眼有哪些运行，用 mas replay --run-id <运行ID> 回放其中一次。
+  ```
+
+- **"Not found" and "empty" are different things now** --- an empty
+  ledger still says it is empty; a ledger that holds other runs says
+  which ones; the two can no longer be confused;
+
+- **The miss speaks JSON too** --- `{"error": "run_not_found",
+  "found": false}` with exit code 2, so a script can tell a miss from a
+  hit without parsing prose;
+
+- **`mas export --json` used to be a lie** --- it accepted `--json` and
+  then ignored it, handing a script a Markdown table; it now returns
+  the data (rows, count, and the Markdown rendering), and the text and
+  JSON forms are guaranteed to agree;
+
+- **An empty ledger no longer gives you a bare header row** --- it now
+  says the ledger is empty and points at `mas run` and `mas demo`;
+
+- **The Linux build is fixed** --- v0.7.52 added a test that asserted
+  `Ledger` and `ledger` are the same directory; that is true on Windows
+  and false on Linux and macOS, **where they are two different paths**,
+  so every local run passed while Linux failed; **the guard was right
+  and the test was wrong** --- the test now states the platform's own
+  spelling rule instead of assuming one platform;
+
+- 13 regression tests, **eight changes reverted one at a time** to
+  confirm the matching test fails.
+
 **What v0.7.52 adds** (**your ledger will not vanish on its own**):
 
 - **The ledger is the only evidence a loop-engineering run leaves

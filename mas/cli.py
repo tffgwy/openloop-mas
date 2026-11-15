@@ -554,8 +554,9 @@ def cmd_artifacts(args: argparse.Namespace) -> int:
     config = load_config()
     engine = _engine(config)
     rows = engine.ledger.entries()
-    if args.run_id:
-        rows = [row for row in rows if row.get("run_id") == args.run_id]
+    rows, missing = _rows_for_run(rows, args.run_id)
+    if missing:
+        return _report_missing(missing, args, None)
     items = []
     for group in group_runs(rows):
         summary = run_summary(group["run_id"], group["rows"])
@@ -604,13 +605,63 @@ def cmd_artifacts(args: argparse.Namespace) -> int:
     return 0
 
 
+def _rows_for_run(rows, run_id):
+    """Split the ledger into "what you asked for" and "what exists".
+
+    Every command that takes ``--run-id`` used to filter the ledger and
+    then say "the ledger is empty" when nothing came back. That was a
+    lie in the common case: the ledger held twenty-two records for a
+    different run, and the reader was told there was no history at all.
+    A person who mistypes a run id - or follows a ticket that points at
+    a run from another machine - needs to know which of the two it is.
+
+    Returns ``(selected, missing)``:
+
+    * ``selected`` - the rows that match;
+    * ``missing`` - ``None`` when the request was satisfiable, or a
+      message that says what went wrong.
+    """
+    if not run_id:
+        return rows, None
+    selected = [row for row in rows if row.get("run_id") == run_id]
+    if selected:
+        return selected, None
+    known = sorted({str(row.get("run_id")) for row in rows if row.get("run_id")})
+    if not rows:
+        return selected, "账本里还没有任何运行记录。"
+    if not known:
+        return selected, "账本里还没有任何运行记录。"
+    listed = "、".join(known[:8])
+    if len(known) > 8:
+        listed += " 等"
+    return selected, (
+        f"没有找到运行 {run_id}。\n"
+        f"  账本里有这些运行：{listed}\n"
+        f"  用 mas status 看一眼有哪些运行，用 mas replay --run-id <运行ID> 回放其中一次。"
+    )
+
+
+def _report_missing(message, args, payload):
+    """Say that something was not found, and exit the way a miss should.
+
+    ``--json`` consumers get a machine-readable object instead of prose,
+    so a script can tell "not found" from "found nothing".
+    """
+    if getattr(args, "json", False):
+        _print({"error": "run_not_found", "message": message, "found": False}, True)
+    else:
+        print(message, file=sys.stderr)
+    return 2
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     """Render a Markdown closure report from the ledger."""
     config = load_config()
     engine = _engine(config)
     rows = engine.ledger.entries()
-    if args.run_id:
-        rows = [row for row in rows if row.get("run_id") == args.run_id]
+    rows, missing = _rows_for_run(rows, args.run_id)
+    if missing:
+        return _report_missing(missing, args, None)
     report = build_report(rows)
     markdown = render_markdown(report)
     if args.out:
@@ -631,10 +682,31 @@ def cmd_replay(args: argparse.Namespace) -> int:
     config = load_config()
     engine = _engine(config)
     rows = engine.ledger.entries()
-    if args.run_id:
-        rows = [row for row in rows if row.get("run_id") == args.run_id]
+    rows, missing = _rows_for_run(rows, args.run_id)
+    if missing:
+        return _report_missing(missing, args, None)
     if not rows:
-        print("账本为空，没有可回放的运行。", file=sys.stderr)
+        # An empty ledger is not a failure of the reader's request,
+        # but a JSON consumer must not receive empty stdout and a
+        # non-zero code with nothing to parse. Both shapes now say
+        # the same thing.
+        message = "账本为空，没有可回放的运行。跑一次 mas run 就会产生记录；想看样例：mas demo"
+        if args.json:
+            _print(
+                {
+                    "error": "empty_ledger",
+                    "found": False,
+                    "message": message,
+                    "steps": [],
+                    "steps_count": 0,
+                    "runs": [],
+                    "threads": [],
+                    "problems_open": [],
+                },
+                True,
+            )
+        else:
+            print(message, file=sys.stderr)
         return 1
     trace = replay_trace(rows)
     if args.json:
@@ -699,9 +771,41 @@ def cmd_export(args: argparse.Namespace) -> int:
     config = load_config()
     engine = _engine(config)
     rows = engine.ledger.entries()
-    if args.run_id:
-        rows = [row for row in rows if row.get("run_id") == args.run_id]
+    rows, missing = _rows_for_run(rows, args.run_id)
+    if missing:
+        return _report_missing(missing, args, None)
+    if not rows:
+        # An empty table is a table that says nothing. A reader who
+        # exports an empty ledger should be told what to do next,
+        # not handed a header row and left to guess.
+        if args.json:
+            _print(
+                {
+                    "rows": [],
+                    "count": 0,
+                    "markdown": "",
+                    "message": "账本为空，没有可导出的记录。跑一次 mas run 就会产生记录。",
+                },
+                True,
+            )
+            return 0
+        print("账本为空，没有可导出的记录。")
+        print("  跑一次 mas run 就会产生记录；想看样例：mas demo")
+        return 0
     markdown = ledger_markdown(rows)
+    if args.json:
+        # ``--json`` was accepted but ignored, so a script that asked
+        # for JSON got a Markdown table and had to parse prose. The
+        # rows are the data; the Markdown is one rendering of them.
+        _print(
+            {
+                "rows": rows,
+                "count": len(rows),
+                "markdown": markdown,
+            },
+            True,
+        )
+        return 0
     if args.out:
         path = pathlib.Path(args.out).expanduser()
         path.parent.mkdir(parents=True, exist_ok=True)

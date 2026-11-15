@@ -4,6 +4,74 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.53] - 2026-11-15
+
+### Fixed
+
+Four commands could tell you a run did not exist when the truth was
+that the ledger held twenty-two records for a *different* run. The
+message was the same in both cases - "the ledger is empty" - and it is
+the message a beginner reads first. A mistyped run id, or a ticket
+that points at a run from another machine, both landed on the same
+sentence, and that sentence pointed at the wrong thing.
+
+Measured on the live machine: `mas replay --run-id R-does-not-exist`
+answered "账本为空，没有可回放的运行。" while the ledger held twenty-two
+rows. `mas export --run-id R-does-not-exist` printed a table header
+and nothing else. `mas report --run-id R-does-not-exist` wrote "账本为空，
+暂无运行记录。" into a full Markdown report.
+
+Two more gaps sat next to them:
+
+* **`mas export` accepted `--json` and ignored it.** A script that
+  asked for JSON got a Markdown table and had to parse prose. The flag
+  was advertised and did nothing.
+
+* **An empty ledger produced an empty table.** `mas export` on a fresh
+  installation printed a header row and stopped - a table that says
+  nothing, to a reader who has just installed the tool.
+
+* **A fix for the Linux build.** v0.7.52's new test asserted that
+  `Ledger` and `ledger` are the same directory. That is true on
+  Windows and false on Linux and macOS, where they are two different
+  paths - so the Linux build failed while every local run passed. The
+  guard was right; the test was wrong. The test now states the
+  platform's own spelling rule instead of assuming one platform.
+
+* **The commands say what exists.** A run id that does not exist now
+  answers with the runs the ledger *does* hold, so the reader can fix
+  the typo instead of wondering whether the work ever happened:
+
+  ```
+  没有找到运行 R-does-not-exist。
+    账本里有这些运行：R-7e4af659ba
+    用 mas status 看一眼有哪些运行，用 mas replay --run-id <运行ID> 回放其中一次。
+  ```
+
+* **"Not found" and "empty" are different things.** An empty ledger
+  still says the ledger is empty; a ledger that holds other runs says
+  which ones. The two can no longer be confused.
+
+* **The miss exits non-zero and speaks JSON.** `--json` returns
+  `{"error": "run_not_found", "found": false, ...}` and the exit code
+  is 2, so a script can tell a miss from a hit without parsing prose.
+
+* **`mas export --json` returns data.** It now carries the rows, the
+  count and the Markdown rendering, and the text and JSON forms are
+  guaranteed to agree.
+
+* **An empty ledger says what to do next.** `mas export` on a fresh
+  installation now says the ledger is empty and points at `mas run`
+  and `mas demo`, instead of printing a bare header row.
+
+* **An empty ledger in `--json` is still JSON.** `mas replay --json`
+  on a fresh installation returns a well-formed object with
+  `error: empty_ledger`, not empty stdout with a non-zero exit code.
+
+Regression tests: 13 in a dedicated module, plus a mutation framework
+that reverts each of the eight changes on its own and confirms the
+matching test fails.
+
 ## [0.7.52] - 2026-11-15
 
 ### Fixed

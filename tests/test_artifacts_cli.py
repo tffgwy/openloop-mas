@@ -142,11 +142,19 @@ class ArtifactsCommandTest(unittest.TestCase):
         self.assertEqual(filtered["count"], 1)
         self.assertEqual(filtered["artifacts"][0]["run_id"], first)
 
-    def test_unknown_run_id_lists_nothing(self):
+    def test_unknown_run_id_says_so_instead_of_listing_nothing(self):
+        """A run id that does not exist must not read as "no artifacts".
+
+        The old behaviour returned an empty list, which a reader cannot
+        tell apart from "the run exists but produced nothing". The
+        command now says what is missing and exits non-zero.
+        """
         self._run_once()
-        _code, out = _run_cli(["artifacts", "--run-id", "R-nope", "--json"], self.state_dir)
+        code, out = _run_cli(["artifacts", "--run-id", "R-nope", "--json"], self.state_dir)
         payload = json.loads(out)
-        self.assertEqual(payload["count"], 0)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(payload["error"], "run_not_found")
+        self.assertFalse(payload["found"])
 
 
 class DeliverablePathIsAnnouncedTest(unittest.TestCase):

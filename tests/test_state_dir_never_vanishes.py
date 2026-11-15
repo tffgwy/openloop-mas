@@ -44,6 +44,7 @@ import unittest
 from mas.config import (
     DEFAULT_CONFIG,
     DEFAULT_STATE_DIR,
+    _same_path,
     load_config,
     persistable_config,
     save_config,
@@ -187,16 +188,69 @@ class EphemeralStateDirGuardTest(unittest.TestCase):
         )
         self.assertEqual(payload["state_dir"], state)
 
-    def test_a_differently_cased_directory_is_still_the_same(self):
-        """Windows does not distinguish ``Ledger`` from ``ledger``."""
+    def test_the_case_rule_follows_the_platform(self):
+        """Windows does not distinguish ``Ledger`` from ``ledger``.
+
+        Linux and macOS do, and on those systems the two spellings are
+        two different paths - the second one does not even exist. The
+        guard must follow the platform rather than assume Windows: a
+        Windows-only assumption here broke the Linux build while
+        passing everywhere else.
+
+        The check is written against the *rule* rather than against one
+        machine, so it means the same thing on every platform.
+        """
+        state = tempfile.mkdtemp(prefix="mas-handover-")
+        shouted = state.upper()
+        if shouted == state:
+            self.skipTest("the temp path has no letters to change case")
+        case_insensitive = os.path.normcase("A") == os.path.normcase("a")
+        if case_insensitive:
+            self.assertTrue(_same_path(state, shouted))
+        else:
+            self.assertFalse(
+                _same_path(state, shouted),
+                "on a case-sensitive filesystem the two spellings are "
+                "two different paths",
+            )
+
+    def test_the_case_rule_is_the_same_everywhere(self):
+        """The rule itself, independent of the machine it runs on.
+
+        ``os.path.normcase`` is the platform's own spelling rule:
+        Windows folds the case, POSIX leaves it alone. The guard uses
+        that rule, so the answer follows the platform - and this test
+        states the rule rather than the outcome, which is why it means
+        the same thing on Linux as on Windows.
+        """
+        self.assertEqual(
+            _same_path("/tmp/Ledger", "/tmp/Ledger"),
+            True,
+            "the same path is the same path on every platform",
+        )
+        self.assertEqual(
+            _same_path("/tmp/Ledger", "/tmp/ledger"),
+            os.path.normcase("/tmp/Ledger") == os.path.normcase("/tmp/ledger"),
+            "the two spellings collapse exactly when the platform folds case",
+        )
+
+    def test_a_user_named_directory_is_kept_however_it_is_spelled(self):
+        """The user named it; the spelling is theirs.
+
+        This is the real shape of the request: the configuration holds
+        the directory the user typed and the command line says the
+        same thing. On Windows the two spellings collapse onto one
+        directory, on Linux they do not - and the guard must keep the
+        user's choice either way.
+        """
         state = tempfile.mkdtemp(prefix="mas-handover-")
         shouted = state.upper()
         if shouted == state:
             self.skipTest("the temp path has no letters to change case")
         payload = persistable_config(
-            self._config_with(state), explicit_state_dir=shouted
+            self._config_with(shouted), explicit_state_dir=shouted
         )
-        self.assertEqual(payload["state_dir"], state)
+        self.assertEqual(payload["state_dir"], shouted)
 
     def test_an_environment_value_outside_the_temp_folder_is_not_persisted(self):
         """The environment guard has a job of its own.
