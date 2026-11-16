@@ -7,6 +7,26 @@
 
 [English](README.en.md) | [中文](README.md)
 
+- **The 17th gate `ticket_approval`** - The **human token** of v0.7.73 was
+  a **standing key**: paste it to an agent once and it can approve **every**
+  draft, **for ever**. In a team of agents that is a real gap - the proposer
+  ends up holding the power to confirm, and the separation of duties is
+  worth nothing.
+  There is now a second door: the **ticket**. `mas drafts ticket <draft id>`
+  signs one with the human token. It opens **that one draft**, **burns after
+  a single use**, and **expires after fifteen minutes** - and only its
+  **hash** is written down, so a copied ticket store carries no usable
+  ticket away with it. A ticket also authorizes **one action**: a ticket
+  signed for a rejection cannot approve.
+  `mas_draft_resolve` takes a ticket now, and when the ticket does not fit
+  it says exactly where the door stayed shut: `ticket_already_used` /
+  `ticket_expired` / `ticket_bound_to_another_draft` /
+  `ticket_action_mismatch`.
+  The gap was found with a **mutation proof**: **all thirteen mutations of
+  the ticket path were caught** (four of them are exactly the gate's own
+  verdict being edited); and the verdict is **implemented twice**, so
+  **editing the verdict function itself is caught too**.
+
 - **The 16th gate `mcp_draft_approval`** - v0.7.72 turned "the change goes
   into a draft first" into an **engine-level** rule: when the loop wants to
   change a file you already have, it records a draft and you approve it
@@ -1874,6 +1894,7 @@ mas drafts show D-1a2b3c4d              # the diff of one draft
 mas drafts approve D-1a2b3c4d           # approve: write it back
 mas drafts reject  D-1a2b3c4d           # reject: nothing changes
 mas drafts token                        # the human token (an agent cannot approve its own draft)
+mas drafts ticket D-1a2b3c4d --token <token>      # sign a ticket: one draft, one use, 15 minutes
 ```
 
 When a run wants to change a file that **already exists**, it no longer
@@ -2295,8 +2316,9 @@ mas verify        # real closure self-check
 mas bench         # offline benchmark
 mas files         # index the workspace: every file, its format, its facts
 mas preview FILE  # preview one file (PDF / Word / text...)
-mas drafts        # drafts waiting for a human: list / show / approve / reject / token
+mas drafts        # drafts waiting for a human: list / show / approve / reject / token / ticket
 mas drafts token  # the human token: an agent cannot approve its own draft
+mas drafts ticket D-ID --token <token>  # a ticket: one draft, one use, 15 minutes
 mas status        # local state
 mas ledger        # closure ledger
 mas report        # Markdown closure report

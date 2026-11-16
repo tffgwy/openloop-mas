@@ -191,7 +191,7 @@ class BinaryWriteGateTest(unittest.TestCase):
 
         names = {getattr(c, "CHECK_NAME", c.__name__) for c in CHECKS}
         self.assertIn("binary_write", names)
-        self.assertEqual(len(CHECKS), 16)
+        self.assertEqual(len(CHECKS), 17)
 
     def test_the_gate_passes_offline(self):
         from mas.selftest import check_a_binary_write_lands_as_bytes

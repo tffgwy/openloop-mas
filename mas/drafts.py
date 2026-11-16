@@ -42,7 +42,9 @@ a draft that gets lost is a change that can never be reviewed.
 from __future__ import annotations
 
 import contextlib
+import datetime
 import difflib
+import hashlib
 import json
 import os
 import pathlib
@@ -374,6 +376,150 @@ def read_human_token(state_dir: Any) -> str:
         return path.read_text(encoding="utf-8").strip()
     except OSError:
         return ""
+
+
+#: The file inside the state directory that holds the ticket hashes.
+TICKET_STORE_FILENAME = "tickets.json"
+
+#: How long a ticket stays usable, in seconds.
+TICKET_TTL_SECONDS = 900
+
+#: The action a ticket may authorize.
+TICKET_ACTION_APPROVE = "approve"
+TICKET_ACTION_REJECT = "reject"
+
+
+def ticket_store_path(state_dir: Any) -> pathlib.Path:
+    """Where the signed tickets live inside a state directory."""
+    return pathlib.Path(state_dir) / TICKET_STORE_FILENAME
+
+
+def _load_tickets(state_dir: Any) -> Dict[str, Any]:
+    """The signed tickets of this machine, as a mapping."""
+    path = ticket_store_path(state_dir)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_tickets(state_dir: Any, tickets: Dict[str, Any]) -> None:
+    """Write the signed tickets back."""
+    path = ticket_store_path(state_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(tickets, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    with contextlib.suppress(OSError):
+        os.chmod(path, 0o600)
+
+
+def _expired(created_at: Any) -> bool:
+    """Whether a ticket has outlived its welcome."""
+    try:
+        stamp = datetime.datetime.fromisoformat(str(created_at))
+    except (TypeError, ValueError):
+        return True
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=datetime.timezone.utc)
+    age = (datetime.datetime.now(datetime.timezone.utc) - stamp).total_seconds()
+    return age > TICKET_TTL_SECONDS
+
+
+def issue_ticket(
+    state_dir: Any,
+    draft_id: str,
+    action: str = TICKET_ACTION_APPROVE,
+    human_token: Any = None,
+) -> Dict[str, Any]:
+    """Sign a one-shot ticket for exactly one draft.
+
+    A ticket is what a human hands to an agent so the agent can carry
+    out *one* decision. Three things make it different from the
+    standing human token:
+
+    * it is bound to **one draft** - it cannot approve another one;
+    * it is **one-shot** - the first use burns it;
+    * it **expires** - a ticket left lying around stops working.
+
+    Only the *hash* of the ticket is stored. The signed ticket itself
+    is handed out once and never written down, so a store that gets
+    copied does not carry a usable secret with it.
+
+    The human token is what proves the ticket was signed by the human
+    rather than by an agent that found the ticket store.
+    """
+    action = str(action or TICKET_ACTION_APPROVE).strip().lower()
+    if action not in (TICKET_ACTION_APPROVE, TICKET_ACTION_REJECT):
+        raise ValueError("a ticket can only approve or reject")
+    if not verify_human_token(state_dir, human_token):
+        raise ValueError("signing a ticket needs the human token")
+    target = str(draft_id or "").strip()
+    if not target:
+        raise ValueError("a ticket needs a draft id")
+
+    secret = secrets.token_urlsafe(24)
+    ticket_id = "T-%s" % secrets.token_hex(6)
+    digest = hashlib.sha256(secret.encode("utf-8")).hexdigest()
+    record = {
+        "id": ticket_id,
+        "draft_id": target,
+        "action": action,
+        "digest": digest,
+        "created_at": now_iso(),
+        "used_at": None,
+        "used": False,
+    }
+    tickets = _load_tickets(state_dir)
+    tickets[ticket_id] = record
+    _save_tickets(state_dir, tickets)
+    return {"id": ticket_id, "secret": secret, "draft_id": target, "action": action}
+
+
+def redeem_ticket(
+    state_dir: Any,
+    draft_id: str,
+    ticket: Any,
+    action: str = TICKET_ACTION_APPROVE,
+) -> Dict[str, Any]:
+    """Use a ticket once, for the draft it was signed for.
+
+    Returns a record describing what happened. `ok` is `False`
+    with a `reason` when the ticket does not open the door.
+    """
+    given = str(ticket or "").strip()
+    action = str(action or TICKET_ACTION_APPROVE).strip().lower()
+    target = str(draft_id or "").strip()
+    if not given:
+        return {"ok": False, "reason": "no_ticket"}
+    if not target:
+        return {"ok": False, "reason": "no_draft"}
+
+    tickets = _load_tickets(state_dir)
+    for ticket_id, record in list(tickets.items()):
+        if not isinstance(record, dict):
+            continue
+        digest = str(record.get("digest") or "")
+        if not digest or not secrets.compare_digest(digest, hashlib.sha256(given.encode("utf-8")).hexdigest()):
+            continue
+        if record.get("used"):
+            return {"ok": False, "reason": "ticket_already_used", "ticket_id": ticket_id}
+        if _expired(record.get("created_at")):
+            return {"ok": False, "reason": "ticket_expired", "ticket_id": ticket_id}
+        if str(record.get("draft_id") or "") != target:
+            return {"ok": False, "reason": "ticket_bound_to_another_draft", "ticket_id": ticket_id}
+        if str(record.get("action") or "") != action:
+            return {"ok": False, "reason": "ticket_action_mismatch", "ticket_id": ticket_id}
+        record["used"] = True
+        record["used_at"] = now_iso()
+        tickets[ticket_id] = record
+        _save_tickets(state_dir, tickets)
+        return {"ok": True, "ticket_id": ticket_id, "draft_id": target, "action": action}
+    return {"ok": False, "reason": "unknown_ticket"}
 
 
 def verify_human_token(state_dir: Any, token: Any) -> bool:

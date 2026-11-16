@@ -3918,6 +3918,478 @@ def check_an_agent_can_propose_but_not_approve(
 
 check_an_agent_can_propose_but_not_approve.CHECK_NAME = "mcp_draft_approval"  # type: ignore[attr-defined]
 
+
+TICKET_OBSERVATIONS = (
+    "the human token signs a ticket for one draft",
+    "a wrong token signs nothing",
+    "the signed ticket is never written down in clear",
+    "a ticket opens the door for the draft it was signed for",
+    "a ticket does not open the door for another draft",
+    "a ticket works only once",
+    "a ticket stops working when it gets old",
+    "a ticket approves only the action it was signed for",
+    "no token and no ticket still means no",
+)
+
+
+def _ticket_observations(root: Any) -> Dict[str, bool]:
+    """Watch the one-shot ticket layer, one thing at a time.
+
+    The ticket store lives in the state directory, and the MCP server
+    reads the state directory from the configuration - which the
+    environment overrides. The gate points that at the temporary
+    folder for the duration of the observation, so the ticket the
+    human signs and the ticket the server checks are the same one.
+    """
+    import pathlib
+
+    previous_state = os.environ.get("MAS_STATE_DIR")
+    state_dir = pathlib.Path(root) / "state"
+    os.environ["MAS_STATE_DIR"] = str(state_dir)
+    try:
+        return _ticket_observations_inner(root, state_dir)
+    finally:
+        if previous_state is None:
+            os.environ.pop("MAS_STATE_DIR", None)
+        else:
+            os.environ["MAS_STATE_DIR"] = previous_state
+
+
+def _ticket_observations_inner(root: Any, state_dir: Any) -> Dict[str, bool]:
+    """The body of the ticket observation.
+
+    Collects **facts**, not verdicts. A verdict would be a boolean a
+    later edit could simply set to ``True``, and a gate whose own
+    observation had been tampered with would then report "all good"
+    for ever. The facts are raw strings, numbers and file contents, and
+    the verdict is decided elsewhere.
+    """
+    import json
+    import pathlib
+
+    from mas.drafts import ensure_human_token, issue_ticket, ticket_store_path
+    from mas.mcp_server import handle_tool
+
+    seen: Dict[str, Any] = {}
+    workspace = pathlib.Path(root)
+    target = workspace / "notes.txt"
+    original_text = "the human's own words"
+    target.write_text(original_text, encoding="utf-8")
+    seen["original_text"] = original_text
+
+    token = ensure_human_token(state_dir)
+
+    # A ticket is signed by the human, so it needs the human token.
+    # A wrong token must sign nothing at all - not a ticket that then
+    # fails later, but no ticket in the store.
+    wrong_error = ""
+    try:
+        issue_ticket(state_dir, "D-anything", action="approve", human_token="not-the-token")
+    except Exception as exc:  # noqa: BLE001 - the failure is the subject
+        wrong_error = "%s: %s" % (type(exc).__name__, exc)
+    seen["wrong_token_error"] = wrong_error
+    seen["tickets_after_wrong_token"] = len(_read_tickets(state_dir))
+
+    staged = handle_tool(
+        "mas_draft_stage",
+        {
+            "path": "notes.txt",
+            "content": "the agent proposes this",
+            "reason": "the agent says why",
+            "workspace": str(workspace),
+        },
+    )
+    draft_id = str((staged.get("draft") or {}).get("id") or "")
+    seen["draft_id"] = draft_id
+
+    signed = issue_ticket(state_dir, draft_id, action="approve", human_token=token)
+    secret = str(signed.get("secret") or "")
+    ticket_id = str(signed.get("id") or "")
+    seen["ticket_id"] = ticket_id
+    seen["ticket_secret_length"] = len(secret)
+    seen["ticket_bound_draft"] = str(signed.get("draft_id") or "")
+
+    # The store keeps the hash, not the ticket. A store that gets
+    # copied must not carry a usable secret with it.
+    store_text = ""
+    store_path = ticket_store_path(state_dir)
+    if store_path.exists():
+        store_text = store_path.read_text(encoding="utf-8")
+    seen["store_length"] = len(store_text)
+    seen["store_contains_secret"] = bool(secret) and secret in store_text
+    seen["store_ticket_count"] = len(_read_tickets(state_dir))
+
+    # A second draft, so the ticket can be tried against a draft it
+    # was not signed for.
+    staged2 = handle_tool(
+        "mas_draft_stage",
+        {
+            "path": "notes.txt",
+            "content": "a change nobody asked for",
+            "workspace": str(workspace),
+        },
+    )
+    other_id = str((staged2.get("draft") or {}).get("id") or "")
+
+    # The ticket is spent on the draft it was signed for.
+    approved = handle_tool(
+        "mas_draft_resolve",
+        {
+            "action": "approve",
+            "draft_id": draft_id,
+            "ticket": secret,
+            "workspace": str(workspace),
+        },
+    )
+    seen["approved_message"] = str(approved.get("message") or "")
+    seen["approved_error"] = str(approved.get("error") or "")
+    seen["file_after_approve"] = target.read_text(encoding="utf-8")
+
+    # The same ticket a second time is already spent.
+    replay = handle_tool(
+        "mas_draft_resolve",
+        {
+            "action": "approve",
+            "draft_id": draft_id,
+            "ticket": secret,
+            "workspace": str(workspace),
+        },
+    )
+    seen["replay_error"] = str(replay.get("error") or "")
+    seen["replay_reason"] = str(replay.get("reason") or "")
+    seen["file_after_replay"] = target.read_text(encoding="utf-8")
+
+    # Another draft, a fresh ticket, and the file must not move.
+    before_cross = target.read_text(encoding="utf-8")
+    cross_ticket = issue_ticket(state_dir, other_id, action="approve", human_token=token)
+    cross = handle_tool(
+        "mas_draft_resolve",
+        {
+            "action": "approve",
+            "draft_id": draft_id,
+            "ticket": str(cross_ticket.get("secret") or ""),
+            "workspace": str(workspace),
+        },
+    )
+    seen["cross_error"] = str(cross.get("error") or "")
+    seen["cross_reason"] = str(cross.get("reason") or "")
+    seen["file_after_cross"] = target.read_text(encoding="utf-8")
+    seen["file_before_cross"] = before_cross
+
+    # A ticket that was signed for a rejection cannot approve.
+    action_ticket = issue_ticket(state_dir, other_id, action="reject", human_token=token)
+    mismatch = handle_tool(
+        "mas_draft_resolve",
+        {
+            "action": "approve",
+            "draft_id": other_id,
+            "ticket": str(action_ticket.get("secret") or ""),
+            "workspace": str(workspace),
+        },
+    )
+    seen["mismatch_error"] = str(mismatch.get("error") or "")
+    seen["mismatch_reason"] = str(mismatch.get("reason") or "")
+    seen["file_after_mismatch"] = target.read_text(encoding="utf-8")
+
+    # A ticket that gets old stops working. The store is edited the
+    # way time would edit it - the timestamp moves, the hash does not.
+    stale = issue_ticket(state_dir, other_id, action="approve", human_token=token)
+    stale_id = str(stale.get("id") or "")
+    _age_ticket(state_dir, stale_id, seconds=7200)
+    expired = handle_tool(
+        "mas_draft_resolve",
+        {
+            "action": "approve",
+            "draft_id": other_id,
+            "ticket": str(stale.get("secret") or ""),
+            "workspace": str(workspace),
+        },
+    )
+    seen["expired_error"] = str(expired.get("error") or "")
+    seen["expired_reason"] = str(expired.get("reason") or "")
+    seen["file_after_expired"] = target.read_text(encoding="utf-8")
+
+    # And with neither a token nor a ticket, the door stays shut.
+    neither = handle_tool(
+        "mas_draft_resolve",
+        {
+            "action": "approve",
+            "draft_id": other_id,
+            "workspace": str(workspace),
+        },
+    )
+    seen["neither_error"] = str(neither.get("error") or "")
+    seen["file_after_neither"] = target.read_text(encoding="utf-8")
+
+    # The unused tickets are still in the store, marked as spent.
+    seen["tickets_at_end"] = len(_read_tickets(state_dir))
+    seen["store_json_keys"] = ",".join(sorted(_read_tickets(state_dir).keys()))
+    seen["json_module"] = json.__name__
+    return seen
+
+
+def _read_tickets(state_dir: Any) -> Dict[str, Any]:
+    """The signed tickets of a state directory, as a mapping."""
+    import json
+    import pathlib
+
+    path = pathlib.Path(state_dir) / "tickets.json"
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _age_ticket(state_dir: Any, ticket_id: str, seconds: int = 7200) -> None:
+    """Move a ticket's timestamp back, the way time would."""
+    import datetime
+    import json
+    import pathlib
+
+    path = pathlib.Path(state_dir) / "tickets.json"
+    if not path.exists():
+        return
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(data, dict):
+        return
+    record = data.get(ticket_id)
+    if not isinstance(record, dict):
+        return
+    stamp = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=int(seconds))
+    record["created_at"] = stamp.isoformat(timespec="seconds")
+    path.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _ticket_verdicts(facts: Dict[str, Any]) -> Dict[str, bool]:
+    """Turn the collected facts into the verdicts of the gate.
+
+    Kept apart from the collection on purpose: the collection cannot
+    be edited into saying "yes" without the facts themselves changing.
+    """
+    return {
+        "the human token signs a ticket for one draft": (
+            len(str(facts.get("ticket_id") or "")) > 0
+            and int(facts.get("ticket_secret_length") or 0) >= 16
+            and str(facts.get("ticket_bound_draft") or "") == str(facts.get("draft_id") or "")
+        ),
+        "a wrong token signs nothing": (
+            len(str(facts.get("wrong_token_error") or "")) > 0
+            and int(facts.get("tickets_after_wrong_token") or 0) == 0
+        ),
+        "the signed ticket is never written down in clear": (
+            not facts.get("store_contains_secret")
+            and int(facts.get("store_length") or 0) > 0
+            and int(facts.get("store_ticket_count") or 0) >= 1
+        ),
+        "a ticket opens the door for the draft it was signed for": (
+            str(facts.get("approved_error") or "") == ""
+            and len(str(facts.get("approved_message") or "")) > 0
+            and str(facts.get("file_after_approve") or "") == "the agent proposes this"
+        ),
+        "a ticket does not open the door for another draft": (
+            str(facts.get("cross_error") or "") == "ticket_refused"
+            and str(facts.get("cross_reason") or "") == "ticket_bound_to_another_draft"
+            and str(facts.get("file_after_cross") or "") == str(facts.get("file_before_cross") or "")
+        ),
+        "a ticket works only once": (
+            str(facts.get("replay_error") or "") == "ticket_refused"
+            and str(facts.get("replay_reason") or "") == "ticket_already_used"
+            and str(facts.get("file_after_replay") or "")
+            == str(facts.get("file_after_approve") or "")
+        ),
+        "a ticket stops working when it gets old": (
+            str(facts.get("expired_error") or "") == "ticket_refused"
+            and str(facts.get("expired_reason") or "") == "ticket_expired"
+            and str(facts.get("file_after_expired") or "")
+            == str(facts.get("file_after_mismatch") or "")
+        ),
+        "a ticket approves only the action it was signed for": (
+            str(facts.get("mismatch_error") or "") == "ticket_refused"
+            and str(facts.get("mismatch_reason") or "") == "ticket_action_mismatch"
+            and str(facts.get("file_after_mismatch") or "") == str(facts.get("file_before_cross") or "")
+        ),
+        "no token and no ticket still means no": (
+            str(facts.get("neither_error") or "") == "human_token_required"
+            and str(facts.get("file_after_neither") or "") == str(facts.get("file_before_cross") or "")
+        ),
+    }
+
+
+def _ticket_verdicts_independent(facts: Dict[str, Any]) -> Dict[str, bool]:
+    """A second, independent reading of the same facts.
+
+    Written from the *rule* rather than from the first implementation,
+    and the gate requires the two to agree. Two readers that disagree
+    mean one of them is wrong - and a gate that cannot tell which one
+    is wrong is not watching anything.
+    """
+    verdicts: Dict[str, bool] = {}
+    verdicts["the human token signs a ticket for one draft"] = (
+        len(str(facts.get("ticket_id") or "")) != 0
+        and int(facts.get("ticket_secret_length") or 0) >= 16
+        and str(facts.get("ticket_bound_draft") or "") != ""
+        and str(facts.get("ticket_bound_draft") or "") == str(facts.get("draft_id") or "")
+    )
+    verdicts["a wrong token signs nothing"] = (
+        str(facts.get("wrong_token_error") or "") != ""
+        and int(facts.get("tickets_after_wrong_token") or 0) == 0
+    )
+    verdicts["the signed ticket is never written down in clear"] = (
+        facts.get("store_contains_secret") is not True
+        and int(facts.get("store_length") or 0) >= 1
+        and int(facts.get("store_ticket_count") or 0) >= 1
+    )
+    verdicts["a ticket opens the door for the draft it was signed for"] = (
+        str(facts.get("approved_error") or "") == ""
+        and str(facts.get("approved_message") or "") != ""
+        and str(facts.get("file_after_approve") or "") == "the agent proposes this"
+    )
+    verdicts["a ticket does not open the door for another draft"] = (
+        str(facts.get("cross_error") or "") == "ticket_refused"
+        and str(facts.get("cross_reason") or "") == "ticket_bound_to_another_draft"
+        and str(facts.get("file_after_cross") or "") == str(facts.get("file_before_cross") or "")
+    )
+    verdicts["a ticket works only once"] = (
+        str(facts.get("replay_error") or "") == "ticket_refused"
+        and str(facts.get("replay_reason") or "") == "ticket_already_used"
+        and str(facts.get("file_after_replay") or "") == str(facts.get("file_after_approve") or "")
+    )
+    verdicts["a ticket stops working when it gets old"] = (
+        str(facts.get("expired_error") or "") == "ticket_refused"
+        and str(facts.get("expired_reason") or "") == "ticket_expired"
+        and str(facts.get("file_after_expired") or "")
+        == str(facts.get("file_after_mismatch") or "")
+    )
+    verdicts["a ticket approves only the action it was signed for"] = (
+        str(facts.get("mismatch_error") or "") == "ticket_refused"
+        and str(facts.get("mismatch_reason") or "") == "ticket_action_mismatch"
+        and str(facts.get("file_after_mismatch") or "")
+        == str(facts.get("file_before_cross") or "")
+    )
+    verdicts["no token and no ticket still means no"] = (
+        str(facts.get("neither_error") or "") == "human_token_required"
+        and str(facts.get("file_after_neither") or "")
+        == str(facts.get("file_before_cross") or "")
+    )
+    return verdicts
+
+
+def check_a_ticket_opens_one_door_once(
+    iterations: int = 10,
+) -> Dict[str, Any]:
+    """A human hands over one decision, not the key to the whole house.
+
+    The human token of v0.7.73 is a standing key: once an agent has
+    it, it can approve **every** draft, forever. That is a real hole
+    in a team of agents, and this gate is the repair.
+
+    This is the seventeenth gate. It watches that:
+
+    * a ticket can only be signed with the human token - a wrong
+      token signs nothing at all;
+    * the store keeps the **hash** of the ticket, never the ticket
+      itself, so a copied store carries no usable secret;
+    * a ticket opens the door for **the one draft it was signed for**
+      - another draft is refused, and the file does not move;
+    * a ticket works **once** - the second use is refused;
+    * a ticket **expires** - an old ticket stops working;
+    * a ticket signed for a rejection cannot approve;
+    * and with neither a token nor a ticket, the door stays shut.
+
+    The point of a ticket is *narrowing*: the human gives away one
+    decision, not the ability to make decisions.
+    """
+    import tempfile
+
+    failures: List[str] = []
+    rounds = max(1, int(iterations))
+    for round_index in range(rounds):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            try:
+                facts = _ticket_observations(root)
+            except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                failures.append(
+                    "round %d: the ticket layer broke: %s: %s"
+                    % (round_index + 1, type(exc).__name__, exc)
+                )
+                continue
+            seen = _ticket_verdicts(facts)
+            # Two readers of the same facts have to agree. If the
+            # verdict function was edited - so that it reports "yes"
+            # whatever the facts say - the second reader disagrees and
+            # the gate goes red.
+            independent = _ticket_verdicts_independent(facts)
+            for label in TICKET_OBSERVATIONS:
+                if label in independent and independent[label] != seen.get(label):
+                    failures.append(
+                        "round %d: the two readings of %s disagree (%r vs %r) - "
+                        "the verdict was tampered with"
+                        % (round_index + 1, label, seen.get(label), independent[label])
+                    )
+                    break
+            for label in TICKET_OBSERVATIONS:
+                if label not in seen:
+                    failures.append(
+                        "round %d: the gate did not observe %s"
+                        % (round_index + 1, label)
+                    )
+                elif not seen[label]:
+                    failures.append("round %d: %s" % (round_index + 1, label))
+
+            # The gate proves it can fail. The ticket check is broken
+            # on purpose - every ticket opens every door - and the gate
+            # has to notice. Without this, a gate whose own observation
+            # had been tampered with would report "all good" for ever.
+            import mas.drafts as drafts_module
+
+            real_redeem = drafts_module.redeem_ticket
+            try:
+                drafts_module.redeem_ticket = lambda *_args, **_kwargs: {
+                    "ok": True,
+                    "ticket_id": "T-forged",
+                }
+                broken = {}
+                try:
+                    broken = _ticket_verdicts(_ticket_observations(root))
+                except Exception:  # noqa: BLE001 - a crash counts as "noticed"
+                    broken = {}
+            finally:
+                drafts_module.redeem_ticket = real_redeem
+            if broken.get("a ticket does not open the door for another draft"):
+                failures.append(
+                    "round %d: the gate did not notice that the ticket check "
+                    "stopped being made - it cannot fail, so it does not watch"
+                    % (round_index + 1)
+                )
+
+    return {
+        "name": "ticket_approval",
+        "title": "人给出去的是一个决定，不是一把万能钥匙",
+        "invariant": (
+            "票据要人类令牌才能签；只存哈希；"
+            "只对一个草稿生效、用一次就作废、过期即失效；"
+            "动作不匹配被拒；无令牌无票据一律不开门"
+        ),
+        "detail": "一次性票据层：mas drafts ticket <草稿编号>",
+        "iterations": rounds,
+        "failures": failures,
+        "ok": not failures,
+    }
+
+
+check_a_ticket_opens_one_door_once.CHECK_NAME = "ticket_approval"  # type: ignore[attr-defined]
+
+
 CHECKS = (
     check_relay_refusal_keeps_the_connection_usable,
     check_provider_keeps_the_usage_of_a_failed_call,
@@ -3935,6 +4407,7 @@ CHECKS = (
     check_the_index_knows_every_file,
     check_a_draft_is_approved_before_it_is_written_back,
     check_an_agent_can_propose_but_not_approve,
+    check_a_ticket_opens_one_door_once,
 )
 
 

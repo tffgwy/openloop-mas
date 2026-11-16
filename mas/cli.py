@@ -1102,6 +1102,55 @@ def cmd_drafts(args: argparse.Namespace) -> int:
         print(token)
         return 0
 
+    if action == "ticket":
+        # Signing a ticket needs the human token, and the ticket is
+        # bound to one draft. The token is asked for on the command
+        # line so the human can paste it from wherever they keep it -
+        # and so an agent that only has a ticket can never sign one.
+        from mas.drafts import issue_ticket
+
+        config = load_config()
+        state = pathlib.Path(
+            os.path.expanduser(os.path.expandvars(str(config.get("state_dir") or "")))
+        )
+        target = str(getattr(args, "draft_id", "") or "").strip()
+        if not target:
+            message = "签发票据要指明草稿编号：mas drafts ticket <草稿编号>"
+            if getattr(args, "json", False):
+                _print({"error": "draft_id_required", "message": message}, True)
+            else:
+                print(message, file=sys.stderr)
+            return 2
+        ticket_action = str(getattr(args, "ticket_action", "") or "approve").strip().lower()
+        try:
+            ticket = issue_ticket(
+                state,
+                target,
+                action=ticket_action,
+                human_token=getattr(args, "token", ""),
+            )
+        except ValueError as exc:
+            message = str(exc)
+            if getattr(args, "json", False):
+                _print({"error": "ticket_refused", "message": message}, True)
+            else:
+                print(message, file=sys.stderr)
+            return 2
+        if getattr(args, "json", False):
+            _print(
+                {
+                    "ticket_id": ticket.get("id"),
+                    "ticket": ticket.get("secret"),
+                    "draft_id": ticket.get("draft_id"),
+                    "action": ticket.get("action"),
+                    "state_dir": str(state),
+                },
+                True,
+            )
+            return 0
+        print(ticket.get("secret"))
+        return 0
+
     workspace = str(getattr(args, "workspace", "") or "").strip()
     explicit = bool(workspace)
     if not workspace:
@@ -1824,7 +1873,7 @@ def build_parser() -> argparse.ArgumentParser:
         "action",
         nargs="?",
         default="list",
-        choices=["list", "show", "approve", "reject", "token"],
+        choices=["list", "show", "approve", "reject", "token", "ticket"],
         help="要做的动作（默认 list）",
     )
     drafts.add_argument("draft_id", nargs="?", default="", help="草稿编号")
@@ -1839,6 +1888,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="只看某种状态的草稿",
     )
     drafts.add_argument("--note", default="", help="人工说明")
+    drafts.add_argument(
+        "--token",
+        default="",
+        help="人类令牌：签发票据时用来证明是人签的",
+    )
+    drafts.add_argument(
+        "--ticket-action",
+        default="approve",
+        choices=["approve", "reject"],
+        help="这张票据允许的动作（默认 approve）",
+    )
     add_json(drafts)
     drafts.set_defaults(func=cmd_drafts)
 

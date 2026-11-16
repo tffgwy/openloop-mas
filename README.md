@@ -3,6 +3,22 @@
 > 一个 **零依赖、纯标准库** 的多智能体闭环运行时：把「规划 → 执行 → 验证 → 复盘」写成**有验收标准、有退出条件、有过程账本**的工程循环。
 > **下载一个脚本就能装**，初学者也能跑起来。
 
+- **第 17 项门禁 `ticket_approval`** —— v0.7.73 的**人类令牌**是一把
+  **常备钥匙**：贴给 agent 一次，它就能批准**所有**草稿，**永久有效**。
+  在多智能体团队里这是一条真缝 —— 提议的人拿到了确认的权力，
+  **分权就白分了**。
+  现在令牌之外多了一条路：**票据**。
+  `mas drafts ticket <草稿编号>` 用人类令牌签一张票据，
+  它**只对那一个草稿**生效、**用一次就烧掉**、**15 分钟过期**，
+  **盘上只存哈希** —— 票据库被复制走也带不走一张能用的票据。
+  票据还**只能签一个动作**：给驳回签的票据批不了批准。
+  `mas_draft_resolve` 认票据了，票据不对时报错会说明到底卡在哪：
+  `ticket_already_used` / `ticket_expired` /
+  `ticket_bound_to_another_draft` / `ticket_action_mismatch`。
+  这个缝是用**反证**查出来的：票据路径的**十三个变异全部被捕获**
+  （其中四个就是**门禁自己的判定被改坏**）；
+  而且这道门禁的判定被**独立实现了两遍**，**改坏判定函数自己也会被抓**。
+
 - **第 16 项门禁 `mcp_draft_approval`** —— v0.7.72 把「改动先进草稿」
   落成了**引擎级**规则：循环改你已有的文件，先记草稿，你批准才写回。
   **但那条规则只管住了循环自己** —— 一个会说话的 agent 拿着 MCP 工具，
@@ -1447,6 +1463,7 @@ mas drafts show D-1a2b3c4d              # 看这一份的 diff
 mas drafts approve D-1a2b3c4d           # 批准：写回原文件
 mas drafts reject  D-1a2b3c4d           # 驳回：原样不动
 mas drafts token                        # 拿人类令牌（agent 批不了自己的草稿）
+mas drafts ticket D-1a2b3c4d --token <人类令牌>   # 签一张只管这一个草稿、用一次就作废的票据
 ```
 
 一次运行想改一个**已经存在**的文件时，它**不再直接覆盖**：
@@ -2039,8 +2056,9 @@ mas doctor        # 安装自检
 mas selftest      # 隔失门禁：重复打磈易偶发的路径（离线）
 mas files        # 索引工作区：每个文件是什么格式、能读出什么
 mas preview FILE # 预览一个文件（PDF / Word / 文本…）
-mas drafts       # 待确认的草稿：list / show / approve / reject / token
+mas drafts       # 待确认的草稿：list / show / approve / reject / token / ticket
 mas drafts token # 拿人类令牌：agent 提的草稿，agent 自己批不了
+mas drafts ticket D-ID --token <令牌>  # 签一张只管一个草稿、用一次就作废、15 分钟过期的票据
 mas serve         # 以 MCP stdio 服务运行
 mas http          # 以 HTTP + SSE 运行（远程接入；对外部署请设 MAS_HTTP_TOKEN）
 mas relay         # OpenAI 兼容中继：给「非要 API Key」的客户端用（默认 127.0.0.1:8766）

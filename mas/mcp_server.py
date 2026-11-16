@@ -253,13 +253,17 @@ TOOLS: List[Dict[str, Any]] = [
         "Approve or reject a draft. Approving writes the change back to "
         "the original file; rejecting leaves the file byte-identical. "
         "This needs the human token, so an agent cannot approve its own "
-        "proposal.",
+        "proposal - or a one-shot ticket signed for this one draft.",
         {
             "type": "object",
             "properties": {
                 "action": {"type": "string", "description": "approve | reject"},
                 "draft_id": {"type": "string", "description": "草稿编号"},
                 "token": {"type": "string", "description": "人类令牌：mas drafts token"},
+                "ticket": {
+                    "type": "string",
+                    "description": "一次性票据：mas drafts ticket <草稿编号> 签发，只对那一个草稿生效",
+                },
                 "note": {"type": "string", "description": "给人看的备注"},
                 "workspace": {"type": "string", "description": "工作区路径"},
             },
@@ -513,19 +517,42 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         return {"draft": draft, "message": "drafted: %s" % draft.get("path")}
 
     if name == "mas_draft_resolve":
-        from mas.drafts import approve_draft, find_draft, reject_draft, verify_human_token
+        from mas.drafts import (
+            approve_draft,
+            find_draft,
+            redeem_ticket,
+            reject_draft,
+            verify_human_token,
+        )
 
         action = str(arguments.get("action", "")).strip().lower()
         draft_id = str(arguments.get("draft_id") or "")
         if action not in ("approve", "reject"):
             return {"error": "unknown_action", "message": "action must be approve or reject"}
         base = _workspace_base(config, arguments.get("workspace"))
-        if not verify_human_token(_state_dir(config), arguments.get("token")):
+        ticket = str(arguments.get("ticket") or "").strip()
+        if ticket:
+            # A ticket is the narrow door: one draft, one use, one
+            # expiry. It opens the door for exactly the decision the
+            # human signed for - and nothing else.
+            redeemed = redeem_ticket(
+                _state_dir(config), draft_id, ticket, action=action
+            )
+            if not redeemed.get("ok"):
+                return {
+                    "error": "ticket_refused",
+                    "reason": redeemed.get("reason"),
+                    "message": (
+                        "the ticket does not open this door: %s" % redeemed.get("reason")
+                    ),
+                }
+        elif not verify_human_token(_state_dir(config), arguments.get("token")):
             return {
                 "error": "human_token_required",
                 "message": (
-                    "approving a draft needs the human token; "
-                    "run `mas drafts token` on the machine that owns the files"
+                    "approving a draft needs the human token or a one-shot ticket; "
+                    "run `mas drafts token` or `mas drafts ticket <id>` "
+                    "on the machine that owns the files"
                 ),
             }
         found = find_draft(base, draft_id)

@@ -64,7 +64,7 @@ class ParallelPickGateTest(unittest.TestCase):
 
         result = run_selftest(iterations=2)
         self.assertTrue(result["ok"], result)
-        self.assertEqual(len(result["checks"]), 16)
+        self.assertEqual(len(result["checks"]), 17)
 
 
 class CliTest(unittest.TestCase):
@@ -77,11 +77,11 @@ class CliTest(unittest.TestCase):
             cwd=str(REPO), env=env, capture_output=True, text=True, encoding="utf-8",
         )
 
-    def test_the_json_form_lists_sixteen_checks(self):
+    def test_the_json_form_lists_seventeen_checks(self):
         proc = self._run("selftest", "--iterations", "1", "--json")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         payload = json.loads(proc.stdout)
-        self.assertEqual(len(payload["checks"]), 16)
+        self.assertEqual(len(payload["checks"]), 17)
         self.assertTrue(payload["ok"])
 
     def test_it_runs_without_a_model_endpoint(self):

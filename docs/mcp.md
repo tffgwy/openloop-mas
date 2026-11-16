@@ -79,9 +79,9 @@ env = { PYTHONPATH = "<install-dir>/app" }
 | `mas_config` | 读取 / 更新配置 | `set`（可选，键值对） |
 | `mas_drafts` | 列出待确认的草稿，或看某一份的 diff | `action`（`list` / `show`）、`draft_id`、`state`、`workspace` |
 | `mas_draft_stage` | **提**一份改动；原文件一个字节都不动 | `path`（必填）、`content`（必填）、`reason`、`workspace` |
-| `mas_draft_resolve` | 批准 / 驳回草稿；**批准要人类令牌** | `action`（`approve` / `reject`）、`draft_id`（必填）、`token`、`note` |
-| `mas_files` | 索引工作区：每个文件是什么格式、能读出什么 | `path`（可选，默认所有工作区） |
-| `mas_preview` | 预览一个文件（PDF / Word / 文本…） | `path`（必填）、`max_chars` |
+| `mas_draft_resolve` | 批准 / 驳回草稿；**批准要人类令牌或一次性票据** | `action`（`approve` / `reject`）、`draft_id`（必填）、`token`、`ticket`、`note` |
+| `mas_files` | 索引工作区：每个文件是什么格式、能读出什么 | `path`（可选，默认所有工作区）、`workspace` |
+| `mas_preview` | 预览一个文件（PDF / Word / 文本…） | `path`（必填）、`workspace`、`max_chars` |
 
 ### 4.0.1 agent 能提草稿，但不能自己批
 
@@ -89,6 +89,29 @@ env = { PYTHONPATH = "<install-dir>/app" }
 **批准要人类令牌**（`mas drafts token`）：令牌不对、空令牌、没令牌，
 一律拒绝，而且**原文件不动**。
 详见 **[草稿层文档](drafts.md)**。
+
+### 4.0.2 一次性票据：给出去的是一个决定
+
+常备令牌是**一把万能钥匙** —— 贴给 agent 一次，它就能批准**所有**草稿。
+**票据**是窄门：`mas drafts ticket <草稿编号>` 用人类令牌签一张，
+它**只对那一个草稿**生效、**用一次就烧掉**、**15 分钟过期**，
+**盘上只存哈希**。
+
+```json
+{
+  "name": "mas_draft_resolve",
+  "arguments": {
+    "action": "approve",
+    "draft_id": "D-1a2b3c4d",
+    "ticket": "<那张票据>"
+  }
+}
+```
+
+传了 `ticket` 就走票据这条路，**没传才回落到常备令牌**。
+票据不对时报错会说明到底卡在哪：`ticket_already_used` /
+`ticket_expired` / `ticket_bound_to_another_draft` /
+`ticket_action_mismatch`。
 
 ### 4.1 `mas_run` 示例
 
