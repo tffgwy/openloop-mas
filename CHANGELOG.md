@@ -4,6 +4,44 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+# Changelog
+
+All notable changes to OpenLoop MAS are recorded here. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
+[semantic versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.7.68] - 2026-11-16
+
+### 报告要看得见「人写的那一步」
+
+v0.7.67 让**人写的交付物也能把闭环关上**。但那份成果在报告里是**看不见的**：
+报告只认机器跑出来的记录，人交回的东西在账本里留了一行，却读不出结论。
+这一版把这条缝补上 —— 并且**当场抓到两个真 bug**。
+
+- **两个真缺陷（先量出来，再修掉）**：
+  - **闭环明明合上了，报告却说 `closed:false`、闭环率 0%**，问题还挂在
+    「待处理」里。根因是人工交回的账本条目缺 `closed` / `goal` / `title` /
+    `decision` / `files`，而且**分数挂在 handback 行上、报告却只读 closure 行**。
+  - **线程闭合语义反了** —— 旧规则是「所有成员运行都闭合才算闭合」，
+    于是**失败过一次就永远待处理**，哪怕后来已经成功。现在改成
+    **最后一次尝试闭合即闭合**。
+- **第 10 项门禁 `handback_report`** —— 第 9 项门禁看的是**引擎**（人写的东西能不能闭合），
+  **没有任何门禁看报告层**。这个缝是用**反证**查出来的：报告层的六个变异
+  （丢掉 `closed`、决策改名、不读 handback 分数、回到「所有成员都闭合才算」、
+  忘掉是哪一次闭的、来源恒说机器）**一个都没被捕获** —— 第 9 项门禁一个都没拿住。
+  现在第 10 项门禁看着这一层，**六个变异全部捕获**。
+
+- **报告里的「来源」列** —— 「问题概览」和「运行概览」两张表都多了一列：
+  `🤝 人工完成` / `🤖 机器闭环`。一眼看出这次闭环是谁关上的。
+- **人工交付物有自己的验收小节** —— 「人工交付物的验收判定：」，
+  逐条列出通过/未通过，并附上**人的意见**（human note）。
+- **决策词汇分开** —— 机器闭合记 `close`，人工交回记 `handback`，
+  两者在账本、报告、replay 里都是**不同的词**。
+- **`mas replay` 也看得见人** —— 运行头部打印「🤝 来源：人工交付物」与
+  人工意见；每个 step 的角色用双语显示 `人工交回（handback）`。
+- **15 条新测试**（`tests/test_handback_report_768.py`）守住这些行为，
+  包括「被拒的 handback 仍然要被报告出来」—— 失败不许消失。
+
 ## [0.7.67] - 2026-11-16
 
 ### 人写的交付物也能把闭环关上

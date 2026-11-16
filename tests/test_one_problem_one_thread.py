@@ -380,7 +380,28 @@ class ThreadCountingTest(unittest.TestCase):
         self.assertEqual(threads[0]["run_count"], 2)
         self.assertEqual(threads[0]["iterations"], 5)
 
-    def test_a_thread_is_closed_only_when_all_its_runs_closed(self):
+    def test_a_thread_is_closed_when_its_last_attempt_closed(self):
+        """The last attempt is the verdict.
+
+        The old rule was "every attempt closed", which can never hold
+        for a problem that took more than one try - so a problem that
+        a person later finished by hand, or a resumed run that finally
+        closed, stayed in the queue forever as "unhandled". The queue
+        said the opposite of what happened, and a queue that never
+        empties teaches the reader to ignore it.
+        """
+        from mas.report import group_threads
+
+        threads = group_threads(
+            [
+                {"run_id": "R-1", "ticket_id": "T-1", "closed": False},
+                {"run_id": "R-2", "ticket_id": "T-1", "closed": True},
+            ]
+        )
+        self.assertTrue(threads[0]["closed"])
+        self.assertEqual(threads[0]["closed_by"], "R-2")
+
+    def test_a_thread_is_still_open_when_its_last_attempt_failed(self):
         from mas.report import group_threads
 
         threads = group_threads(
@@ -390,6 +411,20 @@ class ThreadCountingTest(unittest.TestCase):
             ]
         )
         self.assertFalse(threads[0]["closed"])
+        self.assertEqual(threads[0]["closed_by"], "")
+
+    def test_a_thread_that_a_human_finished_is_marked_as_a_handback(self):
+        from mas.report import group_threads
+
+        threads = group_threads(
+            [
+                {"run_id": "R-1", "ticket_id": "T-1", "closed": False},
+                {"run_id": "H-1", "ticket_id": "T-1", "closed": True, "handback": True},
+            ]
+        )
+        self.assertTrue(threads[0]["closed"])
+        self.assertTrue(threads[0]["handback"])
+        self.assertEqual(threads[0]["closed_by"], "H-1")
 
     def test_a_resumed_run_joins_the_thread_of_its_ticket(self):
         from mas.report import group_threads

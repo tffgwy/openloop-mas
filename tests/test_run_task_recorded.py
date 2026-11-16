@@ -139,7 +139,10 @@ class LedgerRemembersTheTaskTest(unittest.TestCase):
         self.assertIn("写 A", table_rows[0])
         self.assertIn("\\|", table_rows[0])
         cells = re.split(r"(?<!\\)\|", table_rows[0])
-        self.assertEqual(len(cells), 11)  # 9 cells + 2 empty edges
+        # 10 cells + 2 empty edges. The table grew a "source" column,
+        # which says whether the answer came from the loop or from a
+        # person.
+        self.assertEqual(len(cells), 12)
 
     def test_the_artifacts_listing_names_the_task(self):
         code, out = _run_cli(

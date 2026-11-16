@@ -1053,14 +1053,32 @@ def cmd_replay(args: argparse.Namespace) -> int:
         goal = block.get("goal") or ""
         if goal:
             print(f"   任务：{goal}")
+        # Say when a person, not the loop, produced the answer. The
+        # replay is what a reader opens to understand how a problem
+        # was solved, and "how it was solved" includes "by whom".
+        if block.get("handback"):
+            print("   🤝 来源：人工交付物")
+            human_note = block.get("human_note") or ""
+            if human_note:
+                print(f"      人工意见：{human_note}")
         for step in trace["steps"]:
             if step.get("run_id") != block.get("run_id"):
                 continue
             mark = "*" if step.get("closed") else "-"
             detail = step.get("detail_reading") or step.get("detail") or ""
+            # The role column says "handback" in the machine's own
+            # word. The reader gets the word, and the raw name stays
+            # beside it so a grep still works.
+            role_raw = str(step.get("role") or "")
+            role_text = role_reading(role_raw)
+            role_cell = (
+                role_raw
+                if not role_text or role_text == role_raw
+                else f"{role_text}（{role_raw}）"
+            )
             print(
                 f"  {mark} #{step.get('seq')} iter={step.get('iteration')} "
-                f"{step.get('role')} {step.get('decision') or ''} {detail}".rstrip()
+                f"{role_cell} {step.get('decision') or ''} {detail}".rstrip()
             )
         # An unfinished run needs somebody to pick it up. The replay
         # used to stop at the last line of the trace, so a reader who
@@ -1085,10 +1103,18 @@ def cmd_replay(args: argparse.Namespace) -> int:
         for thread in threads:
             label = thread.get("title") or thread.get("goal") or thread.get("thread_id")
             state = "已解决" if thread.get("closed") else "待处理"
+            # Who solved it. A problem a person finished has to look
+            # different from a problem the loop finished, or the
+            # queue quietly takes credit for a human's work.
+            source = ""
+            if thread.get("handback"):
+                source = "　来源：人工完成"
+            elif thread.get("closed"):
+                source = "　来源：机器闭环"
             print(
                 f"  [{state}] {label}"
                 f"　{thread.get('run_count')} 次尝试"
-                f"　{thread.get('iterations')} 轮"
+                f"　{thread.get('iterations')} 轮{source}"
             )
     return 0
 

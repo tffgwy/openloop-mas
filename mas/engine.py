@@ -2694,6 +2694,38 @@ class LoopEngine:
                 "issues": issues,
                 "ticket_id": ticket_id,
                 "workspace": result.workspace,
+                # The end entry is the engine's own account of the run,
+                # and the report reads it for everything it knows about
+                # a run. The handback entry used to carry only a part of
+                # that account - no ``closed``, no goal, no files - so a
+                # human deliverable that *did* close the loop was
+                # reported as an open problem. The reader was told the
+                # opposite of what happened.
+                "closed": status == STATUS_CLOSED,
+                # The decision of a handback is its own word: the
+                # deliverable was not written by the loop, it was
+                # written by a person and then judged. Saying
+                # "close" would hide the difference between "the
+                # machine did it" and "a human did it and the
+                # machine checked it" - and that difference is
+                # the whole point of the handback path.
+                "decision": "handback" if status == STATUS_CLOSED else "revise",
+                "error": error,
+                "goal": str(payload.get("goal") or ""),
+                "title": str(payload.get("title") or payload.get("goal") or ""),
+                "artifact_chars": len(artifact),
+                "files": list(self._written_files),
+                # The run that produced the ticket this handback answers.
+                # Without it the report cannot say "this attempt came
+                # after that one" - the handback looks like a run of its
+                # own that solved a different problem.
+                "parent_ticket_id": ticket_id,
+                # The mark that says a human wrote this deliverable.
+                # Every report, replay and thread view keys off it, so
+                # it has to be on the ledger, not only in the engine's
+                # memory.
+                "handback": True,
+                "human_note": note or str(ticket.get("note") or ""),
             },
         )
 

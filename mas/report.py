@@ -248,6 +248,11 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     run_end = None
     errors: List[str] = []
     roles: Dict[str, int] = {}
+    # The row a human-written deliverable was submitted on. It is kept
+    # apart from the closure row, because it is a different kind of
+    # step: not a round of the loop, but the human bringing the
+    # answer in.
+    handback = None
     # Every round of the loop, in order. The engine writes one closure
     # row per iteration; the report used to keep only the last one, so
     # a run that revised itself three times showed a single verdict -
@@ -277,9 +282,21 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             errors.append(str(row.get("error", "")))
         elif role == "reflector":
             reflections.append(row)
+        elif role == "handback":
+            handback = row
 
     closure = closure or {}
     scores = closure.get("scores") or []
+    # A human-written deliverable never goes through a closure row: it
+    # is not judged by a round of the loop, it is submitted to the
+    # standards the loop was held to. So the scores of a handback live
+    # on the handback row. The report looked at the closure row only,
+    # and a handback run therefore showed *no* judgement at all - the
+    # reader saw a closed run with an empty verdict, and had no way to
+    # tell whether anybody had actually checked the deliverable.
+    handback_scores = list((handback or {}).get("scores") or [])
+    if not scores and handback_scores:
+        scores = handback_scores
     # A criterion is blocking unless it explicitly says otherwise. Optional
     # criteria may fail without keeping the loop open, so they are reported
     # separately instead of being mixed into the failure list.
@@ -484,6 +501,14 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             "missing": (review or {}).get("missing"),
         },
         "errors": errors,
+        # Did a human write this deliverable? A run that a person
+        # finished by hand has to be distinguishable from a run the
+        # machine closed on its own - the reader is looking at the
+        # difference between "the system did it" and "a person did it,
+        # and the system checked it".
+        "handback": bool(end.get("handback")) if end else False,
+        # What the human said when they handed it in.
+        "human_note": str(end.get("human_note") or "") if end else "",
         # Why the run ended the way it did - the engine's own account.
         "error": str(end.get("error") or ""),
         "ended_at": str(end.get("ts") or ""),
@@ -530,12 +555,37 @@ def group_threads(runs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     threads: List[Dict[str, Any]] = []
     for key in order:
         members = grouped[key]
+        # A problem is closed when the *last* attempt closed it.
+        #
+        # It used to be "every attempt closed", which is a rule that
+        # cannot ever be satisfied in practice: the first attempt of
+        # a hard problem fails, so the problem is "open" forever - and
+        # a human who later finished the job by hand, or a resumed run
+        # that finally closed, still saw their problem sitting in the
+        # queue as "???". The report said the opposite of what
+        # happened, and a queue that never empties teaches the reader
+        # to ignore it.
+        #
+        # The last attempt is the one that counts: a later attempt
+        # supersedes an earlier one. The attempts are kept, so the
+        # history is not lost - only the verdict changes.
+        last = members[-1] if members else {}
+        closed = bool(last.get("closed"))
+        closed_by = str(last.get("run_id") or "") if closed else ""
+        # A human deliverable that closed the problem is worth naming:
+        # it is the answer, and it came from a person.
+        handback = any(bool(m.get("handback")) for m in members)
         threads.append(
             {
                 "thread_id": key,
                 "runs": [m.get("run_id") for m in members],
                 "run_count": len(members),
-                "closed": all(m.get("closed") for m in members),
+                "closed": closed,
+                # Which attempt closed the problem. Empty while it is
+                # still open.
+                "closed_by": closed_by,
+                # Whether a human wrote the deliverable that closed it.
+                "handback": handback,
                 "iterations": sum(int(m.get("iterations") or 0) for m in members),
                 "tokens": sum(int(m.get("tokens") or 0) for m in members),
                 "goal": next((m.get("goal") for m in members if m.get("goal")), ""),
@@ -547,6 +597,31 @@ def group_threads(runs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             }
         )
     return threads
+
+
+def _run_source(run: Dict[str, Any]) -> str:
+    """Where the answer of one run came from, in a word.
+
+    A run the loop closed by itself and a run a person closed by hand
+    are both "closed" - but they are not the same achievement, and a
+    report that cannot tell them apart quietly lets the machine take
+    credit for a person's work. The word is short enough to sit in a
+    table cell and honest enough to be worth sitting there.
+    """
+    if run.get("handback"):
+        return "🤝 人工交付物"
+    if run.get("closed"):
+        return "🤖 机器闭环"
+    return "—"
+
+
+def _thread_source(thread: Dict[str, Any]) -> str:
+    """Where the answer of one problem came from, in a word."""
+    if thread.get("handback"):
+        return "🤝 人工完成"
+    if thread.get("closed"):
+        return "🤖 机器闭环"
+    return "—"
 
 
 def build_report(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -623,24 +698,35 @@ def render_markdown(report: Dict[str, Any]) -> str:
     if threads:
         lines.append("## 问题概览")
         lines.append("")
-        lines.append("| 问题 | 状态 | 尝试 | 轮数 | 工单 | token |")
-        lines.append("|---|---|---|---|---|---|")
+        lines.append(
+            "| 问题 | 状态 | 尝试 | 轮数 | 工单 | token | 来源 |"
+        )
+        lines.append("|---|---|---|---|---|---|---|")
         for thread in threads:
             label = str(thread.get("title") or thread.get("goal") or thread.get("thread_id"))
             label = label.replace("|", "\\|")[:40]
             state = "已解决" if thread.get("closed") else "待处理"
             ticket = str(thread.get("ticket_id") or "-")
+            # Where the answer came from. A problem closed by a
+            # human is not the same as a problem the loop closed
+            # by itself, and the reader has to be able to tell
+            # them apart at a glance - otherwise "the loop closed
+            # it" quietly takes credit for work a person did.
+            source = _thread_source(thread)
             lines.append(
                 f"| {label or '-'} | {state} | {thread.get('run_count', 0)} | "
                 f"{thread.get('iterations', 0)} | `{ticket}` | "
-                f"{int(thread.get('tokens') or 0)} |"
+                f"{int(thread.get('tokens') or 0)} | {source} |"
             )
         lines.append("")
 
     lines.append("## 运行概览")
     lines.append("")
-    lines.append("| 运行 ID | 任务 | 状态 | 决策 | 迭代 | 停滞 | 产物 SHA | 条目 | token |")
-    lines.append("|---|---|---|---|---|---|---|---|---|")
+    lines.append(
+        "| 运行 ID | 任务 | 状态 | 决策 | 迭代 | 停滞 | "
+        "产物 SHA | 条目 | token | 来源 |"
+    )
+    lines.append("|---|---|---|---|---|---|---|---|---|---|")
     for run in runs:
         status = str(run.get("status") or "-")
         icon = STATUS_ICON.get(status, "-")
@@ -666,7 +752,8 @@ def render_markdown(report: Dict[str, Any]) -> str:
             f"{decision_cell} | "
             f"{run.get('iterations', 0)} | {int(run.get('stagnation') or 0)} | "
             f"`{(run.get('artifact_sha') or '')[:12]}` | "
-            f"{run.get('entries', 0)} | {int(run.get('tokens') or 0)} |"
+            f"{run.get('entries', 0)} | {int(run.get('tokens') or 0)} | "
+            f"{_run_source(run)} |"
         )
     lines.append("")
 
@@ -682,6 +769,26 @@ def render_markdown(report: Dict[str, Any]) -> str:
         # timestamps.
         if run.get("goal"):
             lines.append(f"- 任务：{run.get('goal')}")
+        # The human step, said out loud. A run that a person finished
+        # by hand is not a run of the loop - it is the loop's own
+        # standard applied to somebody else's work. The report used to
+        # render it like any other run, so the one place where a human
+        # was in the loop was the one place the reader could not see
+        # a human.
+        if run.get("handback"):
+            note = str(run.get("human_note") or "")
+            if run.get("closed"):
+                lines.append(
+                    "- 🤝 人工交付物：**通过验收**"
+                    "（人工交回并通过验收）"
+                )
+            else:
+                lines.append(
+                    "- 🤝 人工交付物：**未通过验收**"
+                    "（人工交回，但没过标准）"
+                )
+            if note:
+                lines.append(f"  - 人工意见：{note}")
         if run.get("title") and run.get("title") != run.get("goal"):
             lines.append(f"- 标题：{run.get('title')}")
         lines.append(f"- 开始：{run.get('started_at') or '-'}")
@@ -833,7 +940,10 @@ def render_markdown(report: Dict[str, Any]) -> str:
                 lines.append(f"  - 评审视角：{', '.join(personas)}")
         scores = run.get("scores") or []
         if scores:
-            lines.append("- 验收判定：")
+            if run.get("handback"):
+                lines.append("- 人工交付物的验收判定：")
+            else:
+                lines.append("- 验收判定：")
             for score in scores:
                 # Three states, three marks. ``PASS``/``FAIL``/``UNDECIDED``
                 # - the middle state used to be rendered as FAIL, which
@@ -933,6 +1043,11 @@ def replay_trace(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "artifact_sha": row.get("artifact_sha"),
                 "verdict": row.get("verdict"),
                 "closed": row.get("closed"),
+                # The mark that says a person wrote this step. Without
+                # it the replay shows the human's work as one more
+                # machine role, and the reader cannot see where in the
+                # loop the human stepped in.
+                "handback": bool(row.get("handback")),
                 # Two details: the machine one for the exported
                 # table, the human one for the replay screen.
                 "detail": _short_detail(row),
@@ -954,6 +1069,11 @@ def replay_trace(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "ticket_id": summary["ticket_id"],
                 "artifact_path": summary["artifact_path"],
                 "tokens": summary["tokens"],
+                # Did a person close this run? The replay says so
+                # next to the run header, so the reader learns it
+                # before reading the steps.
+                "handback": bool(summary.get("handback")),
+                "human_note": str(summary.get("human_note") or ""),
             }
         )
     # The problems behind the runs, so a reader sees "one problem, two
@@ -1003,6 +1123,21 @@ def _human_detail(row: Dict[str, Any]) -> str:
     """
     detail = _short_detail(row)
     role = str(row.get("role", ""))
+    if role == "handback":
+        scores = row.get("scores") or []
+        passed = [s for s in scores if s.get("pass") is True]
+        parts = ["人工交回交付物"]
+        if scores:
+            parts.append(f"通过 {len(passed)}/{len(scores)}")
+            for item in scores:
+                if item.get("pass") is True:
+                    continue
+                note = str(item.get("note") or "")
+                reading = note_reading(note) or note
+                if reading:
+                    parts.append(f"未过 {item.get('id')}: {reading}")
+        if parts:
+            return "; ".join(parts)[:300]
     if role == "closure":
         verdict = str(row.get("verdict") or "").strip()
         decision = str(row.get("decision") or "").strip()
@@ -1060,6 +1195,27 @@ def _short_detail(row: Dict[str, Any]) -> str:
     role = str(row.get("role", ""))
     if role == "plan":
         return ""
+    if role == "handback":
+        # The handback row is the one line of a ledger that carries the
+        # human's own work. It used to render as an empty string -
+        # the trace had no branch for it - so a replay of a run that a
+        # person finished showed a blank line exactly where the person
+        # was. The per-criterion result is what makes the line worth
+        # reading.
+        scores = row.get("scores") or []
+        passed = [s for s in scores if s.get("pass") is True]
+        parts = ["人工交回"]
+        if scores:
+            parts.append(f"通过 {len(passed)}/{len(scores)}")
+            for item in scores:
+                if item.get("pass") is True:
+                    continue
+                note = str(item.get("note") or "")
+                parts.append(f"未过 {item.get('id')}{': ' + note if note else ''}")
+        issues = row.get("issues") or []
+        if issues:
+            parts.append("; ".join(str(i) for i in issues)[:200])
+        return "; ".join(parts)[:300]
     if role == "closure":
         # The closure row is the most important line of a replay - it is
         # the one that says what was judged and how it came out. Its

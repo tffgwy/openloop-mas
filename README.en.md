@@ -7,6 +7,23 @@
 
 [English](README.en.md) | [中文](README.md)
 
+- **The 10th gate `handback_report`** - v0.7.67 let a human-written deliverable
+  close the loop, but **the report could not see it**. The ninth gate watches
+  the *engine* (can a human's work close the loop?); **nothing watched the
+  report layer**. That gap was found by **mutation testing**: six mutations of
+  the reporting layer (drop the `closed` flag, rename the decision, stop
+  reading the handback scores, go back to "every member run must close",
+  forget which attempt closed it, always label the source as the machine)
+  were caught by **none** of them. The tenth gate now watches that layer, and
+  **all six mutations are caught**.
+- **A "source" column in the report** - both the problem overview and the run
+  overview now say who closed the loop: `🤝 human` / `🤖 machine`.
+- **A deliverable a human wrote gets its own acceptance section** - each
+  criterion listed, plus **the human's own note**; **a rejected deliverable is
+  reported too** - a failure may not disappear.
+- **`mas replay` shows the human too** - the run header prints the source and
+  the human note.
+
 **What v0.7.67 adds** (**a deliverable a human wrote can close the loop**):
 
 - **The 9th gate `handback_closes`** - the ticket queue used to have exactly

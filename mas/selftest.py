@@ -1995,6 +1995,247 @@ def check_a_handback_closes_on_human_work(
     }
 
 
+def check_a_handback_shows_up_in_the_report(
+    iterations: int = 10,
+) -> Dict[str, Any]:
+
+    """The report has to show the step a human took.
+
+    v0.7.67 made it possible for a human-written deliverable to close
+    the loop. But the report could not see it: the handback row was
+    not a closure row, so the report read no verdict, no goal, no
+    files - and the problem stayed in the "pending" column even
+    though the loop had closed. The reader was told the opposite of
+    what happened.
+
+    The ninth gate (``handback_closes``) watches the *engine*: that
+    a human deliverable passes the same standards and closes the
+    loop. Nothing watched the *report*. That gap was found by
+    mutation: six mutations of the reporting layer - drop the
+    ``closed`` flag, rename the decision, stop reading the handback
+    scores, go back to "all member runs must close", forget who
+    closed it, always label the source as the machine - and the
+    ninth gate caught **none** of them.
+
+    So this is the tenth gate. It asserts what the reader sees:
+
+    * a handback that closed is **closed** in the report, and the
+      problem is **no longer pending**;
+    * the report carries the **verdict** the standards produced, not
+      an empty one;
+    * the report says the answer came from a **person**, and says so
+      in words that are not the machine's;
+    * the human's **own note** survives into the report;
+    * a handback that was **rejected** is still reported - a failure
+      may not disappear;
+    * a thread whose last attempt failed but whose earlier attempt
+      closed is **closed**, because the last attempt counts.
+    """
+    import tempfile
+
+    from mas.engine import LoopEngine
+    from mas.providers import Provider
+    from mas.report import build_report, render_markdown, replay_trace
+
+    class _AlwaysFails(Provider):
+        """The verifier always says no.
+
+        A handback that closes therefore has to close through the
+        machine check that came back on the ticket - the model
+        cannot fake it.
+        """
+
+        name = "selftest-handback-report"
+
+        def __init__(self, model: str = "selftest-model", **options: Any) -> None:
+            super().__init__(model=model, **options)
+
+        def complete(self, *, system: str, prompt: str, role: str = "worker",
+                     expect_json: bool = False, max_tokens: int = 4000) -> Dict[str, Any]:
+            self.calls += 1
+            usage = {"total_tokens": 10}
+            if role == "planner":
+                text = json.dumps(
+                    {"summary": "\u8ba1\u5212", "plan": ["\u5199\u4ea4\u4ed8\u7269"],
+                     "risks": ["\u5199\u4e0d\u597d"]}
+                )
+                return {"text": text, "usage": usage, "raw": {}}
+            if role == "verifier":
+                text = json.dumps(
+                    {"verdict": "fail",
+                     "scores": [{"id": "c1", "pass": False, "note": "\u4e0d\u8fc7"}]}
+                )
+                return {"text": text, "usage": usage, "raw": {}}
+            if role == "reflector":
+                text = json.dumps(
+                    {"summary": "\u590d\u76d8", "issues": [], "next_action": "revise"}
+                )
+                return {"text": text, "usage": usage, "raw": {}}
+            if role == "worker":
+                text = "\u7ed3\u8bba\u3002\u6570\u636e\u662f 41\u3002"
+                return {"text": text, "usage": usage, "raw": {}}
+            return {"text": "{}", "usage": usage, "raw": {}}
+
+    def _config(tmp: str) -> Dict[str, Any]:
+        return {
+            "provider": "mock",
+            "model": "selftest-model",
+            "state_dir": os.path.join(tmp, "state"),
+            "workspace": "",
+            "budget": {"max_iterations": 1, "max_tokens": 1000000, "deadline_sec": 60},
+            "orchestration": {
+                "parallel_workers": 1, "reviewers": 1, "review_mode": "all",
+            },
+            "team": {"language": "zh"},
+            "stagnation_limit": 2,
+        }
+
+    criteria = [
+        {
+            "id": "c1",
+            "desc": "\u6b63\u6587\u91cc\u8981\u51fa\u73b0 42",
+            "check": {"type": "contains", "arg": "42"},
+        }
+    ]
+
+    def _one_round(index: int) -> List[str]:
+        problems: List[str] = []
+        prefix = "\u7b2c %d \u6b21\uff1a" % (index + 1)
+
+        with tempfile.TemporaryDirectory(prefix="mas-selftest-handback-report-") as tmp:
+            engine = LoopEngine(_config(tmp), provider=_AlwaysFails(model="selftest-model"))
+            try:
+                result = engine.run(goal="\u5199\u4e00\u4efd Q3 \u62a5\u544a", criteria=criteria)
+            except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                return [prefix + "\u8fd0\u884c\u62a5\u9519\uff1a%s" % exc]
+            ticket_id = str(result.ticket_id or "")
+            if not ticket_id:
+                return [prefix + "\u6ca1\u6709\u7559\u4e0b\u53ef\u63a5\u624b\u7684\u7968\u636e"]
+            try:
+                accepted = engine.handback(ticket_id, "\u7ed3\u8bba\u3002\u6570\u636e\u662f 42\u3002",
+                                           note="\u4eba\u5de5\u5199\u7684")
+            except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                return [prefix + "\u63a5\u56de\u4eba\u5de5\u4ea4\u4ed8\u7269\u62a5\u9519\uff1a%s" % exc]
+            if not accepted.closed:
+                return [prefix + "\u5408\u683c\u7684\u4eba\u5de5\u4ea4\u4ed8\u7269\u6ca1\u6709\u95ed\u5408"]
+
+            rows = _ledger_rows(str(result.ledger_path))
+            report = build_report(rows)
+            markdown = render_markdown(report)
+            trace = replay_trace(rows)
+
+            # 1. The report must agree with the engine.
+            handback_runs = [r for r in report["runs"] if r.get("handback")]
+            if not handback_runs:
+                problems.append(prefix + "\u62a5\u544a\u91cc\u6ca1\u6709\u4eba\u5de5\u4ea4\u56de\u7684\u8fd0\u884c")
+                return problems
+            run = handback_runs[0]
+            if not run.get("closed"):
+                problems.append(
+                    "%s\uff1a\u4eba\u5de5\u4ea4\u56de\u5df2\u7ecf\u95ed\u5408\uff0c\u62a5\u544a\u5374\u8bf4\u6ca1\u6709"
+                    % prefix
+                )
+            if run.get("decision") != "handback":
+                problems.append(
+                    "%s\uff1a\u62a5\u544a\u91cc\u7684\u51b3\u7b56\u4e0d\u662f handback\uff08%r\uff09"
+                    % (prefix, run.get("decision"))
+                )
+            if not run.get("scores"):
+                problems.append(prefix + "\u62a5\u544a\u91cc\u6ca1\u6709\u4eba\u5de5\u4ea4\u4ed8\u7269\u7684\u9a8c\u6536\u7ed3\u679c")
+            if not run.get("goal"):
+                problems.append(prefix + "\u62a5\u544a\u91cc\u6ca1\u6709\u4eba\u5de5\u4ea4\u4ed8\u7269\u7684\u4efb\u52a1")
+
+            # 3b. The thread has to say *which* attempt closed it, and
+            #     that the answer came from a person. Without
+            #     ``closed_by`` the reader cannot answer "which try
+            #     solved it"; without the handback mark on the thread
+            #     the report cannot say who did the work.
+            threads = report.get("threads") or []
+            handback_threads = [t for t in threads if t.get("handback")]
+            if not handback_threads:
+                problems.append(prefix + "\u95ee\u9898\u6982\u89c8\u91cc\u6ca1\u6709\u6807\u51fa\u4eba\u5de5\u5b8c\u6210\u7684\u95ee\u9898")
+            else:
+                thread = handback_threads[0]
+                if not thread.get("closed"):
+                    problems.append(prefix + "\u4eba\u5de5\u5b8c\u6210\u7684\u95ee\u9898\u5374\u6ca1\u6709\u95ed\u5408")
+                if not thread.get("closed_by"):
+                    problems.append(prefix + "\u95ee\u9898\u91cc\u6ca1\u6709\u8bb0\u4f4f\u662f\u54ea\u4e00\u6b21\u8fd0\u884c\u95ed\u5408\u7684")
+
+            # 2. The problem must no longer be pending.
+            totals = report["totals"]
+            if int(totals.get("problems_open") or 0) != 0:
+                problems.append(
+                    "%s\uff1a\u5df2\u7ecf\u95ed\u5408\u7684\u95ee\u9898\u8fd8\u5728\u5f85\u5904\u7406\u91cc"
+                    % prefix
+                )
+            if int(totals.get("problems_closed") or 0) < 1:
+                problems.append(prefix + "\u95ee\u9898\u6ca1\u6709\u8ba1\u5165\u5df2\u89e3\u51b3")
+
+            # 3. The reader has to see that a person did it.
+            if "\U0001f91d" not in markdown:
+                problems.append(prefix + "\u62a5\u544a\u91cc\u6ca1\u6709\u6807\u51fa\u4eba\u5de5\u4ea4\u4ed8\u7269\u6765\u6e90")
+            if "\u4eba\u5de5\u4ea4\u4ed8\u7269" not in markdown:
+                problems.append(prefix + "\u62a5\u544a\u91cc\u6ca1\u6709\u4eba\u5de5\u4ea4\u4ed8\u7269\u7684\u9a8c\u6536\u5c0f\u8282")
+            if "\u4eba\u5de5\u5199\u7684" not in markdown:
+                problems.append(prefix + "\u62a5\u544a\u91cc\u6ca1\u6709\u4eba\u7684\u610f\u89c1")
+
+            # 4. The replay has to show it too.
+            trace_runs = [r for r in trace.get("runs") or [] if r.get("handback")]
+            if not trace_runs:
+                problems.append(prefix + "replay \u91cc\u6ca1\u6709\u4eba\u5de5\u4ea4\u56de\u7684\u8fd0\u884c")
+            elif not trace_runs[0].get("human_note"):
+                problems.append(prefix + "replay \u91cc\u6ca1\u6709\u4eba\u5de5\u610f\u89c1")
+            if not any(row.get("handback") for row in (trace.get("steps") or [])):
+                problems.append(prefix + "replay \u7684\u6b65\u9aa4\u91cc\u6ca1\u6709\u6807\u51fa\u4eba\u5de5\u4ea4\u56de")
+
+        # 5. A rejected handback must still be reported. A failure may
+        #    not disappear - the reader has to see that the human's
+        #    work was refused, and why.
+        with tempfile.TemporaryDirectory(prefix="mas-selftest-handback-report-") as tmp:
+            engine = LoopEngine(_config(tmp), provider=_AlwaysFails(model="selftest-model"))
+            try:
+                result = engine.run(goal="\u5199\u4e00\u4efd Q3 \u62a5\u544a", criteria=criteria)
+            except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                return [*problems, prefix + "\u8fd0\u884c\u62a5\u9519\uff1a%s" % exc]
+            ticket_id = str(result.ticket_id or "")
+            if not ticket_id:
+                return [*problems, prefix + "\u6ca1\u6709\u7559\u4e0b\u53ef\u63a5\u624b\u7684\u7968\u636e"]
+            try:
+                rejected = engine.handback(ticket_id, "\u7ed3\u8bba\u3002\u6570\u636e\u662f 41\u3002",
+                                           note="\u4e0d\u5408\u683c\u7684")
+            except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                return [*problems, prefix + "\u63a5\u56de\u4e0d\u5408\u683c\u4ea4\u4ed8\u7269\u62a5\u9519\uff1a%s" % exc]
+            if rejected.closed:
+                return [*problems, prefix + "\u4e0d\u5408\u683c\u7684\u4eba\u5de5\u4ea4\u4ed8\u7269\u7adf\u7136\u95ed\u5408\u4e86"]
+            rows = _ledger_rows(str(result.ledger_path))
+            report = build_report(rows)
+            if not any(r.get("handback") for r in report["runs"]):
+                problems.append(prefix + "\u88ab\u62d2\u7edd\u7684\u4eba\u5de5\u4ea4\u56de\u4ece\u62a5\u544a\u91cc\u6d88\u5931\u4e86")
+            if int(report["totals"].get("problems_open") or 0) < 1:
+                problems.append(prefix + "\u88ab\u62d2\u7edd\u7684\u4ea4\u4ed8\u7269\u6ca1\u6709\u7559\u5728\u5f85\u5904\u7406\u91cc")
+        return problems
+
+    failures: List[str] = []
+    rounds = max(1, int(iterations))
+    for index in range(rounds):
+        failures.extend(_one_round(index))
+        if len(failures) >= 5:
+            break
+
+    return {
+        "name": "handback_report",
+        "title": "\u62a5\u544a\u91cc\u770b\u5f97\u89c1\u4eba\u5199\u7684\u90a3\u4e00\u6b65",
+        "invariant": (
+            "\u4eba\u5de5\u4ea4\u56de\u7684\u95ed\u5408\u5728\u62a5\u544a\u91cc\u662f\u5df2\u89e3\u51b3\u7684\u95ee\u9898\uff1b"
+            "\u9a8c\u6536\u7ed3\u679c\u3001\u4eba\u7684\u610f\u89c1\u4e0e\u6765\u6e90\u90fd\u5728\u62a5\u544a\u548c replay \u91cc\u770b\u5f97\u89c1\uff1b"
+            "\u88ab\u62d2\u7edd\u7684\u4ea4\u4ed8\u7269\u4e0d\u80fd\u6d88\u5931"
+        ),
+        "iterations": rounds,
+        "failures": failures,
+        "ok": not failures,
+    }
+
+
 # ----------------------------------------------------------------- the gate
 # The short name of a check is a property of the function, so that
 # ``--only`` and the JSON output speak the same word.
@@ -2007,6 +2248,7 @@ check_parallel_candidates_pick_the_same_winner_every_time.CHECK_NAME = "parallel
 check_an_escalated_run_leaves_a_ticket_a_human_can_take_over.CHECK_NAME = "handover_ticket"  # type: ignore[attr-defined]
 check_a_takeover_sees_the_work_and_gets_a_fresh_budget.CHECK_NAME = "takeover_handover"  # type: ignore[attr-defined]
 check_a_handback_closes_on_human_work.CHECK_NAME = "handback_closes"  # type: ignore[attr-defined]
+check_a_handback_shows_up_in_the_report.CHECK_NAME = "handback_report"  # type: ignore[attr-defined]
 
 CHECKS = (
     check_relay_refusal_keeps_the_connection_usable,
@@ -2018,6 +2260,7 @@ CHECKS = (
     check_an_escalated_run_leaves_a_ticket_a_human_can_take_over,
     check_a_takeover_sees_the_work_and_gets_a_fresh_budget,
     check_a_handback_closes_on_human_work,
+    check_a_handback_shows_up_in_the_report,
 )
 
 
@@ -2046,6 +2289,7 @@ def run_selftest(
             check_an_escalated_run_leaves_a_ticket_a_human_can_take_over,
             check_a_takeover_sees_the_work_and_gets_a_fresh_budget,
             check_a_handback_closes_on_human_work,
+            check_a_handback_shows_up_in_the_report,
         ):
             row = check(iterations=min(int(iterations), 20))
         else:

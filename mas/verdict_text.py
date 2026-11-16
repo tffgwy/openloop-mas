@@ -59,6 +59,7 @@ DECISION_READING: Dict[str, str] = {
     "revise": "\u8981\u6539\u4e00\u7248",
     "escalate": "\u4ea4\u7ed9\u4eba\u5de5",
     "stop": "\u505c\u4e0b\u4e86",
+    "handback": "\u4eba\u5de5\u4ea4\u56de\u5e76\u901a\u8fc7\u9a8c\u6536",
 }
 
 #: Where a verdict came from, in words.
@@ -101,6 +102,7 @@ ROLE_READING: Dict[str, str] = {
     "error": "出错",
     "run_end": "收尾",
     "artifact": "交付物",
+    "handback": "人工交回",
 }
 
 
