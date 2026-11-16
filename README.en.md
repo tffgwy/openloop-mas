@@ -7,6 +7,34 @@
 
 [English](README.en.md) | [中文](README.md)
 
+- **The 13th gate `binary_write`** - v0.7.70 made the machine checks read
+  **inside** a PDF, but the loop still could not **write** one: the write
+  protocol of v0.7.15 could only carry **text**, the worker's output was a
+  string, and the engine wrote it as UTF-8. A task whose deliverable was a PDF
+  had no way to produce one - so the strongest reading in the project had
+  **nothing to read**. The write protocol now takes an `encoding` attribute:
+  `<<<MAS:FILE path="out/report.pdf" encoding="base64">>>>` and the engine
+  **decodes the block into real binary** before writing it to disk. A block
+  without an `encoding` is still written as text, so the older protocol is
+  unchanged. The twelfth gate watches the *reading*; **nothing watched the
+  writing**. Mutation testing proved the gap: seven mutations of the write
+  path (the overlay carrying the *number* of bytes instead of the bytes /
+  the encoding ignored / base64 decoded into text / an unknown encoding
+  accepted / a content check not creating a write obligation / broken base64
+  swallowed silently / the plan carrying the encoded text) are **all** caught.
+- **The 12th gate `content_check`** - every file check so far looked at the
+  *bytes* of a file. That is blind for every format whose payload is not plain
+  text: a PDF keeps its words in a **compressed stream**, a `.docx` **is** a zip
+  file, an image has no words at all. So a task whose deliverable was a PDF
+  could not be judged by a machine at all - the criterion went to the model,
+  and a model that says "looks fine" closed a criterion **nobody ever checked**.
+  That is a **fake closure**, and it is worse than no closure. The machine
+  checks now read **inside** the file: PDF streams are decompressed, Word
+  documents are unzipped and stripped of markup, and the format is decided by
+  the **magic bytes** - the extension lies, a `.txt` that holds a PDF is a PDF.
+  A file whose content cannot be read **fails**; it does not fall back to
+  "unjudged", because an unjudged criterion goes back to the model and gets
+  closed by a sentence. All **nine** mutations of the content path are caught.
 - **The 11th gate `folder_handoff`** - v0.7.67 let a human-written deliverable close
   the loop, but **it only accepted a blob of text**. The tasks this loop actually
   runs write *files*, and the acceptance criteria that matter are file checks

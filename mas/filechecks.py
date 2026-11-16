@@ -37,11 +37,14 @@ Design rules (identical to the text checks)
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from mas.content import detect_format, extract_text
 
 # Human-readable description of what a usable argument looks like, per
 # type. A check whose argument does not meet the requirement is a *broken
@@ -57,6 +60,13 @@ FILE_CHECK_ARG_REQUIRED: Dict[str, str] = {
     "file_max_bytes": "a file path plus a maximum byte count",
     "file_sha256": "a file path plus the expected sha256 digest",
     "file_mtime_newer": "a file path plus an ISO timestamp",
+    # The content checks read what is *inside* the file, not its bytes.
+    "content_contains": "a file path plus the required string",
+    "content_not_contains": "a file path plus the forbidden string",
+    "content_regex": "a file path plus a regular expression",
+    "content_lines_min": "a file path plus a minimum line count",
+    "content_format_is": "a file path plus the expected format",
+    "content_min_chars": "a file path plus a minimum character count",
 }
 
 FILE_CHECK_TYPES = tuple(FILE_CHECK_ARG_REQUIRED)
@@ -73,6 +83,12 @@ FILE_CHECK_VALUE_REQUIRED = {
     "file_max_bytes",
     "file_sha256",
     "file_mtime_newer",
+    "content_contains",
+    "content_not_contains",
+    "content_regex",
+    "content_lines_min",
+    "content_format_is",
+    "content_min_chars",
 }
 
 _MAX_READ_BYTES = 8 * 1024 * 1024
@@ -202,11 +218,24 @@ def file_check_problem(kind: str, arg: Any) -> str:
     if kind in FILE_CHECK_VALUE_REQUIRED:
         if value is None or (isinstance(value, str) and not value.strip()):
             return FILE_CHECK_ARG_REQUIRED[kind]
-        if kind in {"file_lines_min", "file_min_bytes", "file_max_bytes"}:
+        if kind in {
+            "file_lines_min",
+            "file_min_bytes",
+            "file_max_bytes",
+            "content_lines_min",
+            "content_min_chars",
+        }:
             try:
                 int(value)
             except (TypeError, ValueError):
                 return FILE_CHECK_ARG_REQUIRED[kind]
+        if kind == "content_regex":
+            try:
+                re.compile(str(value))
+            except re.error as exc:
+                return f"invalid regular expression: {exc}"
+        if kind == "content_format_is" and not str(value).strip():
+            return FILE_CHECK_ARG_REQUIRED[kind]
         if kind == "file_regex":
             try:
                 re.compile(str(value))
@@ -249,7 +278,7 @@ def evaluate_file_check(
         return {"pass": None, "note": str(exc), "source": "invalid"}
 
     kind = str(kind).lower()
-    overlay = overlay or {}
+    overlay = _normalized_overlay(overlay)
     overlay_key = str(path)
 
     def _overlay_bytes() -> Optional[bytes]:
@@ -337,6 +366,9 @@ def evaluate_file_check(
             "source": "file",
         }
 
+    if kind.startswith("content_"):
+        return _evaluate_content_check(kind, value, path, data, virtual)
+
     text = _decode(data)
     if kind == "file_contains":
         items = value if isinstance(value, list) else [value]
@@ -376,6 +408,170 @@ def evaluate_file_check(
         }
 
     return {"pass": None, "note": f"unknown file check type: {kind}", "source": "invalid"}
+
+
+def _normalized_overlay(
+    overlay: Optional[Dict[str, bytes]],
+) -> Dict[str, bytes]:
+    """Key the overlay by *resolved* paths.
+
+    The overlay is built by the engine from the paths the candidate
+    would write, and the checks resolve their own path against the
+    workspace. On Windows the two can be spelled differently - a short
+    8.3 path (``C:\\Users\\ADMINI~1\\...``) and its long form are the
+    same file - and a check that looked up the raw key would then miss
+    the overlay and read the *old* file from the disk instead. That is
+    silent: the check still returns a verdict, just about the wrong
+    bytes.
+
+    So the keys are normalized here: every path is resolved once, and
+    the raw spelling is kept as a fallback.
+    """
+    if not overlay:
+        return {}
+    normalized: Dict[str, bytes] = {}
+    for key, data in overlay.items():
+        normalized[str(key)] = data
+        try:
+            resolved = str(Path(key).resolve())
+        except OSError:  # pragma: no cover - defensive
+            continue
+        normalized.setdefault(resolved, data)
+    return normalized
+
+
+def _evaluate_content_check(
+    kind: str,
+    value: Any,
+    path: Path,
+    data: Optional[bytes],
+    virtual: Optional[bytes],
+) -> Dict[str, Any]:
+    """Evaluate a content check - one that reads what is *inside* a file.
+
+    The byte-level checks above cannot tell what a PDF says: its text
+    lives in a compressed stream, and a .docx is a zip file. These
+    checks read the *content* of the file instead - the text of a PDF,
+    the text of a Word document, the members of an archive.
+
+    A format we cannot read is **failed**, never passed: a check that
+    cannot decide must not close a criterion, and it must not go back
+    to the model either - a model that says "looks fine" closes a
+    criterion whose rule was never checked.
+    """
+    if kind == "content_format_is":
+        wanted = str(_as_text(value)).strip().lower()
+        found = detect_format(path)
+        passed = found == wanted
+        return {
+            "pass": passed,
+            "note": ("format %s" % found) if passed
+            else ("format %s != %s" % (found, wanted)),
+            "source": "content",
+        }
+
+    # The file may not exist on disk yet: the candidate would write
+    # it. The content is then what the candidate wrote.
+    extracted = (
+        _extract_from_bytes(path, virtual)
+        if virtual is not None
+        else extract_text(path)
+    )
+
+    content = str(extracted.get("text") or "")
+    kind_name = str(extracted.get("format") or "binary")
+    if not extracted.get("ok"):
+        # A content check that cannot read the content **fails**. It
+        # does not go back to the model: an unjudged check would be
+        # handed to a model that may say "looks fine", and that closes
+        # a criterion whose rule was never checked. A criterion that
+        # asks about the content of a file is not satisfied by a file
+        # whose content nobody could read.
+        reason = str(extracted.get("reason") or "no readable content")
+        return {
+            "pass": False,
+            "note": "cannot read the content of the %s file: %s" % (kind_name, reason),
+            "source": "content",
+        }
+
+    if kind == "content_contains":
+        items = _value_list(value)
+        missing = [x for x in items if x not in content]
+        passed = not missing
+        return {
+            "pass": passed,
+            "note": "all required strings present in the %s" % kind_name
+            if passed else "missing in the %s: %s" % (kind_name, missing),
+            "source": "content",
+        }
+    if kind == "content_not_contains":
+        items = _value_list(value)
+        present = [x for x in items if x in content]
+        passed = not present
+        return {
+            "pass": passed,
+            "note": "no forbidden string in the %s" % kind_name
+            if passed else "forbidden string in the %s: %s" % (kind_name, present),
+            "source": "content",
+        }
+    if kind == "content_regex":
+        pattern = str(_as_text(value))
+        matched = re.search(pattern, content, re.DOTALL) is not None
+        return {
+            "pass": matched,
+            "note": "regex /%s/ matched in the %s" % (pattern, kind_name)
+            if matched else "regex /%s/ not found in the %s" % (pattern, kind_name),
+            "source": "content",
+        }
+    if kind == "content_lines_min":
+        limit = int(_as_text(value))
+        count = len([line for line in content.splitlines() if line.strip()])
+        passed = count >= limit
+        return {
+            "pass": passed,
+            "note": "%d non-empty lines in the %s %s %d" % (count, kind_name, ">=" if passed else "<", limit),
+            "source": "content",
+        }
+    if kind == "content_min_chars":
+        limit = int(_as_text(value))
+        passed = len(content) >= limit
+        return {
+            "pass": passed,
+            "note": "%d characters in the %s %s %d" % (
+                len(content), kind_name, ">=" if passed else "<", limit),
+            "source": "content",
+        }
+    return {"pass": None, "note": "unknown content check type: %s" % kind, "source": "invalid"}
+
+
+def _extract_from_bytes(path: Path, data: bytes) -> Dict[str, Any]:
+    """Extract the content of a file that only exists in the overlay.
+
+    The candidate would *write* this file, so its content is known -
+    it is the bytes it would write. The bytes are inspected the same
+    way a file on disk would be, so a candidate that would write a
+    PDF is judged on the PDF it would write.
+    """
+    import tempfile
+
+    suffix = path.suffix
+    with tempfile.NamedTemporaryFile(
+        suffix=suffix, delete=False
+    ) as handle:
+        handle.write(data)
+        temporary = handle.name
+    try:
+        return extract_text(temporary)
+    finally:
+        with contextlib.suppress(OSError):
+            Path(temporary).unlink()
+
+
+def _value_list(value: Any) -> List[str]:
+    """The list of strings a check compares against."""
+    if isinstance(value, (list, tuple)):
+        return [str(x) for x in value if x is not None]
+    return [_as_text(value)] if value is not None else []
 
 
 def workspace_root(config: Optional[Dict[str, Any]] = None) -> Path:

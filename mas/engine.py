@@ -1401,9 +1401,7 @@ class LoopEngine:
             # disk. Only the winning candidate is written afterwards.
             overlay: Dict[str, bytes] = {}
             if state.get("write_paths"):
-                plan = plan_writes(artifact, self._write_workspace())
-                for planned in plan["planned"]:
-                    overlay[planned["absolute"]] = planned["content"].encode("utf-8")
+                overlay = self._planned_overlay(artifact)
             passed_count = 0
             for crit in crits:
                 # The configuration carries the workspace, and the file
@@ -1521,6 +1519,12 @@ class LoopEngine:
                 "file_max_bytes",
                 "file_sha256",
                 "file_mtime_newer",
+                "content_contains",
+                "content_not_contains",
+                "content_regex",
+                "content_lines_min",
+                "content_min_chars",
+                "content_format_is",
             }:
                 continue
             try:
@@ -1539,6 +1543,37 @@ class LoopEngine:
             if raw and raw not in paths:
                 paths.append(raw)
         return paths
+
+    def _planned_overlay(self, artifact: str) -> Dict[str, bytes]:
+        """The bytes a candidate *would* write, keyed by absolute path.
+
+        The parallel ranking has to score a candidate against the files
+        it would produce - at ranking time nothing has been written yet,
+        so scoring against the old disk state made every file level
+        check fail for every candidate, and the winner was picked by
+        length instead.
+
+        The overlay therefore carries the *bytes* the candidate would
+        write. It used to carry ``planned["bytes"]``, which is the
+        **number** of bytes: every file check that read it then judged
+        a number instead of the file, so the candidate that would have
+        written the right PDF lost to one that would have written
+        nothing. The bytes live in ``planned["data"]``.
+
+        The overlay never touches the disk - only the winning candidate
+        is written afterwards.
+        """
+        overlay: Dict[str, bytes] = {}
+        try:
+            plan = plan_writes(artifact, self._write_workspace())
+        except Exception:  # noqa: BLE001 - a broken plan must not kill the pool
+            return overlay
+        for planned in plan.get("planned") or []:
+            data = planned.get("data")
+            if not isinstance(data, (bytes, bytearray)):
+                continue
+            overlay[str(planned.get("absolute") or "")] = bytes(data)
+        return overlay
 
     def _write_workspace(self) -> Any:
         """The folder this run writes into.

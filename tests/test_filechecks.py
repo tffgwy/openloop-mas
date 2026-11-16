@@ -226,7 +226,7 @@ class EngineIntegrationTests(unittest.TestCase):
         self.assertIn("not found", outcome["note"])
 
     def test_every_file_check_type_is_known(self):
-        self.assertEqual(len(FILE_CHECK_TYPES), 10)
+        self.assertEqual(len(FILE_CHECK_TYPES), 16)
 
 
 if __name__ == "__main__":

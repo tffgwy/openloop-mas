@@ -31,7 +31,7 @@ class TakeoverHandoverGateTest(unittest.TestCase):
 
         names = {getattr(c, "CHECK_NAME", c.__name__) for c in CHECKS}
         self.assertIn("takeover_handover", names)
-        self.assertEqual(len(CHECKS), 11)
+        self.assertEqual(len(CHECKS), 13)
 
     def test_the_check_passes_offline(self):
         from mas.selftest import (
@@ -73,7 +73,7 @@ class TakeoverHandoverGateTest(unittest.TestCase):
 
         result = run_selftest(iterations=2)
         self.assertTrue(result["ok"], result)
-        self.assertEqual(len(result["checks"]), 11)
+        self.assertEqual(len(result["checks"]), 13)
 
 
 class CliTest(unittest.TestCase):
@@ -86,11 +86,11 @@ class CliTest(unittest.TestCase):
             cwd=str(REPO), env=env, capture_output=True, text=True, encoding="utf-8",
         )
 
-    def test_the_json_form_lists_eleven_checks(self):
+    def test_the_json_form_lists_thirteen_checks(self):
         proc = self._run("selftest", "--iterations", "1", "--json")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         payload = json.loads(proc.stdout)
-        self.assertEqual(len(payload["checks"]), 11)
+        self.assertEqual(len(payload["checks"]), 13)
         self.assertTrue(payload["ok"])
 
     def test_it_runs_without_a_model_endpoint(self):

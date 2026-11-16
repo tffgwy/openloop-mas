@@ -2238,6 +2238,533 @@ def check_a_handback_shows_up_in_the_report(
 
 # ----------------------------------------------------------------- the gate
 # The short name of a check is a property of the function, so that
+#: The behaviours the twelfth gate watches. Every one of them is
+#: observed on every round - a gate that watches fewer of them than it
+#: claims is a gate that mostly does not watch.
+CONTENT_OBSERVATIONS = (
+    "the content check reads the words of a compressed PDF",
+    "the byte-level check cannot see those words",
+    "the content check reads the words of a Word document",
+    "the Word document is read as text, not as markup",
+    "the format check names the format of the file",
+    "the format check rejects the wrong format",
+    "a file whose content cannot be read fails",
+    "a file the loop would write is judged by what it would write",
+    "a file the loop would write is not judged by words it does not have",
+)
+
+
+def _content_observations(root: Any) -> Dict[str, bool]:
+    """Observe the content path, one behaviour at a time.
+
+    Every observation is recorded, whether it holds or not. The gate
+    decides later, from the record - so a gate whose *observation* was
+    broken shows up as a missing observation instead of as a silent
+    pass. That is what makes the gate hard to fool: the decision is not
+    made where the reading happens.
+    """
+    import pathlib
+
+    from mas.content import extract_text
+    from mas.filechecks import evaluate_file_check
+
+    seen: Dict[str, bool] = {}
+
+    content_level = evaluate_file_check(
+        "content_contains", "report.pdf::Conclusion", root, None
+    )
+    seen["the content check reads the words of a compressed PDF"] = bool(
+        content_level.get("pass")
+    )
+
+    byte_level = evaluate_file_check(
+        "file_contains", "report.pdf::Conclusion", root, None
+    )
+    seen["the byte-level check cannot see those words"] = not bool(
+        byte_level.get("pass")
+    )
+
+    docx_check = evaluate_file_check(
+        "content_contains", "memo.docx::Memo", root, None
+    )
+    seen["the content check reads the words of a Word document"] = bool(
+        docx_check.get("pass")
+    )
+
+    # The words of a .docx live inside a member of the archive, and the
+    # member is an XML document. A reader that unzips the file but
+    # forgets to read the document gets the raw markup instead of the
+    # text. The words are in both, so the words alone prove nothing -
+    # the *tags* have to be gone.
+    docx_text = extract_text(pathlib.Path(root) / "memo.docx").get("text") or ""
+    seen["the Word document is read as text, not as markup"] = not (
+        "<w:t>" in docx_text or "<w:p>" in docx_text
+    )
+
+    format_check = evaluate_file_check(
+        "content_format_is", "report.pdf::pdf", root, None
+    )
+    seen["the format check names the format of the file"] = bool(
+        format_check.get("pass")
+    )
+
+    wrong_format = evaluate_file_check(
+        "content_format_is", "memo.docx::pdf", root, None
+    )
+    seen["the format check rejects the wrong format"] = (
+        wrong_format.get("pass") is False
+    )
+
+    unreadable = evaluate_file_check(
+        "content_contains", "blob.bin::anything", root, None
+    )
+    seen["a file whose content cannot be read fails"] = (
+        unreadable.get("pass") is False
+    )
+
+    # A file the loop would write is judged by the bytes it *would*
+    # write. The file is not on the disk at all, so only the overlay
+    # can decide it.
+    overlay = {str(pathlib.Path(root) / "fresh.pdf"): _compressed_pdf_bytes("Conclusion 42")}
+    offered = evaluate_file_check(
+        "content_contains", "fresh.pdf::Conclusion", root, overlay
+    )
+    seen["a file the loop would write is judged by what it would write"] = bool(
+        offered.get("pass")
+    )
+    wrong = evaluate_file_check(
+        "content_contains", "fresh.pdf::Verdict", root, overlay
+    )
+    seen["a file the loop would write is not judged by words it does not have"] = (
+        wrong.get("pass") is False
+    )
+    return seen
+
+
+def _docx_bytes(body: str) -> bytes:
+    """The bytes of a Word document whose text lives in the archive."""
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(
+            "word/document.xml",
+            "<w:document><w:body><w:p><w:t>%s</w:t></w:p></w:body></w:document>" % body,
+        )
+    return buffer.getvalue()
+
+
+def _compressed_pdf_bytes(body: str) -> bytes:
+    """The bytes of a PDF whose text lives in a *compressed* stream.
+
+    The words are not in the bytes of the file, so a byte-level check
+    cannot see them - which is the whole point of the gate.
+    """
+    import zlib
+
+    content = ("BT (\\(%s\\)) Tj ET" % body).encode("utf-8")
+    compressed = zlib.compress(content)
+    pieces = [
+        b"%PDF-1.4\n",
+        b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n",
+        b"2 0 obj<</Type/Page/Parent 1 0 R/MediaBox[0 0 200 200]>>endobj\n",
+        b"3 0 obj<</Length %d/Filter/FlateDecode>>stream\n" % len(compressed),
+        compressed,
+        b"\nendstream endobj\n",
+        b"trailer<</Root 1 0 R>>\n",
+        b"%%EOF\n",
+    ]
+    return b"".join(pieces)
+
+
+def check_a_content_check_reads_inside_the_file(
+    iterations: int = 10,
+) -> Dict[str, Any]:
+    """The loop has to be able to judge what is *inside* a file.
+
+    A machine check could only look at the *bytes* of a file. That is
+    enough for "the file has the line in it", but it is blind for
+    every format whose payload is not plain text: a PDF keeps its text
+    in a compressed stream, a .docx is a zip file, an image has no text
+    at all.
+
+    So the loop could only accept work it could read as text, and a
+    task whose deliverable is a PDF was unjudgeable - the criterion
+    would go to the model, and a model that says "looks fine" closes a
+    criterion whose rule was never written. That is a fake closure.
+
+    This is the twelfth gate. It watches that the *content* checks see
+    what is inside the file:
+
+    * a content check on a PDF finds the words in the compressed
+      stream - the byte-level check on the same file does not;
+    * a content check on a .docx finds the text of the document;
+    * a content check names the *format* of a file, so a PNG that was
+      written as a PDF is caught;
+    * a file whose content cannot be read is **failed**, never passed -
+      a check that cannot decide must not close a criterion, and it
+      must not go back to the model either, because a model that says
+      "looks fine" closes a criterion nobody ever checked;
+    * a content check on a file the loop is about to write judges the
+      content the loop *would* write.
+
+    And the gate proves it can fail: it breaks the content path on
+    purpose and checks that it notices. A gate that cannot fail is not
+    a gate.
+    """
+    import tempfile
+
+    failures: List[str] = []
+    rounds = max(1, int(iterations))
+    for round_index in range(rounds):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "report.pdf").write_bytes(_compressed_pdf_bytes("Conclusion 42"))
+            (root / "memo.docx").write_bytes(_docx_bytes("Memo 42"))
+            (root / "blob.bin").write_bytes(bytes(range(256)) * 8)
+
+            seen = _content_observations(root)
+            for label in CONTENT_OBSERVATIONS:
+                if label not in seen:
+                    failures.append(
+                        "round %d: the gate did not observe %s"
+                        % (round_index + 1, label)
+                    )
+                elif not seen[label]:
+                    failures.append(
+                        "round %d: %s" % (round_index + 1, label)
+                    )
+
+            # The gate proves it can fail. The content path is broken on
+            # purpose - every file reads as empty - and the gate has to
+            # notice. Without this, a gate whose own observation was
+            # broken would report "all good" for ever.
+            import mas.filechecks as filechecks
+
+            real_extract = filechecks.extract_text
+
+            def _blind(path: Any) -> Dict[str, Any]:
+                return {"text": "", "format": "binary", "ok": False,
+                        "reason": "the gate broke the content path on purpose",
+                        "bytes": 0}
+
+            filechecks.extract_text = _blind
+            try:
+                broken = _content_observations(root)
+            finally:
+                filechecks.extract_text = real_extract
+            if broken.get("the content check reads the words of a compressed PDF"):
+                failures.append(
+                    "round %d: the gate did not notice a broken content path - "
+                    "it cannot fail, so it does not watch" % (round_index + 1)
+                )
+
+    return {
+        "name": "content_check",
+        "title": "机检能读进文件里的内容，不只是字节",
+        "invariant": (
+            "PDF 里压缩着的字、Word 文档里的字，机检都读得到；"
+            "读不出内容的文件判「失败」而不是「通过」——不然它会回到模型，"
+            "模型一句「looks fine」就闭掉没人查过的标准；"
+            "格式判错要抓得住；要写的新文件按将要写进去的内容判"
+        ),
+        "detail": "内容级机检：PDF / Word / 压缩包 / 图片，循环判得了",
+        "iterations": rounds,
+        "failures": failures,
+        "ok": not failures,
+    }
+
+
+# ----------------------------------------------------------------- the gate
+# The short name of a check is a property of the function, so that
+# ``--only binary_write`` and the JSON output speak the same word.
+BINARY_WRITE_OBSERVATIONS = (
+    "a base64 write block lands on the disk as real bytes",
+    "a base64 write block does not land as its base64 text",
+    "the written bytes are the bytes the content checks read",
+    "a write block with an unknown encoding is refused",
+    "a write block with broken base64 is refused",
+    "base64 that is not base64 does not become an empty file",
+    "a write block without an encoding is still text",
+    "a content check creates a write obligation",
+    "the engine plans the binary write, not the text around it",
+    "the ranking overlay carries the bytes, not their number",
+)
+
+
+def _binary_write_observations(root: Any) -> Dict[str, bool]:
+    """Observe the binary write path, one behaviour at a time.
+
+    Same discipline as the twelfth gate: every observation is recorded,
+    whether it holds or not, and the decision is made later from the
+    record. A gate that only records what it happens to see cannot tell
+    the difference between "the path works" and "the path was never
+    exercised".
+    """
+    import base64
+    import pathlib as _pathlib
+
+    from mas.filechecks import evaluate_file_check
+    from mas.filewrite import apply_write_blocks, parse_write_blocks, plan_writes
+
+    seen: Dict[str, bool] = {}
+
+    pdf = _compressed_pdf_bytes("Conclusion 42")
+    encoded = base64.b64encode(pdf).decode("ascii")
+    block = (
+        '<<<MAS:FILE path="out/report.pdf" encoding="base64">>>>\n'
+        + encoded
+        + "\n<<<MAS:END FILE>>>"
+    )
+
+    applied = apply_write_blocks(block, _pathlib.Path(root))
+    assert not applied.get("errors"), applied.get("errors")
+    target = _pathlib.Path(root) / "out" / "report.pdf"
+    landed = target.exists() and target.read_bytes() == pdf
+    seen["a base64 write block lands on the disk as real bytes"] = bool(landed)
+    seen["a base64 write block does not land as its base64 text"] = bool(
+        landed and target.read_bytes() != encoded.encode("utf-8")
+    )
+
+    # The bytes that are on the disk are the bytes the content checks
+    # read. If the write path and the read path disagreed, the check
+    # would judge a different file than the one the loop delivered.
+    on_disk = evaluate_file_check(
+        "content_contains", "out/report.pdf::Conclusion", root, None
+    )
+    seen["the written bytes are the bytes the content checks read"] = bool(
+        on_disk.get("pass")
+    )
+
+    bad_encoding = (
+        '<<<MAS:FILE path="out/x.bin" encoding="rot13">>>>\n'
+        "hello\n<<<MAS:END FILE>>>"
+    )
+    _artifact, refused = parse_write_blocks(bad_encoding)
+    seen["a write block with an unknown encoding is refused"] = (
+        refused == [] and not (_pathlib.Path(root) / "out" / "x.bin").exists()
+    )
+
+    broken = (
+        '<<<MAS:FILE path="out/y.bin" encoding="base64">>>>\n'
+        "!!!!\n<<<MAS:END FILE>>>"
+    )
+    try:
+        broken_result = apply_write_blocks(broken, _pathlib.Path(root))
+        broken_refused = (
+            bool(broken_result.get("errors"))
+            and not (_pathlib.Path(root) / "out" / "y.bin").exists()
+        )
+    except Exception:  # noqa: BLE001 - the failure is the subject
+        broken_refused = True
+    seen["a write block with broken base64 is refused"] = bool(broken_refused)
+
+    # A lenient base64 decoder drops every character that is not part
+    # of the alphabet. A block of pure nonsense then decoded into an
+    # *empty* file - silently. The worker asked for a PDF and the
+    # workspace got a zero-byte file, which the content checks then
+    # judged as unreadable. A refusal at least says what went wrong.
+    # Four characters that are not in the base64 alphabet. The lenient
+    # decoder drops all of them and returns an *empty* payload without
+    # a word of complaint - so the workspace would get a zero-byte
+    # "PDF". The strict decoder refuses it.
+    junk = (
+        '<<<MAS:FILE path="out/junk.pdf" encoding="base64">>>>\n'
+        "!!!!\n<<<MAS:END FILE>>>"
+    )
+    junk_result = apply_write_blocks(junk, _pathlib.Path(root))
+    junk_target = _pathlib.Path(root) / "out" / "junk.pdf"
+    seen["base64 that is not base64 does not become an empty file"] = bool(
+        junk_result.get("errors")
+        and not junk_target.exists()
+    )
+
+    plain = '<<<MAS:FILE path="out/plain.txt">>>>\nhello\n<<<MAS:END FILE>>>'
+    plain_result = apply_write_blocks(plain, _pathlib.Path(root))
+    plain_target = _pathlib.Path(root) / "out" / "plain.txt"
+    seen["a write block without an encoding is still text"] = bool(
+        plain_result.get("written")
+        and plain_target.exists()
+        and plain_target.read_bytes() == b"hello"
+    )
+
+    # A content check demands a file, so the loop has to *write* one -
+    # otherwise the worker only talks about the file and the check can
+    # never be satisfied.
+    from mas.engine import Criterion, LoopEngine
+
+    engine = LoopEngine(
+        {
+            "provider": "mock",
+            "model": "selftest-model",
+            "state_dir": str(_pathlib.Path(root) / "state"),
+            "workspace": "",
+            "budget": {"max_iterations": 2, "max_tokens": 100000, "deadline_sec": 30},
+            "orchestration": {"parallel_workers": 1, "reviewers": 1, "review_mode": "all"},
+            "team": {"language": "zh"},
+        }
+    )
+    criteria = [
+        Criterion.from_raw(
+            {
+                "id": "c1",
+                "desc": "the report has to say Conclusion",
+                "check": {"type": "content_contains", "arg": "out/report.pdf::Conclusion"},
+            },
+            0,
+        )
+    ]
+    write_paths = engine._required_write_paths(criteria)
+    seen["a content check creates a write obligation"] = (
+        "out/report.pdf" in write_paths
+    )
+
+    # The engine has to plan the *binary* write. If the plan carried the
+    # base64 text instead of the decoded bytes, the parallel ranking
+    # would score the candidate against an encoding instead of against
+    # the PDF it would write - and the winner would be the candidate
+    # that wrote the *least*.
+    planned = plan_writes(block, _pathlib.Path(root))["planned"]
+    seen["the engine plans the binary write, not the text around it"] = bool(
+        planned
+        and planned[0].get("data") == pdf
+        and planned[0].get("bytes") == len(pdf)
+    )
+
+    # The overlay the parallel ranking uses has to carry the *bytes*.
+    # It used to carry the number of them - ``planned["bytes"]`` is the
+    # length - and every file check that read it then judged a number
+    # instead of the file. The candidate that would have written the
+    # right PDF lost to one that would have written nothing, and no
+    # test caught it because the overlay was never inspected.
+    # The *engine's* overlay - the one the parallel ranking really
+    # uses - has to carry the bytes. The gate calls the engine's own
+    # method, so it judges the shipping code path and not a copy of
+    # it.
+    #
+    # The block names a file that is **not** on the disk: the earlier
+    # observation wrote ``report.pdf`` to the root, and a check that
+    # finds a file on the disk reads that file and never looks at the
+    # overlay at all. A file that exists nowhere but in the overlay is
+    # the only way to tell the overlay apart from the disk.
+    ghost = (
+        '<<<MAS:FILE path="out/ghost.pdf" encoding="base64">>>>\n'
+        + base64.b64encode(_compressed_pdf_bytes("Ghost 42")).decode("ascii")
+        + "\n<<<MAS:END FILE>>>"
+    )
+    # The engine needs a run id before it knows its own workspace.
+    engine._run_id = "gate"
+    engine_root = engine._write_workspace()
+    engine_overlay = engine._planned_overlay(ghost)
+    offered = evaluate_file_check(
+        "content_contains", "out/ghost.pdf::Ghost", engine_root, engine_overlay
+    )
+    seen["the ranking overlay carries the bytes, not their number"] = bool(
+        offered.get("pass")
+    )
+    return seen
+
+
+def check_a_binary_write_lands_as_bytes(
+    iterations: int = 10,
+) -> Dict[str, Any]:
+    """The loop has to be able to *produce* a file it can read.
+
+    The content checks of v0.7.70 can read the words inside a PDF - but
+    only if a PDF is actually on the disk. The write protocol of
+    v0.7.15 could only carry **text**: the worker emitted a string, the
+    engine wrote it as UTF-8, and a task whose deliverable was a PDF
+    had no way to produce one. So the machine could judge a file that
+    the loop was unable to write, and the strongest reading in the
+    project still could not close a binary task.
+
+    This is the thirteenth gate. It watches that:
+
+    * a write block that says ``encoding="base64"`` lands on the disk
+      as the *decoded* bytes, not as its base64 text;
+    * the bytes on the disk are the bytes the content checks read - the
+      write path and the read path must agree;
+    * an unknown encoding is refused, and so is broken base64 - a
+      request that cannot be honoured must not leave a half-written
+      file behind;
+    * a block without an encoding is still written as text, so the
+      older protocol keeps working;
+    * a content check creates a *write obligation*, so the worker is
+      told to write the file at all;
+    * the engine plans the binary write as bytes, so the parallel
+      ranking scores a candidate against the PDF it would write.
+
+    And the gate proves it can fail: it breaks the write path on
+    purpose and checks that it notices.
+    """
+    import tempfile
+
+    failures: List[str] = []
+    rounds = max(1, int(iterations))
+    for round_index in range(rounds):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+
+            # A broken path must not *crash* the gate - it must make
+            # the gate red. A gate that raises instead of reporting is
+            # a gate that stops watching the moment it is needed most.
+            try:
+                seen = _binary_write_observations(root)
+            except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                failures.append(
+                    "round %d: the binary write path broke: %s: %s"
+                    % (round_index + 1, type(exc).__name__, exc)
+                )
+                continue
+            for label in BINARY_WRITE_OBSERVATIONS:
+                if label not in seen:
+                    failures.append(
+                        "round %d: the gate did not observe %s"
+                        % (round_index + 1, label)
+                    )
+                elif not seen[label]:
+                    failures.append("round %d: %s" % (round_index + 1, label))
+
+            # The gate proves it can fail. The encoding is ignored on
+            # purpose - every binary block lands as its base64 text -
+            # and the gate has to notice. Without this, a gate whose own
+            # observation was broken would report "all good" for ever.
+            import mas.filewrite as filewrite
+
+            real_request_bytes = filewrite._request_bytes
+
+            def _blind(content: str, encoding: Any = None) -> bytes:
+                return str(content).encode("utf-8")
+
+            filewrite._request_bytes = _blind
+            try:
+                broken = _binary_write_observations(root)
+            except Exception:  # noqa: BLE001 - a crash counts as "noticed"
+                broken = {}
+            finally:
+                filewrite._request_bytes = real_request_bytes
+            if broken.get("a base64 write block lands on the disk as real bytes"):
+                failures.append(
+                    "round %d: the gate did not notice a broken write path - "
+                    "it cannot fail, so it does not watch" % (round_index + 1)
+                )
+
+    return {
+        "name": "binary_write",
+        "title": "循环能写出二进制交付物，不只是文字",
+        "invariant": (
+            "base64 写的块落盘是真字节（不是编码文本）；写出去的字节就是机检读到的字节；"
+            "不认识的编码和坏掉的 base64 都要被拒；不写编码的块仍旧按文本写；"
+            "内容级标准要形成写文件义务；引擎规划的是二进制字节而不是旁边的文字"
+        ),
+        "detail": "二进制写协议：PDF / 图片 / 表格，循环写得出来也读得回",
+        "iterations": rounds,
+        "failures": failures,
+        "ok": not failures,
+    }
+
+
 def check_a_folder_handoff_closes_on_human_edits(
     iterations: int = 10,
 ) -> Dict[str, Any]:
@@ -2462,6 +2989,8 @@ check_a_takeover_sees_the_work_and_gets_a_fresh_budget.CHECK_NAME = "takeover_ha
 check_a_handback_closes_on_human_work.CHECK_NAME = "handback_closes"  # type: ignore[attr-defined]
 check_a_handback_shows_up_in_the_report.CHECK_NAME = "handback_report"  # type: ignore[attr-defined]
 check_a_folder_handoff_closes_on_human_edits.CHECK_NAME = "folder_handoff"  # type: ignore[attr-defined]
+check_a_content_check_reads_inside_the_file.CHECK_NAME = "content_check"  # type: ignore[attr-defined]
+check_a_binary_write_lands_as_bytes.CHECK_NAME = "binary_write"  # type: ignore[attr-defined]
 
 CHECKS = (
     check_relay_refusal_keeps_the_connection_usable,
@@ -2475,6 +3004,8 @@ CHECKS = (
     check_a_handback_closes_on_human_work,
     check_a_handback_shows_up_in_the_report,
     check_a_folder_handoff_closes_on_human_edits,
+    check_a_content_check_reads_inside_the_file,
+    check_a_binary_write_lands_as_bytes,
 )
 
 
@@ -2505,6 +3036,8 @@ def run_selftest(
             check_a_handback_closes_on_human_work,
             check_a_handback_shows_up_in_the_report,
             check_a_folder_handoff_closes_on_human_edits,
+            check_a_content_check_reads_inside_the_file,
+            check_a_binary_write_lands_as_bytes,
         ):
             row = check(iterations=min(int(iterations), 20))
         else:
