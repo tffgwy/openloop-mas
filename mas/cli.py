@@ -1039,14 +1039,9 @@ def _draft_roots(base: pathlib.Path) -> List[pathlib.Path]:
     `<artifacts>/<run_id>/` and the draft sits next to the file it
     changes.
     """
-    roots = [base]
-    try:
-        for child in sorted(base.iterdir()):
-            if child.is_dir() and child.name != ".mas-drafts":
-                roots.append(child)
-    except OSError:
-        pass
-    return roots
+    from mas.drafts import draft_roots
+
+    return draft_roots(base)
 
 
 def _all_drafts(
@@ -1088,6 +1083,25 @@ def cmd_drafts(args: argparse.Namespace) -> int:
     """
     from mas.drafts import approve_draft, reject_draft
 
+    action = str(getattr(args, "action", "") or "list")
+    if action == "token":
+        # The token belongs to the machine, not to a workspace: it is
+        # what tells a proposal apart from an approval. It is asked
+        # for before any workspace is looked at, so a machine that has
+        # not run anything yet can still hand one out.
+        from mas.drafts import ensure_human_token
+
+        config = load_config()
+        state = pathlib.Path(
+            os.path.expanduser(os.path.expandvars(str(config.get("state_dir") or "")))
+        )
+        token = ensure_human_token(state)
+        if getattr(args, "json", False):
+            _print({"token": token, "state_dir": str(state)}, True)
+            return 0
+        print(token)
+        return 0
+
     workspace = str(getattr(args, "workspace", "") or "").strip()
     explicit = bool(workspace)
     if not workspace:
@@ -1123,7 +1137,6 @@ def cmd_drafts(args: argparse.Namespace) -> int:
     # have to know the id of the run that produced the draft.
     roots = _draft_roots(base)
 
-    action = str(getattr(args, "action", "") or "list")
     if action in ("", "list"):
         rows = _all_drafts(roots, getattr(args, "state", None))
         if getattr(args, "json", False):
@@ -1811,7 +1824,7 @@ def build_parser() -> argparse.ArgumentParser:
         "action",
         nargs="?",
         default="list",
-        choices=["list", "show", "approve", "reject"],
+        choices=["list", "show", "approve", "reject", "token"],
         help="要做的动作（默认 list）",
     )
     drafts.add_argument("draft_id", nargs="?", default="", help="草稿编号")

@@ -3,6 +3,24 @@
 > 一个 **零依赖、纯标准库** 的多智能体闭环运行时：把「规划 → 执行 → 验证 → 复盘」写成**有验收标准、有退出条件、有过程账本**的工程循环。
 > **下载一个脚本就能装**，初学者也能跑起来。
 
+- **第 16 项门禁 `mcp_draft_approval`** —— v0.7.72 把「改动先进草稿」
+  落成了**引擎级**规则：循环改你已有的文件，先记草稿，你批准才写回。
+  **但那条规则只管住了循环自己** —— 一个会说话的 agent 拿着 MCP 工具，
+  仍然能直接改你的文件，**根本用不到草稿这一层**。
+  现在**提议**和**批准**分成了两个动作：
+  agent 经 MCP **提**一份改动（**原文件一个字节都不动**，草稿带 diff 和理由），
+  **批准要人类令牌** —— `mas drafts token` 拿到的那个。
+  **agent 提的草稿，agent 自己批不了**：令牌不对、空令牌、没令牌，一律拒绝，
+  而且**原文件不动**。
+  令牌的作用**不是保密，是分权**：提议的人不确认自己提的东西。
+  agent 也能 **`mas_files`** 索引工作区、**`mas_preview`** 预览文件，
+  **提改动之前先看清楚要改的是什么**。
+  而且这两个工具**认工作区**：agent 说「索引这个工作区」「预览里面的这个文件」，
+  工具就真的去读那个文件夹 —— 不是去读进程当前目录，
+  也不是回一句「这里什么都没有」。
+  这个缝是用**反证**查出来的：MCP 草稿路径的**十二个变异全部被捕获**（其中两个就是**路径解析被改坏**）；
+  而且这道门禁的判定被**独立实现了两遍**，**改坏判定函数自己也会被抓**。
+
 - **第 15 项门禁 `draft_approval`** —— 前面每一版都在**读**和**写**上使劲，
   却**没有一版问过「谁来批准这次改动」**。
   一次运行想改一个**已经存在**的文件时，引擎就真的把它覆盖了 ——
@@ -1428,6 +1446,7 @@ mas drafts                              # 看有哪些草稿在等
 mas drafts show D-1a2b3c4d              # 看这一份的 diff
 mas drafts approve D-1a2b3c4d           # 批准：写回原文件
 mas drafts reject  D-1a2b3c4d           # 驳回：原样不动
+mas drafts token                        # 拿人类令牌（agent 批不了自己的草稿）
 ```
 
 一次运行想改一个**已经存在**的文件时，它**不再直接覆盖**：
@@ -1449,6 +1468,42 @@ $ mas drafts
 「提改动 → 读旧文件 → 判不通过 → 再提改动」的死结，**永远闭不上**。
 草稿和它改的文件**住在同一个工作区**（`.mas-drafts/`），文件夹被复制时
 草稿跟着走 —— 丢掉的草稿，是一份**永远没法被人审阅**的改动。
+
+### agent 经 MCP 提草稿（v0.7.73 起）：提议和批准分成两个动作
+
+`mas drafts` 是**人**的那一半。MCP 上还有**一半给 agent**，
+但两半**不是同一件事**：
+
+```bash
+# 人在自己的机器上拿令牌（一次就够）
+mas drafts token
+```
+
+agent 侧的 MCP 工具：
+
+| 工具 | 做什么 | 能不能改文件 |
+|---|---|---|
+| `mas_draft_stage` | **提**一份改动（带 diff 和理由） | **不能** —— 原文件一个字节都不动 |
+| `mas_drafts` | 看有哪些草稿、看某一份的 diff | 不能 |
+| `mas_draft_resolve` | 批准或驳回 | **要人类令牌** |
+| `mas_files` | 索引工作区 | 只读 |
+| `mas_preview` | 预览一个文件 | 只读 |
+
+**agent 提的草稿，agent 自己批不了。** 令牌不对、空令牌、没令牌，
+一律拒绝，而且**原文件不动**。
+令牌的作用**不是保密，是分权** —— 提议的人不确认自己提的东西。
+
+```bash
+# agent 提了一个改动（文件没变）
+mas_draft_stage {path: "notes.txt", content: "改过的正文", reason: "补一句结论"}
+
+# agent 想自己批 —— 被拒
+mas_draft_resolve {action: "approve", draft_id: "D-1a2b3c4d"}
+-> {error: "human_token_required"}
+
+# 人批 —— 才写回
+mas_draft_resolve {action: "approve", draft_id: "D-1a2b3c4d", token: "<人类令牌>"}
+```
 
 详见 **[docs/drafts.md](docs/drafts.md)**（含与
 [MOKI 资料库](https://github.com/JKZeng-cell/moki-library-for-dsh) 的分工对照：
@@ -1984,7 +2039,8 @@ mas doctor        # 安装自检
 mas selftest      # 隔失门禁：重复打磈易偶发的路径（离线）
 mas files        # 索引工作区：每个文件是什么格式、能读出什么
 mas preview FILE # 预览一个文件（PDF / Word / 文本…）
-mas drafts       # 待确认的草稿：list / show / approve / reject
+mas drafts       # 待确认的草稿：list / show / approve / reject / token
+mas drafts token # 拿人类令牌：agent 提的草稿，agent 自己批不了
 mas serve         # 以 MCP stdio 服务运行
 mas http          # 以 HTTP + SSE 运行（远程接入；对外部署请设 MAS_HTTP_TOKEN）
 mas relay         # OpenAI 兼容中继：给「非要 API Key」的客户端用（默认 127.0.0.1:8766）
@@ -2018,7 +2074,7 @@ python -m mas selftest --iterations 120     # 隔失门禁（会拒绝绝经不�
 | [docs/quickstart.md](docs/quickstart.md) | 5 分钟上手：安装 → 离线跑通 → 接真实模型 → 人机协同 |
 | [docs/architecture.md](docs/architecture.md) | 运行时架构与数据流 |
 | [docs/loop-engineering.md](docs/loop-engineering.md) | 方法论：闭环为什么这样设计 |
-| [docs/mcp.md](docs/mcp.md) | MCP 接入、握手、9 个工具、协议细节与排障 |
+| [docs/mcp.md](docs/mcp.md) | MCP 接入、握手、18 个工具、协议细节与排障 |
 | [docs/dsh-integration.md](docs/dsh-integration.md) | DeepSeek Harness 集成：DSH 插件、relay 一键流程、MOKI 分工 |
 | [docs/relay.md](docs/relay.md) | `mas relay`：给「非要 API Key」的客户端用的私有端点中继 |
 | [docs/drafts.md](docs/drafts.md) | 草稿层：改动先进草稿，人确认后才写回原文件；与 MOKI 的分工 |

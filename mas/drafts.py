@@ -41,16 +41,21 @@ a draft that gets lost is a change that can never be reviewed.
 """
 from __future__ import annotations
 
+import contextlib
 import difflib
 import json
+import os
 import pathlib
 import secrets
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from mas.util import ensure_dir, now_iso, short_sha
 
 #: The folder inside a workspace that holds the drafts.
 DRAFTS_DIRNAME = ".mas-drafts"
+
+#: The file inside the state directory that holds the human token.
+HUMAN_TOKEN_FILENAME = "human.token"
 
 #: The states a draft can be in.
 DRAFT_PENDING = "pending"
@@ -282,3 +287,103 @@ def draft_overlay(workspace: Any) -> Dict[str, bytes]:
             continue
         overlay[absolute] = _draft_bytes(workspace, str(draft.get("id") or ""))
     return overlay
+
+
+def draft_roots(base: Any) -> List[pathlib.Path]:
+    """The folders of ``base`` that may hold drafts.
+
+    A run writes into ``<state_dir>/artifacts/<run_id>/``, so the
+    draft sits one folder deeper than the artifacts root the user
+    usually names. The named folder is the first candidate and its
+    sub-folders follow, so a reader does not have to know the id of
+    the run that produced the draft.
+    """
+    root = pathlib.Path(base)
+    roots = [root]
+    try:
+        for child in sorted(root.iterdir()):
+            if child.is_dir() and child.name != DRAFTS_DIRNAME:
+                roots.append(child)
+    except OSError:
+        pass
+    return roots
+
+
+def drafts_in(base: Any, state: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Every draft under ``base``, newest last.
+
+    This is the one place that knows how to look into the
+    sub-folders, so the CLI and the MCP server answer the same
+    question the same way.
+    """
+    rows: List[Dict[str, Any]] = []
+    for root in draft_roots(base):
+        rows.extend(list_drafts(root, state))
+    return rows
+
+
+def find_draft(base: Any, draft_id: str) -> Optional[Tuple[pathlib.Path, Dict[str, Any]]]:
+    """The folder that owns a draft, and the draft itself.
+
+    ``None`` when no such draft exists.
+    """
+    for root in draft_roots(base):
+        draft = get_draft(root, draft_id)
+        if draft is not None:
+            return root, draft
+    return None
+
+
+def human_token_path(state_dir: Any) -> pathlib.Path:
+    """Where the human token lives inside a state directory."""
+    return pathlib.Path(state_dir) / HUMAN_TOKEN_FILENAME
+
+
+def ensure_human_token(state_dir: Any) -> str:
+    """The human token of this machine, created if it does not exist.
+
+    The token is what separates *proposing* a change from *making* it.
+    An agent can stage a draft without any secret at all - proposing
+    is safe, because the file does not change. But approving a draft
+    writes to a file the human owns, so it needs a token that only the
+    human can read.
+
+    The token is created lazily by a *human* action (the CLI), and
+    the file is made unreadable to other users on the platforms that
+    have such a thing.
+    """
+    path = human_token_path(state_dir)
+    if path.exists():
+        return path.read_text(encoding="utf-8").strip()
+    token = secrets.token_hex(16)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(token + "\n", encoding="utf-8")
+    with contextlib.suppress(OSError):
+        # Windows has no POSIX mode bits. The folder is the protection
+        # there, and the token is only an obstacle, never a wall.
+        os.chmod(path, 0o600)
+    return token
+
+
+def read_human_token(state_dir: Any) -> str:
+    """The human token, or an empty string when there is none."""
+    path = human_token_path(state_dir)
+    if not path.exists():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def verify_human_token(state_dir: Any, token: Any) -> bool:
+    """Whether a token opens the approval door.
+
+    An empty token never opens it: a machine that has no token yet
+    cannot be talked into approving anything.
+    """
+    expected = read_human_token(state_dir)
+    given = str(token or "").strip()
+    if not expected or not given:
+        return False
+    return secrets.compare_digest(expected, given)

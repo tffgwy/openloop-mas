@@ -8,6 +8,7 @@ that a beginner only needs Python - no ``pip install`` step.
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import sys
 from typing import Any, Dict, List, Optional
@@ -215,12 +216,123 @@ TOOLS: List[Dict[str, Any]] = [
             },
         },
     ),
+    _tool(
+        "mas_drafts",
+        "List the pending drafts of a workspace, or show one of them. "
+        "A draft is a proposed change to a file that already exists; "
+        "the file itself is untouched until the change is approved.",
+        {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "description": "list | show"},
+                "draft_id": {"type": "string", "description": "草稿编号，例如 D-1a2b3c4d"},
+                "state": {"type": "string", "description": "pending | approved | rejected"},
+                "workspace": {"type": "string", "description": "工作区路径；默认是本机所有运行的工作区"},
+            },
+        },
+    ),
+    _tool(
+        "mas_draft_stage",
+        "Propose a change to a file that already exists, without "
+        "changing the file. The change becomes a draft that a human "
+        "reviews and approves. Creating a *new* file is not a draft: "
+        "use the normal write path for that.",
+        {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "要修改的已有文件路径（相对工作区）"},
+                "content": {"type": "string", "description": "改写后的完整正文"},
+                "reason": {"type": "string", "description": "为什么改（人会看到这句）"},
+                "workspace": {"type": "string", "description": "工作区路径"},
+            },
+            "required": ["path", "content"],
+        },
+    ),
+    _tool(
+        "mas_draft_resolve",
+        "Approve or reject a draft. Approving writes the change back to "
+        "the original file; rejecting leaves the file byte-identical. "
+        "This needs the human token, so an agent cannot approve its own "
+        "proposal.",
+        {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "description": "approve | reject"},
+                "draft_id": {"type": "string", "description": "草稿编号"},
+                "token": {"type": "string", "description": "人类令牌：mas drafts token"},
+                "note": {"type": "string", "description": "给人看的备注"},
+                "workspace": {"type": "string", "description": "工作区路径"},
+            },
+            "required": ["action", "draft_id"],
+        },
+    ),
+    _tool(
+        "mas_files",
+        "Index a folder: every file it holds, named by its own header, "
+        "with the facts the file carries (pages of a PDF, family of a "
+        "font, duration of a recording). With no argument it indexes "
+        "every run workspace on this machine.",
+        {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "要索引的文件夹；默认索引所有运行工作区"},
+                "workspace": {
+                    "type": "string",
+                    "description": "要索引的工作区文件夹（与 path 二选一）",
+                },
+            },
+        },
+    ),
+    _tool(
+        "mas_preview",
+        "Show what one file holds, read from the file itself: the words "
+        "of a PDF or a Word document, the facts of an image or a model. "
+        "A file with no text says so instead of showing a blank screen.",
+        {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "要预览的文件路径（相对路径按 workspace 解析）"},
+                "workspace": {
+                    "type": "string",
+                    "description": "相对路径所属的工作区文件夹",
+                },
+                "max_chars": {"type": "integer", "description": "最多返回多少字符（默认 4000）"},
+            },
+            "required": ["path"],
+        },
+    ),
 ]
 
 
 def _engine(config: Dict[str, Any], team: Optional[str] = None) -> LoopEngine:
     team_spec = load_team(team or config.get("team"))
     return LoopEngine(config, team=team_spec)
+
+
+def _state_dir(config: Dict[str, Any]) -> pathlib.Path:
+    """The state directory, expanded."""
+    raw = str(config.get("state_dir") or "")
+    return pathlib.Path(os.path.expanduser(os.path.expandvars(raw)))
+
+
+def _workspace_base(config: Dict[str, Any], workspace: Any) -> pathlib.Path:
+    """The folder the draft tools look into.
+
+    A named workspace wins. Otherwise the artifacts root of the state
+    directory is used, which is where every run's workspace lives.
+    """
+    named = str(workspace or "").strip()
+    if named:
+        return pathlib.Path(named).expanduser()
+    return _state_dir(config) / "artifacts"
+
+
+def _all_workspace_roots(config: Dict[str, Any]) -> List[pathlib.Path]:
+    """Every run workspace of this machine."""
+    root = _state_dir(config) / "artifacts"
+    if not root.exists():
+        return []
+    return [child for child in sorted(root.iterdir()) if child.is_dir()]
 
 
 def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
@@ -364,6 +476,122 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             save_config(merged)
             return {"config": merged}
         return {"config": config}
+
+    if name == "mas_drafts":
+        from mas.drafts import drafts_in, find_draft
+
+        action = str(arguments.get("action", "list"))
+        state = arguments.get("state")
+        base = _workspace_base(config, arguments.get("workspace"))
+        if action == "show":
+            draft_id = str(arguments.get("draft_id") or "")
+            found = find_draft(base, draft_id)
+            if found is None:
+                return {"error": "draft_not_found", "message": "draft not found: %s" % draft_id}
+            return {"draft": found[1]}
+        rows = drafts_in(base, str(state) if state else None)
+        return {"workspace": str(base), "drafts": rows, "count": len(rows)}
+
+    if name == "mas_draft_stage":
+        from mas.drafts import stage_draft
+
+        base = _workspace_base(config, arguments.get("workspace"))
+        relative = str(arguments.get("path") or "").strip()
+        content = str(arguments.get("content") or "")
+        if not relative:
+            return {"error": "path_required", "message": "a draft needs a path"}
+        try:
+            draft = stage_draft(
+                base,
+                relative,
+                content.encode("utf-8"),
+                reason=str(arguments.get("reason") or ""),
+                source="mcp",
+            )
+        except ValueError as exc:
+            return {"error": "draft_refused", "message": str(exc)}
+        return {"draft": draft, "message": "drafted: %s" % draft.get("path")}
+
+    if name == "mas_draft_resolve":
+        from mas.drafts import approve_draft, find_draft, reject_draft, verify_human_token
+
+        action = str(arguments.get("action", "")).strip().lower()
+        draft_id = str(arguments.get("draft_id") or "")
+        if action not in ("approve", "reject"):
+            return {"error": "unknown_action", "message": "action must be approve or reject"}
+        base = _workspace_base(config, arguments.get("workspace"))
+        if not verify_human_token(_state_dir(config), arguments.get("token")):
+            return {
+                "error": "human_token_required",
+                "message": (
+                    "approving a draft needs the human token; "
+                    "run `mas drafts token` on the machine that owns the files"
+                ),
+            }
+        found = find_draft(base, draft_id)
+        if found is None:
+            return {"error": "draft_not_found", "message": "draft not found: %s" % draft_id}
+        owner = found[0]
+        note = str(arguments.get("note") or "")
+        try:
+            if action == "approve":
+                draft = approve_draft(owner, draft_id, note)
+                message = "written back: %s" % draft.get("path")
+            else:
+                draft = reject_draft(owner, draft_id, note)
+                message = "dropped: %s" % draft.get("path")
+        except KeyError:
+            return {"error": "draft_not_found", "message": "draft not found: %s" % draft_id}
+        except ValueError as exc:
+            return {"error": "draft_refused", "message": str(exc)}
+        return {"draft": draft, "message": message}
+
+    if name == "mas_files":
+        from mas.resources import describe_folder, format_summary
+
+        named = str(arguments.get("path") or "").strip()
+        workspace = str(arguments.get("workspace") or "").strip()
+        if named:
+            targets = [(named, pathlib.Path(named).expanduser())]
+        elif workspace:
+            # The caller names a workspace, so that one folder is indexed
+            # - the same way the draft tools read one workspace. Without
+            # this the tool would silently index the artifacts root and
+            # report a folder the caller never asked about.
+            base = _workspace_base(config, workspace)
+            targets = [(str(base), base)]
+        else:
+            targets = [
+                (str(root), root) for root in _all_workspace_roots(config)
+            ]
+        indexes = []
+        for label, target in targets:
+            index = describe_folder(target)
+            index["label"] = label
+            indexes.append(index)
+        return {
+            "folders": indexes,
+            "count": len(indexes),
+            "files": sum(int(i.get("count") or 0) for i in indexes),
+            "summaries": [format_summary(i) for i in indexes],
+        }
+
+    if name == "mas_preview":
+        from mas.resources import preview_file
+
+        raw = str(arguments.get("path") or "").strip()
+        target = pathlib.Path(raw).expanduser() if raw else pathlib.Path("")
+        workspace = str(arguments.get("workspace") or "").strip()
+        if workspace and target and not target.is_absolute():
+            # A relative path is read against the workspace the caller
+            # named. Otherwise the tool would look in the process folder
+            # and report a file that plainly exists.
+            target = _workspace_base(config, workspace) / target
+        if not str(target) or not target.exists():
+            return {"error": "file_not_found", "message": "file not found: %s" % target}
+        if target.is_dir():
+            return {"error": "not_a_file", "message": "that is a folder: %s" % target}
+        return preview_file(target, max_chars=int(arguments.get("max_chars") or 4000))
 
     raise KeyError(f"unknown tool: {name}")
 

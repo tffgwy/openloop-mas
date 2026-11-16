@@ -60,7 +60,7 @@ env = { PYTHONPATH = "<install-dir>/app" }
 
 ---
 
-## 4. 工具清单（9 个）
+## 4. 工具清单（18 个）
 
 | 工具 | 作用 | 关键参数 |
 | --- | --- | --- |
@@ -70,9 +70,25 @@ env = { PYTHONPATH = "<install-dir>/app" }
 | `mas_tickets` | 列出人工升级工单 | `status`（可选） |
 | `mas_ticket_resolve` | 标记工单已处理 | `ticket_id`（必填）、`note` |
 | `mas_resume` | 带人工意见继续跑 | `ticket_id`（必填）、`note` |
+| `mas_handback` | 把人写的交付物交回，交给同一套验收 | `ticket_id`（必填）、`artifact` 或 `file` |
+| `mas_report` | 生成闭环复盘报告 | `run_id`（可选）、`as_markdown` |
+| `mas_replay` | 回放运行轨迹 | `run_id`（可选） |
+| `mas_export` | 导出账本为 Markdown 表格 | `run_id`（可选） |
 | `mas_teams` | 列出团队模板 | 无 |
 | `mas_doctor` | 安装自检（9 项） | 无 |
 | `mas_config` | 读取 / 更新配置 | `set`（可选，键值对） |
+| `mas_drafts` | 列出待确认的草稿，或看某一份的 diff | `action`（`list` / `show`）、`draft_id`、`state`、`workspace` |
+| `mas_draft_stage` | **提**一份改动；原文件一个字节都不动 | `path`（必填）、`content`（必填）、`reason`、`workspace` |
+| `mas_draft_resolve` | 批准 / 驳回草稿；**批准要人类令牌** | `action`（`approve` / `reject`）、`draft_id`（必填）、`token`、`note` |
+| `mas_files` | 索引工作区：每个文件是什么格式、能读出什么 | `path`（可选，默认所有工作区） |
+| `mas_preview` | 预览一个文件（PDF / Word / 文本…） | `path`（必填）、`max_chars` |
+
+### 4.0.1 agent 能提草稿，但不能自己批
+
+`mas_draft_stage` 让 agent **提**改动，`mas_draft_resolve` 让人**批**。
+**批准要人类令牌**（`mas drafts token`）：令牌不对、空令牌、没令牌，
+一律拒绝，而且**原文件不动**。
+详见 **[草稿层文档](drafts.md)**。
 
 ### 4.1 `mas_run` 示例
 

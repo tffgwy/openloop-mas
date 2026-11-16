@@ -7,6 +7,31 @@
 
 [English](README.en.md) | [中文](README.md)
 
+- **The 16th gate `mcp_draft_approval`** - v0.7.72 turned "the change goes
+  into a draft first" into an **engine-level** rule: when the loop wants to
+  change a file you already have, it records a draft and you approve it
+  before anything is written back. **But that rule only governed the loop
+  itself.** An agent that speaks MCP could still reach straight into your
+  files and never touch the draft layer at all.
+  Now **proposing and approving are two different actions**:
+  an agent stages a change over MCP (**the original keeps every byte**, the
+  draft carries a diff and a reason), and **approving needs the human
+  token** - the one `mas drafts token` prints.
+  **An agent cannot approve its own proposal**: a wrong token, an empty
+  token and a missing token are all refused, and **the original file does
+  not move**. The token is not about secrecy, it is about **separation of
+  duties**: the proposer does not confirm what it proposed.
+  The agent can also **`mas_files`** (index the workspace) and
+  **`mas_preview`** (read one file) - so it can look at what it is about to
+  change. And both tools **know the workspace**: when the agent says
+  "index this workspace" or "preview this file inside it", the tool reads
+  *that* folder - not the process folder, and not an answer saying there is
+  nothing here. The gap was found with a **mutation proof**: **all twelve
+  mutations of the MCP draft path were caught** (two of them are exactly the
+  path resolution being broken). And the verdict of this gate is
+  **implemented twice, independently** - the two readings have to agree,
+  so breaking the gate itself is caught too.
+
 - **The 15th gate `draft_approval`** - every version so far worked on *reading*
   and *writing*, and not one of them asked **"who approves this change?"**
   When a run wanted to change a file that **already existed**, the engine
@@ -1848,6 +1873,7 @@ mas drafts                              # what is waiting for a decision
 mas drafts show D-1a2b3c4d              # the diff of one draft
 mas drafts approve D-1a2b3c4d           # approve: write it back
 mas drafts reject  D-1a2b3c4d           # reject: nothing changes
+mas drafts token                        # the human token (an agent cannot approve its own draft)
 ```
 
 When a run wants to change a file that **already exists**, it no longer
@@ -1874,6 +1900,41 @@ next to the file it changes (`.mas-drafts/`), so a copied folder carries its
 drafts along - a lost draft is a change that can never be reviewed.
 
 See **[docs/drafts.md](docs/drafts.md)**.
+
+### An agent stages a draft over MCP (v0.7.73): proposing and approving are two actions
+
+`mas drafts` is the **human** half. The MCP server carries the **other half,
+for the agent** - and the two halves are **not the same thing**:
+
+```bash
+# the human picks up the token on their own machine (once)
+mas drafts token
+```
+
+| MCP tool | What it does | Can it change a file? |
+|---|---|---|
+| `mas_draft_stage` | **stage** a change (with a diff and a reason) | **No** - the original keeps every byte |
+| `mas_drafts` | list the drafts, read one diff | No |
+| `mas_draft_resolve` | approve or reject | **Only with the human token** |
+| `mas_files` | index the workspace | read only |
+| `mas_preview` | preview one file | read only |
+
+**An agent cannot approve its own proposal.** A wrong token, an empty token
+and a missing token are all refused, and the original file does not move.
+The token is not about secrecy, it is about **separation of duties** - the
+proposer does not confirm what it proposed.
+
+```bash
+# the agent stages a change (the file does not move)
+mas_draft_stage {path: "notes.txt", content: "the new text", reason: "adding a conclusion"}
+
+# the agent tries to approve it itself - refused
+mas_draft_resolve {action: "approve", draft_id: "D-1a2b3c4d"}
+-> {error: "human_token_required"}
+
+# the human approves - now it is written back
+mas_draft_resolve {action: "approve", draft_id: "D-1a2b3c4d", token: "<the human token>"}
+```
 
 ## Parallel multi-agent: let candidates compete
 
@@ -2234,7 +2295,8 @@ mas verify        # real closure self-check
 mas bench         # offline benchmark
 mas files         # index the workspace: every file, its format, its facts
 mas preview FILE  # preview one file (PDF / Word / text...)
-mas drafts        # drafts waiting for a human: list / show / approve / reject
+mas drafts        # drafts waiting for a human: list / show / approve / reject / token
+mas drafts token  # the human token: an agent cannot approve its own draft
 mas status        # local state
 mas ledger        # closure ledger
 mas report        # Markdown closure report

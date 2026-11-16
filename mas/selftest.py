@@ -3529,6 +3529,395 @@ def check_a_draft_is_approved_before_it_is_written_back(
 
 check_a_draft_is_approved_before_it_is_written_back.CHECK_NAME = "draft_approval"  # type: ignore[attr-defined]
 
+MCP_DRAFT_OBSERVATIONS = (
+    "the MCP server advertises the draft tools",
+    "an agent can propose a change through MCP",
+    "a proposal leaves the original file untouched",
+    "the proposal carries a diff and a reason",
+    "the agent cannot approve its own proposal",
+    "a wrong token does not approve either",
+    "the human token opens the approval door",
+    "approving through MCP writes the change back",
+    "rejecting through MCP changes nothing",
+    "the MCP server can index a folder",
+    "the MCP server can preview a file",
+    "the MCP server indexes the workspace it was given",
+    "the MCP server previews a path inside the workspace",
+)
+
+
+def _mcp_draft_observations(root: Any) -> Dict[str, bool]:
+    """Watch the draft layer from the MCP side, one thing at a time."""
+    import pathlib
+
+    # The token belongs to the machine, and the MCP server reads the
+    # state directory from the configuration - which the environment
+    # overrides. The gate points that at the temporary folder for the
+    # duration of the observation, so the token the human asks for and
+    # the token the server checks are the same one. Without this the
+    # gate would read a token from a temporary folder while the server
+    # read one from the real state directory, and the approval would
+    # be refused for a reason that has nothing to do with the rule.
+    previous_state = os.environ.get("MAS_STATE_DIR")
+    os.environ["MAS_STATE_DIR"] = str(pathlib.Path(root) / "state")
+    try:
+        return _mcp_draft_observations_inner(root)
+    finally:
+        # The environment is put back whatever happens, so a round that
+        # raises cannot leak a state directory into the next one.
+        if previous_state is None:
+            os.environ.pop("MAS_STATE_DIR", None)
+        else:
+            os.environ["MAS_STATE_DIR"] = previous_state
+
+
+def _mcp_draft_observations_inner(root: Any) -> Dict[str, bool]:
+    """The body of the MCP draft observation.
+
+    The function collects **facts**, not verdicts. A verdict would be
+    a boolean that a later edit could simply set to ``True`` - and a
+    gate whose own observation was tampered with would then report
+    "all good" for ever. The facts are raw strings and numbers, and
+    the verdict is decided by :func:`_mcp_draft_verdicts`, which is
+    a separate piece of code.
+    """
+    import pathlib
+
+    from mas.drafts import ensure_human_token
+    from mas.mcp_server import TOOLS, handle_tool
+
+    seen: Dict[str, Any] = {}
+    workspace = pathlib.Path(root)
+    existing = workspace / "notes.txt"
+    original_text = "the human's own words"
+    existing.write_text(original_text, encoding="utf-8")
+    seen["original_text"] = original_text
+
+    advertised = [str(t.get("name") or "") for t in TOOLS if t.get("name")]
+    seen["advertised"] = ",".join(sorted(advertised))
+
+    staged = handle_tool(
+        "mas_draft_stage",
+        {
+            "path": "notes.txt",
+            "content": "the agent proposes this",
+            "reason": "the agent says why",
+            "workspace": str(workspace),
+        },
+    )
+    draft = staged.get("draft") or {}
+    draft_id = str(draft.get("id") or "")
+    seen["draft_id"] = draft_id
+    seen["file_after_staging"] = existing.read_text(encoding="utf-8")
+    seen["diff_lines"] = len(draft.get("diff") or [])
+    seen["reason"] = str(draft.get("reason") or "")
+
+    without = handle_tool(
+        "mas_draft_resolve",
+        {"action": "approve", "draft_id": draft_id, "workspace": str(workspace)},
+    )
+    seen["without_token_error"] = str(without.get("error") or "")
+    seen["file_after_without_token"] = existing.read_text(encoding="utf-8")
+
+    # The token has to exist *before* the wrong token is tried. If no
+    # token file exists yet, the refusal would come from "there is no
+    # token at all" and the comparison itself would never run - a
+    # broken comparison would go unnoticed.
+    token = ensure_human_token(pathlib.Path(root) / "state")
+    wrong = handle_tool(
+        "mas_draft_resolve",
+        {
+            "action": "approve",
+            "draft_id": draft_id,
+            "token": "not-the-token",
+            "workspace": str(workspace),
+        },
+    )
+    seen["wrong_token_error"] = str(wrong.get("error") or "")
+    seen["file_after_wrong_token"] = existing.read_text(encoding="utf-8")
+
+    approved = handle_tool(
+        "mas_draft_resolve",
+        {
+            "action": "approve",
+            "draft_id": draft_id,
+            "token": token,
+            "workspace": str(workspace),
+        },
+    )
+    seen["approved_message"] = str(approved.get("message") or "")
+    seen["file_after_approve"] = existing.read_text(encoding="utf-8")
+
+    # A second proposal, this time rejected by the human.
+    staged2 = handle_tool(
+        "mas_draft_stage",
+        {
+            "path": "notes.txt",
+            "content": "a change nobody wanted",
+            "workspace": str(workspace),
+        },
+    )
+    second_id = str((staged2.get("draft") or {}).get("id") or "")
+    keep = existing.read_text(encoding="utf-8")
+    handle_tool(
+        "mas_draft_resolve",
+        {
+            "action": "reject",
+            "draft_id": second_id,
+            "token": token,
+            "workspace": str(workspace),
+        },
+    )
+    seen["file_before_reject"] = keep
+    seen["file_after_reject"] = existing.read_text(encoding="utf-8")
+
+    index = handle_tool("mas_files", {"path": str(workspace)})
+    seen["indexed_files"] = int(index.get("files") or 0)
+    preview = handle_tool("mas_preview", {"path": str(existing)})
+    seen["preview_text"] = str(preview.get("text") or "")
+
+    # The agent does not only hold absolute paths. It names a workspace
+    # and gives a path inside it - and that has to resolve to the very
+    # same files. A tool that answered "nothing here" for a folder
+    # that plainly holds a file would be lying to the caller.
+    by_workspace = handle_tool("mas_files", {"workspace": str(workspace)})
+    seen["indexed_files_by_workspace"] = int(by_workspace.get("files") or 0)
+    relative = handle_tool(
+        "mas_preview", {"workspace": str(workspace), "path": existing.name}
+    )
+    seen["preview_text_by_workspace"] = str(relative.get("text") or "")
+
+    return seen
+
+
+def _mcp_draft_verdicts(facts: Dict[str, Any]) -> Dict[str, bool]:
+    """Turn the collected facts into the verdicts of the gate.
+
+    Kept apart from the collection on purpose: the collection cannot
+    be edited into saying "yes" without the facts themselves
+    changing.
+    """
+    advertised = str(facts.get("advertised") or "").split(",")
+    original = "the human's own words"
+    return {
+        "the MCP server advertises the draft tools": all(
+            name in advertised
+            for name in ("mas_drafts", "mas_draft_stage", "mas_draft_resolve")
+        ),
+        "an agent can propose a change through MCP": bool(facts.get("draft_id")),
+        "a proposal leaves the original file untouched": (
+            facts.get("file_after_staging") == original
+        ),
+        "the proposal carries a diff and a reason": (
+            int(facts.get("diff_lines") or 0) > 0
+            and bool(facts.get("reason"))
+        ),
+        "the agent cannot approve its own proposal": (
+            facts.get("without_token_error") == "human_token_required"
+            and facts.get("file_after_without_token") == original
+        ),
+        "a wrong token does not approve either": (
+            facts.get("wrong_token_error") == "human_token_required"
+            and facts.get("file_after_wrong_token") == original
+        ),
+        "the human token opens the approval door": bool(
+            facts.get("approved_message")
+        ),
+        "approving through MCP writes the change back": (
+            facts.get("file_after_approve") == "the agent proposes this"
+        ),
+        "rejecting through MCP changes nothing": (
+            facts.get("file_after_reject") == facts.get("file_before_reject")
+        ),
+        "the MCP server can index a folder": int(facts.get("indexed_files") or 0) > 0,
+        "the MCP server can preview a file": bool(facts.get("preview_text")),
+        "the MCP server indexes the workspace it was given": int(
+            facts.get("indexed_files_by_workspace") or 0
+        ) > 0,
+        "the MCP server previews a path inside the workspace": bool(
+            facts.get("preview_text_by_workspace")
+        ),
+    }
+
+
+def _mcp_draft_verdicts_independent(facts: Dict[str, Any]) -> Dict[str, bool]:
+    """A second, independent reading of the same facts.
+
+    The verdict function above is the one the gate trusts. If that
+    function is edited - by a careless hand or by a mutation - the
+    gate would report whatever the edited function says. This second
+    implementation is written from the *rule* rather than from the
+    first implementation, and the gate requires the two to agree.
+
+    Two readers of the same facts that disagree mean one of them is
+    wrong - and a gate that cannot tell which one is wrong is not
+    watching anything.
+    """
+    advertised = str(facts.get("advertised") or "")
+    verdicts: Dict[str, bool] = {}
+    verdicts["the MCP server advertises the draft tools"] = (
+        advertised.count("mas_drafts") >= 1
+        and advertised.count("mas_draft_stage") >= 1
+        and advertised.count("mas_draft_resolve") >= 1
+    )
+    verdicts["an agent can propose a change through MCP"] = (
+        len(str(facts.get("draft_id") or "")) > 0
+    )
+    verdicts["a proposal leaves the original file untouched"] = (
+        str(facts.get("file_after_staging")) == str(facts.get("original_text"))
+    )
+    verdicts["the proposal carries a diff and a reason"] = (
+        int(facts.get("diff_lines") or 0) > 0
+        and len(str(facts.get("reason") or "")) > 0
+    )
+    verdicts["the agent cannot approve its own proposal"] = (
+        str(facts.get("without_token_error")) == "human_token_required"
+        and str(facts.get("file_after_without_token"))
+        == str(facts.get("original_text"))
+    )
+    verdicts["a wrong token does not approve either"] = (
+        str(facts.get("wrong_token_error")) == "human_token_required"
+        and str(facts.get("file_after_wrong_token"))
+        == str(facts.get("original_text"))
+    )
+    verdicts["the human token opens the approval door"] = (
+        len(str(facts.get("approved_message") or "")) > 0
+    )
+    verdicts["approving through MCP writes the change back"] = (
+        str(facts.get("file_after_approve")) == "the agent proposes this"
+    )
+    verdicts["rejecting through MCP changes nothing"] = (
+        str(facts.get("file_after_reject")) == str(facts.get("file_before_reject"))
+    )
+    verdicts["the MCP server can index a folder"] = (
+        int(facts.get("indexed_files") or 0) > 0
+    )
+    verdicts["the MCP server can preview a file"] = (
+        len(str(facts.get("preview_text") or "")) > 0
+    )
+    verdicts["the MCP server indexes the workspace it was given"] = (
+        int(facts.get("indexed_files_by_workspace") or 0) > 0
+    )
+    verdicts["the MCP server previews a path inside the workspace"] = (
+        len(str(facts.get("preview_text_by_workspace") or "")) > 0
+    )
+    return verdicts
+
+
+def check_an_agent_can_propose_but_not_approve(
+    iterations: int = 10,
+) -> Dict[str, Any]:
+    """An agent may propose a change; only the human may approve it.
+
+    The draft layer of v0.7.72 is a rule for the *engine*: the loop
+    stages a change instead of overwriting a file. This gate is the
+    rule for the *agent*: an agent that speaks MCP can now propose a
+    change to a file the human owns - and it still cannot make that
+    change on its own.
+
+    This is the sixteenth gate. It watches that:
+
+    * the MCP server advertises the draft tools;
+    * an agent can stage a proposal, and the original file keeps its
+      bytes while the proposal waits;
+    * the proposal carries a diff and the reason, so a human can see
+      what would change;
+    * approving through MCP **needs the human token** - no token and a
+      wrong token are both refused, and the file stays as it was;
+    * the right token writes the change back, and a rejection changes
+      nothing;
+    * the MCP server can index a folder and preview a file, so the
+      agent can read the workspace before it proposes anything.
+
+    The point of the token is not secrecy, it is *separation*: the
+    agent that proposes a change is not the one that confirms it.
+    """
+    import tempfile
+
+    failures: List[str] = []
+    rounds = max(1, int(iterations))
+    for round_index in range(rounds):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            try:
+                facts = _mcp_draft_observations(root)
+            except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                failures.append(
+                    "round %d: the MCP draft layer broke: %s: %s"
+                    % (round_index + 1, type(exc).__name__, exc)
+                )
+                continue
+            seen = _mcp_draft_verdicts(facts)
+            # Two readers of the same facts have to agree. If the
+            # verdict function was edited - so that it reports "yes"
+            # whatever the facts say - the second reader disagrees and
+            # the gate goes red. A gate that can only be fooled by
+            # changing the product, but not by changing itself, is
+            # not a gate.
+            independent = _mcp_draft_verdicts_independent(facts)
+            for label in MCP_DRAFT_OBSERVATIONS:
+                if label in independent and independent[label] != seen.get(label):
+                    failures.append(
+                        "round %d: the two readings of %s disagree (%r vs %r) - "
+                        "the verdict was tampered with"
+                        % (round_index + 1, label, seen.get(label), independent[label])
+                    )
+                    break
+            for label in MCP_DRAFT_OBSERVATIONS:
+                if label not in seen:
+                    failures.append(
+                        "round %d: the gate did not observe %s"
+                        % (round_index + 1, label)
+                    )
+                elif not seen[label]:
+                    failures.append("round %d: %s" % (round_index + 1, label))
+
+            # The gate proves it can fail. The separation between the
+            # proposer and the approver is broken on purpose - the
+            # token stops being checked - and the gate has to notice.
+            # Without this, a gate whose own observation had been
+            # tampered with would report "all good" for ever.
+            from mas.drafts import verify_human_token
+
+            real_verify = verify_human_token
+            try:
+                import mas.drafts as drafts_module
+
+                drafts_module.verify_human_token = lambda *_args, **_kwargs: True
+                broken = {}
+                try:
+                    broken = _mcp_draft_verdicts(_mcp_draft_observations(root))
+                except Exception:  # noqa: BLE001 - a crash counts as "noticed"
+                    broken = {}
+            finally:
+                import mas.drafts as drafts_module
+
+                drafts_module.verify_human_token = real_verify
+            if broken.get("the agent cannot approve its own proposal"):
+                failures.append(
+                    "round %d: the gate did not notice that the token "
+                    "stopped being checked - it cannot fail, so it does "
+                    "not watch" % (round_index + 1)
+                )
+
+    return {
+        "name": "mcp_draft_approval",
+        "title": "agent 能提草稿，但改不改由人说了算",
+        "invariant": (
+            "agent 经 MCP 能提草稿，原文件不动；"
+            "批准要人类令牌，agent 自己批不了自己的提案；"
+            "批了才写回，驳回一个字都不改；"
+            "MCP 还能索引文件夹、预览文件"
+        ),
+        "detail": "MCP 草稿层：mas_drafts / mas_draft_stage / mas_draft_resolve",
+        "iterations": rounds,
+        "failures": failures,
+        "ok": not failures,
+    }
+
+
+check_an_agent_can_propose_but_not_approve.CHECK_NAME = "mcp_draft_approval"  # type: ignore[attr-defined]
+
 CHECKS = (
     check_relay_refusal_keeps_the_connection_usable,
     check_provider_keeps_the_usage_of_a_failed_call,
@@ -3545,6 +3934,7 @@ CHECKS = (
     check_a_binary_write_lands_as_bytes,
     check_the_index_knows_every_file,
     check_a_draft_is_approved_before_it_is_written_back,
+    check_an_agent_can_propose_but_not_approve,
 )
 
 
