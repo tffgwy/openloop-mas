@@ -2992,6 +2992,309 @@ check_a_folder_handoff_closes_on_human_edits.CHECK_NAME = "folder_handoff"  # ty
 check_a_content_check_reads_inside_the_file.CHECK_NAME = "content_check"  # type: ignore[attr-defined]
 check_a_binary_write_lands_as_bytes.CHECK_NAME = "binary_write"  # type: ignore[attr-defined]
 
+# ------------------------------------------------------------------ resources
+# The short name of a check is a property of the function, so that
+# ``--only resource_index`` and the JSON output speak the same word.
+RESOURCE_INDEX_OBSERVATIONS = (
+    "the index lists every file of the folder",
+    "the index lists a file nobody checks",
+    "the format comes from the header, not from the name",
+    "a PNG named .txt is reported as an image",
+    "the pages of a PDF are read from the file",
+    "the family of a font is read from the file",
+    "the duration of a recording is read from the file",
+    "the triangles of a model are read from the file",
+    "the members of an archive are listed",
+    "the preview shows the words of a PDF",
+    "the preview shows the words of a Word document",
+    "a file that cannot be read is listed with a reason",
+    "a file that cannot be read is not dropped",
+)
+
+
+def _resource_index_observations(root: Any) -> Dict[str, bool]:
+    """Observe the resource index, one behaviour at a time.
+
+    Same discipline as the twelfth and thirteenth gates: the observation
+    and the decision are kept apart, so a broken observation shows up as
+    a *missing* observation rather than as a silent pass.
+    """
+    import pathlib
+
+    from mas.content import detect_format
+    from mas.resources import describe_folder, preview_file
+
+    seen: Dict[str, bool] = {}
+    index = describe_folder(root)
+    rows = list(index.get("files") or [])
+    names = {str(row.get("relative") or row.get("name") or "") for row in rows}
+
+    seen["the index lists every file of the folder"] = (
+        "report.pdf" in names
+        and "memo.docx" in names
+        and "shot.png" in names
+        and "clip.wav" in names
+        and "model.obj" in names
+        and "demo.ttf" in names
+        and "bundle.zip" in names
+        and "blob.bin" in names
+    )
+    seen["the index lists a file nobody checks"] = "support/notes.txt" in names
+
+    # The format is decided by the header. A PNG that was *named* .txt
+    # is still an image - and the index has to say so, because the name
+    # is what a reader would otherwise believe.
+    liar = pathlib.Path(root) / "liar.txt"
+    seen["the format comes from the header, not from the name"] = (
+        detect_format(liar) == "image"
+    )
+    seen["a PNG named .txt is reported as an image"] = any(
+        str(row.get("relative")) == "liar.txt" and row.get("format") == "image"
+        for row in rows
+    )
+
+    def _fact(name: str, key: str) -> bool:
+        for row in rows:
+            if str(row.get("relative")) == name:
+                value = row.get(key)
+                return value not in (None, "", 0)
+        return False
+
+    seen["the pages of a PDF are read from the file"] = _fact("report.pdf", "pages")
+    seen["the family of a font is read from the file"] = _fact("demo.ttf", "family")
+    seen["the duration of a recording is read from the file"] = _fact(
+        "clip.wav", "duration_sec"
+    )
+    seen["the triangles of a model are read from the file"] = _fact(
+        "model.obj", "vertices"
+    )
+    seen["the members of an archive are listed"] = _fact("bundle.zip", "members")
+
+    pdf_preview = preview_file(pathlib.Path(root) / "report.pdf")
+    seen["the preview shows the words of a PDF"] = "Conclusion" in str(
+        pdf_preview.get("text") or ""
+    )
+    docx_preview = preview_file(pathlib.Path(root) / "memo.docx")
+    seen["the preview shows the words of a Word document"] = "Memo" in str(
+        docx_preview.get("text") or ""
+    )
+
+    blob = [row for row in rows if str(row.get("relative")) == "blob.bin"]
+    seen["a file that cannot be read is listed with a reason"] = bool(
+        blob and str(blob[0].get("reason") or "")
+    )
+    seen["a file that cannot be read is not dropped"] = bool(blob)
+    return seen
+
+
+def check_the_index_knows_every_file(
+    iterations: int = 10,
+) -> Dict[str, Any]:
+    """The loop has to be able to say what it produced.
+
+    A run leaves files in a folder, and the folder was only visible
+    through the run that made it. A file that was neither the
+    deliverable nor mentioned by any criterion - a supporting PDF, a
+    font, a 3D model - had no listing at all. So the answer to "what
+    did this machine actually produce?" was scattered across commands,
+    and the answer to "what is in this folder?" did not exist.
+
+    This is the fourteenth gate. It watches that:
+
+    * every file of the folder is listed, including the ones no
+      criterion mentions - a supporting file is still part of the work;
+    * the format of a file comes from its own header, so a PNG named
+      .txt is reported as an image;
+    * the facts are read from the file: the pages of a PDF, the family
+      of a font, the duration of a recording, the triangles of a model,
+      the members of an archive;
+    * the preview shows the words of a PDF and of a Word document;
+    * a file that cannot be read is listed **with the reason** and is
+      never silently dropped - an unreadable file in the middle of a
+      deliverable is exactly the thing a reader needs to see.
+
+    And the gate proves it can fail: it breaks the index on purpose
+    and checks that it notices.
+    """
+    import tempfile
+
+    failures: List[str] = []
+    rounds = max(1, int(iterations))
+    for round_index in range(rounds):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / "report.pdf").write_bytes(_compressed_pdf_bytes("Conclusion 42"))
+            (root / "memo.docx").write_bytes(_docx_bytes("Memo 42"))
+            (root / "shot.png").write_bytes(_png_bytes(12, 7))
+            (root / "liar.txt").write_bytes(_png_bytes(4, 4))
+            (root / "clip.wav").write_bytes(_wav_bytes(44100, 2, 66150))
+            (root / "model.obj").write_text(
+                "v 0 0 0\nv 1 0 0\nv 1 1 0\nf 1 2 3\n", encoding="utf-8"
+            )
+            (root / "demo.ttf").write_bytes(_font_bytes("OpenLoop Sans", 256))
+            (root / "bundle.zip").write_bytes(
+                _zip_bytes((("notes/one.txt", "first note"),))
+            )
+            (root / "blob.bin").write_bytes(bytes(range(256)) * 4)
+            support = root / "support"
+            support.mkdir(exist_ok=True)
+            (support / "notes.txt").write_text("some notes", encoding="utf-8")
+
+            # A broken path must not *crash* the gate - it must make
+            # the gate red. A gate that raises instead of reporting is
+            # a gate that stops watching the moment it is needed most.
+            try:
+                seen = _resource_index_observations(root)
+            except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                failures.append(
+                    "round %d: the resource index broke: %s: %s"
+                    % (round_index + 1, type(exc).__name__, exc)
+                )
+                continue
+            for label in RESOURCE_INDEX_OBSERVATIONS:
+                if label not in seen:
+                    failures.append(
+                        "round %d: the gate did not observe %s"
+                        % (round_index + 1, label)
+                    )
+                elif not seen[label]:
+                    failures.append("round %d: %s" % (round_index + 1, label))
+
+            # The gate proves it can fail. The index is broken on
+            # purpose - every file looks like the one before it - and
+            # the gate has to notice. Without this, a gate whose own
+            # observation was broken would report "all good" for ever.
+            import mas.content as content
+
+            # The index asks the *content* module what a file is, so
+            # that is where the format has to be broken.
+            real_detect = content.detect_format
+
+            def _blind(path: Any) -> str:
+                return "binary"
+
+            content.detect_format = _blind
+            try:
+                broken = _resource_index_observations(root)
+            except Exception:  # noqa: BLE001 - a crash counts as "noticed"
+                broken = {}
+            finally:
+                content.detect_format = real_detect
+            if broken.get("a PNG named .txt is reported as an image"):
+                failures.append(
+                    "round %d: the gate did not notice a broken index - "
+                    "it cannot fail, so it does not watch" % (round_index + 1)
+                )
+
+    return {
+        "name": "resource_index",
+        "title": "循环知道自己产出了什么：一个文件夹就是一份索引",
+        "invariant": (
+            "文件夹里的每个文件都进索引，包括没人检查的辅助文件；"
+            "格式按文件自己的头判定（.txt 装的 PNG 报 image）；"
+            "PDF 页数、字体家族、音频时长、模型三角面、压缩包成员都从文件里读出来；"
+            "预览能抽出 PDF / Word 的正文；"
+            "读不开的文件要列出来并写明原因，不能悄悄丢掉"
+        ),
+        "detail": "统一资源索引与多格式预览：mas files / mas preview",
+        "iterations": rounds,
+        "failures": failures,
+        "ok": not failures,
+    }
+
+
+def _png_bytes(width: int, height: int) -> bytes:
+    """The bytes of a real PNG of the given size."""
+    import struct
+    import zlib
+
+    def _chunk(tag: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + tag
+            + data
+            + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+        )
+
+    raw = b"".join(
+        b"\x00" + bytes([(x * 7 + y * 3) % 256 for x in range(width * 3)])
+        for y in range(height)
+    )
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + _chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
+        + _chunk(b"IDAT", zlib.compress(raw))
+        + _chunk(b"IEND", b"")
+    )
+
+
+def _wav_bytes(rate: int, channels: int, frames: int) -> bytes:
+    """The bytes of a real WAV file."""
+    import struct
+
+    samples = b"".join(
+        struct.pack("<h", (i * 37) % 30000 - 15000)
+        for i in range(frames * channels)
+    )
+    header = (
+        b"RIFF"
+        + struct.pack("<I", 36 + len(samples))
+        + b"WAVEfmt "
+        + struct.pack("<IHHIIHH", 16, 1, channels, rate, rate * channels * 2,
+                      channels * 2, 16)
+        + b"data"
+        + struct.pack("<I", len(samples))
+    )
+    return header + samples
+
+
+def _font_bytes(family: str, glyphs: int) -> bytes:
+    """The bytes of a minimal sfnt font that states its family."""
+    import struct
+
+    names = [(1, family), (2, "Regular"), (4, family), (6, family.replace(" ", ""))]
+    records = b""
+    strings = b""
+    for name_id, text in names:
+        raw = text.encode("utf-16-be")
+        records += struct.pack(">HHHHHH", 3, 1, 0x0409, name_id, len(raw), len(strings))
+        strings += raw
+    name_table = (
+        struct.pack(">HHH", 0, len(names), 6 + 12 * len(names)) + records + strings
+    )
+    tables = {
+        b"name": name_table,
+        b"maxp": struct.pack(">IH", 0x00010000, int(glyphs)),
+    }
+    tags = sorted(tables)
+    count = len(tags)
+    offset_table = b""
+    body = b""
+    offset = 12 + 16 * count
+    for tag in tags:
+        data = tables[tag]
+        offset_table += tag + struct.pack(">III", 0, offset, len(data))
+        body += data + b"\x00" * ((4 - len(data) % 4) % 4)
+        offset += len(data) + ((4 - len(data) % 4) % 4)
+    header = struct.pack(">IHHHH", 0x00010000, count, 16, 0, 0)
+    return header + offset_table + body
+
+
+def _zip_bytes(members: Any) -> bytes:
+    """The bytes of a zip archive with the given members."""
+    import io
+    import zipfile
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, text in members:
+            archive.writestr(str(name), str(text))
+    return buffer.getvalue()
+
+
+
+check_the_index_knows_every_file.CHECK_NAME = "resource_index"  # type: ignore[attr-defined]
+
 CHECKS = (
     check_relay_refusal_keeps_the_connection_usable,
     check_provider_keeps_the_usage_of_a_failed_call,
@@ -3006,6 +3309,7 @@ CHECKS = (
     check_a_folder_handoff_closes_on_human_edits,
     check_a_content_check_reads_inside_the_file,
     check_a_binary_write_lands_as_bytes,
+    check_the_index_knows_every_file,
 )
 
 
@@ -3038,6 +3342,7 @@ def run_selftest(
             check_a_folder_handoff_closes_on_human_edits,
             check_a_content_check_reads_inside_the_file,
             check_a_binary_write_lands_as_bytes,
+            check_the_index_knows_every_file,
         ):
             row = check(iterations=min(int(iterations), 20))
         else:

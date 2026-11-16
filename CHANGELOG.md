@@ -10,6 +10,68 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.71] - 2026-11-16
+
+### 循环要能说出自己产出了什么
+
+前面每一版都在**读**和**写**上使劲，但**没有一版回答过最朴素的那个问题**：
+**「这个循环到底产出了什么？」**
+
+答案过去是散的：`mas artifacts` 只列**交付物**，`mas status` 只讲**机器**，
+一个既不是交付物、也没有任何验收标准提到的文件 —— 一份佐证 PDF、
+一个字体、一个 3D 模型 —— **根本没有地方列**。
+
+- **第 14 项门禁 `resource_index`** —— 第 12 项看**读**，
+  第 13 项看**写**，**没有任何门禁看「产出物的清单」**。
+  这个缝是用**反证**查出来的：索引路径的**七个变异全部被捕获**。
+
+- **新模块 `mas/formats.py`** —— 只用标准库，**只读、不执行任何东西**：
+  - `font_info()` —— TTF / OTF / TTC / WOFF / WOFF2：解析 sfnt 表目录，
+    从 `name` 表取家族与子家族，从 `maxp` 取字形数；
+  - `image_info()` —— JPEG（SOF 标记）、PNG / GIF / BMP、
+    WEBP（VP8 / VP8L / VP8X）、TIFF（IFD）：像素宽高；
+  - `media_info()` —— WAV（fmt / data 块、时长）、
+    MP4 / MOV（ISO box 树、ftyp 品牌、mvhd 时长、轨道数）、
+    FLAC（STREAMINFO）、OGG、MP3、Matroska；
+  - `model_info()` —— GLB（chunk 解析）、glTF（JSON）、
+    OBJ（顶点 / 面计数）、STL（二进制 / ASCII 三角面）、
+    FBX（版本）、PLY（element 计数）、3MF（包内 `.model` 数）。
+  **截断的文件和撒谎的文件返回空结果** —— 只报文件头能证明的事实。
+
+- **新模块 `mas/resources.py`** —— 一个文件夹就是一份索引：
+  - `describe_folder(root)` —— 每个文件一行，含 `relative` / `format` /
+    `bytes` / `readable` / `reason`；
+  - `format_summary(index)` —— 按格式分组；
+  - `facts_for(row)` —— 渲染可读事实串；
+  - `preview_file(path)` —— 预览一个文件；只对**有正文的格式**抽正文。
+
+- **两个新命令**：
+  - `mas files [路径]` —— 索引一个文件夹；不给路径就索引
+    `<state_dir>/artifacts/*` 下所有运行工作区；
+  - `mas preview <文件> [--max-chars N]` —— 预览一个文件；
+    文件不存在或传了目录都**退出码 2**。
+
+- **格式判定扩了 12 种**：`font` / `audio` / `video` / `model` / `archive`
+  加进 `KNOWN_FORMATS`；magic bytes 新增字体、glTF / FBX / PLY、
+  7z / Rar；RIFF 分支细分出 WEBP / WAVE / AVI。
+
+- **这一版修掉的真 bug**（都是先被真实样本抓出来的）：
+  - GLB 的容器头是**小端**，之前按大端读，版本号读成 `131072.0`；
+  - GLB 的 chunk 从**第 12 字节**开始，不是第 20 字节；
+  - `.gltf` 是**纯 JSON**，头两个字节是 `{`，只能靠扩展名认 ——
+    之前它一个事实都读不出来；
+  - `.zip` 被归档分支抢走，报 `archive` 而不是 `zip`，成员数也就丢了；
+  - PLY 的 `element vertex 3` 存成了 `vertex: 3`，字段名跟事实对不上；
+  - STL 的 ASCII 形态被当成二进制，header 不够 84 字节就什么也不报；
+  - PNG / GIF / BMP 的像素尺寸在 `mas/formats.py` 里**读不出来**
+    （只读 JPEG / WEBP / TIFF）。
+
+- **和 MOKI 的关系**：MOKI 给 DeepSeek Harness 加了**本地资源管理器**
+  （统一管理 + 多格式预览 + `Alt+D` 唤起 AI 协同编辑，
+  **修改先进草稿、人工确认后才写回**）。这一版补的是**读的那一半**：
+  先把「有哪些文件、是什么、能读出么」变成一条命令。
+  详见 [`docs/resources.md`](docs/resources.md)。
+
 ## [0.7.70] - 2026-11-16
 
 ### 机检要能读进文件里，而不是只认字节

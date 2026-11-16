@@ -3,6 +3,19 @@
 > 一个 **零依赖、纯标准库** 的多智能体闭环运行时：把「规划 → 执行 → 验证 → 复盘」写成**有验收标准、有退出条件、有过程账本**的工程循环。
 > **下载一个脚本就能装**，初学者也能跑起来。
 
+- **第 14 项门禁 `resource_index`** —— 前面每一版都在**读**和**写**上使劲，
+  却**没有一版回答过最朴素的那个问题**：「**这个循环到底产出了什么？**」
+  答案是散的：`mas artifacts` 只列**交付物**，`mas status` 只讲**机器**，
+  一个既不是交付物、也没有任何验收标准提到的文件 —— 一份佐证 PDF、一个字体、
+  一个 3D 模型 —— **根本没有地方列**。
+  现在有了 **`mas files`**（一个文件夹就是一份索引）和 **`mas preview`**（读一个文件）。
+  索引保证三件事：**每个文件都进**（包括没人检查的辅助文件）、
+  **格式按文件自己的头判定**（`.txt` 装的 PNG 报 `image`）、
+  **读不开的文件要列出来并写明原因**（不能悄悄丢掉）。
+  事实从文件里读出来：PDF **页数**、字体**家族**、音频**时长**、
+  模型**三角面**、压缩包**成员数** —— **只报文件头能证明的事实**。
+  纯标准库，**只读、不执行任何东西**，所以它在任何装了 Python 的机器上都能跑。
+  索引路径的**七个变异全部被捕获**。
 - **第 13 项门禁 `binary_write`** —— v0.7.70 让机检**读得进** PDF，
   可是**循环写不出** PDF：写文件协议只能带**文字**，worker 的输出是一个字符串，
   引擎把它写成 UTF-8。交付物是 PDF 的任务**没有办法产出 PDF** ——
@@ -1362,6 +1375,39 @@ mas run --workspace ./my-project --goal "出一份 PDF 报告" \
 判「无法判定」的话，这条标准会**回到模型手里**，而模型说一句
 「looks fine」就把它关上了 —— **没人查过的标准被关上，比不闭合更糟**。
 
+### 统一资源索引与多格式预览（v0.7.71 起）：一个文件夹就是一份索引
+
+```bash
+mas files                  # 索引这台机器上所有工作区
+mas files ./out            # 索引一个文件夹
+mas preview ./out/report.pdf   # 预览一个文件
+```
+
+```bash
+$ mas files ./out
+
+[./out]  5 个文件  263.7 KB
+    pdf        1 个
+    image      2 个
+    model      1 个
+      836.0 B  pdf        report.pdf  pages 2、text chars 57
+      327.0 B  image      shot.png  width 12、height 7
+      117.0 B  image      liar.txt  width 4、height 4
+      213.0 B  model      ascii.stl  triangles 2
+      251.0 B  zip        bundle.zip  members 2
+```
+
+**格式按文件自己的头判定，不看名字** —— 上面的 `liar.txt` 其实是一张 PNG，
+所以它报 `image`。**读不开的文件会列出来并写明原因**（那一行 ⚠ 是信息，
+不是噪声：交付物中间有一个读不开的文件，恰恰是读者最该看见的东西）。
+
+`mas preview` 把 PDF 的字从**压缩流**里取出来、把 Word 的字从 **zip 成员**里
+剥掉标记取出来；图片没有正文时**明确说「没有可预览的正文」**，而不是给你一个空白屏幕。
+文件不存在或传了目录 → **退出码 2**。
+
+详见 **[docs/resources.md](docs/resources.md)**（含与
+[MOKI 资料库](https://github.com/JKZeng-cell/moki-library-for-dsh) 的分工对照）。
+
 ### 写二进制交付物（v0.7.70 起）：worker 怎么产出那个 PDF
 
 内容级机检要读得进 PDF，**前提是有一个 PDF 存在**。写文件协议
@@ -1888,6 +1934,8 @@ mas resume ID     # 带人工意见继续
 mas teams         # 团队模板
 mas doctor        # 安装自检
 mas selftest      # 隔失门禁：重复打磈易偶发的路径（离线）
+mas files        # 索引工作区：每个文件是什么格式、能读出什么
+mas preview FILE # 预览一个文件（PDF / Word / 文本…）
 mas serve         # 以 MCP stdio 服务运行
 mas http          # 以 HTTP + SSE 运行（远程接入；对外部署请设 MAS_HTTP_TOKEN）
 mas relay         # OpenAI 兼容中继：给「非要 API Key」的客户端用（默认 127.0.0.1:8766）

@@ -62,8 +62,64 @@ KNOWN_FORMATS = (
     "pptx",
     "image",
     "zip",
+    "font",
+    "audio",
+    "video",
+    "model",
+    "archive",
     "binary",
 )
+
+#: The extensions that are fonts.
+_FONT_EXTENSIONS = {
+    ".ttf": "truetype",
+    ".otf": "opentype",
+    ".ttc": "fontcollection",
+    ".woff": "woff",
+    ".woff2": "woff2",
+}
+
+#: The extensions that are audio files.
+_AUDIO_EXTENSIONS = {
+    ".wav": "audio",
+    ".wave": "audio",
+    ".mp3": "audio",
+    ".flac": "audio",
+    ".ogg": "audio",
+    ".m4a": "audio",
+    ".aac": "audio",
+}
+
+#: The extensions that are video files.
+_VIDEO_EXTENSIONS = {
+    ".mp4": "video",
+    ".m4v": "video",
+    ".mov": "video",
+    ".mkv": "video",
+    ".webm": "video",
+    ".avi": "video",
+}
+
+#: The extensions that are 3D models.
+_MODEL_EXTENSIONS = {
+    ".gltf": "model",
+    ".glb": "model",
+    ".obj": "model",
+    ".stl": "model",
+    ".fbx": "model",
+    ".ply": "model",
+    ".3mf": "model",
+}
+
+#: The extensions that are archives.
+_ARCHIVE_EXTENSIONS = {
+    ".zip": "zip",
+    ".tar": "tar",
+    ".gz": "gzip",
+    ".tgz": "gzip",
+    ".7z": "archive",
+    ".rar": "archive",
+}
 
 #: The magic bytes of the image formats we can recognise.
 _IMAGE_SIGNATURES = (
@@ -158,25 +214,67 @@ def detect_format(path: Any) -> str:
             head = handle.read(64)
     except OSError:
         return "binary"
+    for signature in (
+        (b"\x00\x01\x00\x00", "font"),
+        (b"OTTO", "font"),
+        (b"ttcf", "font"),
+        (b"wOFF", "font"),
+        (b"wOF2", "font"),
+    ):
+        if head.startswith(signature[0]):
+            return str(signature[1])
+    if head.startswith((b"glTF", b"Kaydara FBX Binary")):
+        return "model"
+    if head.startswith((b"ply\n", b"ply\r")):
+        return "model"
+    if head.startswith(b"7z\xbc\xaf\x27\x1c"):
+        return "archive"
+    if head.startswith(b"Rar!"):
+        return "archive"
     for signature in _IMAGE_SIGNATURES:
         if head.startswith(signature):
             return "image"
     if head[:4] == b"RIFF":
         if head[8:12] == b"WEBP":
             return "image"
-        if suffix in (".wav", ".wave"):
+        if head[8:12] == b"AVI ":
+            return "video"
+        if head[8:12] == b"WAVE":
             return "audio"
+        if suffix in _VIDEO_EXTENSIONS:
+            return "video"
         return "audio"
     if head.startswith((b"PK\x03\x04", b"PK\x05\x06")):
         if suffix in _OFFICE_EXTENSIONS:
             return _OFFICE_EXTENSIONS[suffix]
+        if suffix in _MODEL_EXTENSIONS:
+            return "model"
+        if suffix in _ARCHIVE_EXTENSIONS and suffix not in (".zip",):
+            return "archive"
         return "zip"
     if head.startswith(b"%PDF"):
         return "pdf"
     if head.startswith(b"\x1f\x8b"):
         return "gzip"
-    if head.startswith(b"ID3") or head[4:8] == b"ftyp":
+    if head[4:8] == b"ftyp":
+        # An ISO base media file: MP4, MOV, M4A. The brand says which.
+        if suffix in _VIDEO_EXTENSIONS:
+            return "video"
+        if suffix in _AUDIO_EXTENSIONS:
+            return "audio"
+        return "video"
+    if head.startswith(b"ID3"):
         return "audio"
+    if suffix in _FONT_EXTENSIONS:
+        return "font"
+    if suffix in _VIDEO_EXTENSIONS:
+        return "video"
+    if suffix in _AUDIO_EXTENSIONS:
+        return "audio"
+    if suffix in _MODEL_EXTENSIONS:
+        return "model"
+    if suffix in _ARCHIVE_EXTENSIONS:
+        return "archive"
     return _TEXT_EXTENSIONS.get(suffix, "binary")
 
 
@@ -474,4 +572,30 @@ def describe_file(path: Any) -> Dict[str, Any]:
         facts.update(_image_size(target))
     else:
         facts["text_chars"] = len(extracted["text"])
+    facts.update(_extra_facts(target, kind))
     return facts
+
+
+def _extra_facts(target: pathlib.Path, kind: str) -> Dict[str, Any]:
+    """The facts that only the deeper parsers can supply.
+
+    ``describe_file`` already knows the size of a file and the number of
+    pages in a PDF. These are the facts about the *payload*: the family
+    of a font, the duration of a recording, the number of triangles in a
+    model. A file whose header does not state them yields nothing - a
+    guess here would be indistinguishable from a fact.
+    """
+    from mas.formats import font_info, image_info, media_info, model_info
+
+    try:
+        if kind == "font":
+            return font_info(target)
+        if kind == "image":
+            return image_info(target)
+        if kind in ("audio", "video"):
+            return media_info(target)
+        if kind == "model":
+            return model_info(target)
+    except Exception:  # pragma: no cover - a broken header must not crash
+        return {}
+    return {}

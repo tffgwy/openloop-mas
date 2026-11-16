@@ -915,6 +915,122 @@ def _result_files(result: Any) -> List[Dict[str, Any]]:
     return []
 
 
+def cmd_files(args: argparse.Namespace) -> int:
+    """Index a folder: what is in it, and what kind of file each thing is.
+
+    A run writes its work into a folder, and until now the only way to
+    see that folder was to open it in an explorer. The reader of this
+    repository asked for the other half of a local resource manager:
+    one place where every file is listed, named by its own header, and
+    described by the facts that file carries - the pages of a PDF, the
+    family of a font, the duration of a recording.
+
+    With no argument the command indexes every run workspace on this
+    machine, so "what did I produce?" is one command away.
+    """
+    from mas.resources import describe_folder, facts_for, format_summary
+
+    roots: List[str] = []
+    labels: List[str] = []
+    if args.path:
+        roots.append(str(args.path))
+        labels.append(str(args.path))
+    else:
+        config = load_config()
+        root = pathlib.Path(
+            os.path.expanduser(os.path.expandvars(str(config.get("state_dir") or "")))
+        ) / "artifacts"
+        if root.exists():
+            for child in sorted(root.iterdir()):
+                if child.is_dir():
+                    roots.append(str(child))
+                    labels.append(child.name)
+
+    indexes: List[Dict[str, Any]] = []
+    for label, target in zip(labels, roots, strict=False):
+        index = describe_folder(target)
+        index["label"] = label
+        indexes.append(index)
+
+    if args.json:
+        _print(
+            {
+                "folders": indexes,
+                "count": len(indexes),
+                "files": sum(int(i["count"]) for i in indexes),
+                "bytes": sum(int(i["bytes"]) for i in indexes),
+            },
+            True,
+        )
+        return 0
+
+    if not indexes:
+        print("还没有任何工作区。跑一次 `mas run` 就会生成。")
+        return 0
+    total = sum(int(i["count"]) for i in indexes)
+    print(f"共 {len(indexes)} 个工作区，{total} 个文件：")
+    for index in indexes:
+        print()
+        print(f"[{index['label']}]  {index['count']} 个文件  {index['size']}")
+        for summary in format_summary(index):
+            print(f"    {summary['format']:<10} {summary['count']} 个")
+        for row in index["files"]:
+            facts = facts_for(row)
+            tail = ("  " + "、".join(facts)) if facts else ""
+            print(f"    {row['size']:>9}  {row['format']:<10} {row['relative']}{tail}")
+            if row.get("reason"):
+                print(f"              ⚠ 读不开：{row['reason']}")
+    return 0
+
+
+def cmd_preview(args: argparse.Namespace) -> int:
+    """Show what one file holds, in the terminal.
+
+    The preview reads the file's own content: a PDF's words come out of
+    its compressed stream, a Word document out of its archive, an image
+    out of its pixels. A file with no text says so - the reader is told
+    what the file *is* instead of being shown a blank screen.
+    """
+    from mas.resources import preview_file
+
+    target = pathlib.Path(args.path).expanduser()
+    if not target.exists():
+        message = f"找不到这个文件：{target}"
+        if getattr(args, "json", False):
+            _print({"error": "file_not_found", "message": message, "found": False}, True)
+        else:
+            print(message, file=sys.stderr)
+        return 2
+    if target.is_dir():
+        message = f"这是一个文件夹，不是文件：{target}\n用 `mas files {target}` 看里面的东西。"
+        if getattr(args, "json", False):
+            _print({"error": "not_a_file", "message": message, "found": False}, True)
+        else:
+            print(message, file=sys.stderr)
+        return 2
+
+    preview = preview_file(target, max_chars=int(args.max_chars))
+    if args.json:
+        _print(preview, True)
+        return 0
+    print(f"{preview['name']}  {preview['format']}  {preview['size']}")
+    if preview.get("facts"):
+        print("  " + "、".join(preview["facts"]))
+    if preview.get("reason"):
+        print(f"  ⚠ {preview['reason']}")
+    text = str(preview.get("text") or "")
+    if text.strip():
+        print()
+        print(text)
+        if preview.get("truncated"):
+            print()
+            print("（正文太长，这里只显示了开头一部分）")
+    elif not preview.get("reason"):
+        print()
+        print("（这个格式没有可预览的正文）")
+    return 0
+
+
 def cmd_artifacts(args: argparse.Namespace) -> int:
     """List the deliverables this machine has produced.
 
@@ -1472,6 +1588,33 @@ def build_parser() -> argparse.ArgumentParser:
     artifacts.add_argument("--run-id", help="只看某一次运行")
     add_json(artifacts)
     artifacts.set_defaults(func=cmd_artifacts)
+
+    files = sub.add_parser(
+        "files",
+        help="索引工作区里的文件：每一个是什么格式、里面有什么",
+    )
+    files.add_argument(
+        "path",
+        nargs="?",
+        default="",
+        help="要索引的文件夹（不给就索引本机所有运行工作区）",
+    )
+    add_json(files)
+    files.set_defaults(func=cmd_files)
+
+    preview = sub.add_parser(
+        "preview",
+        help="预览一个文件：PDF/Word/图片等格式的内容",
+    )
+    preview.add_argument("path", help="要预览的文件")
+    preview.add_argument(
+        "--max-chars",
+        type=int,
+        default=4000,
+        help="最多显示多少个字符（默认 4000）",
+    )
+    add_json(preview)
+    preview.set_defaults(func=cmd_preview)
 
     report = sub.add_parser("report", help="生成闭环复盘报告（Markdown）")
     report.add_argument("--run-id", help="只报告某一次运行")

@@ -7,6 +7,22 @@
 
 [English](README.en.md) | [中文](README.md)
 
+- **The 14th gate `resource_index`** - every version so far worked on *reading*
+  and *writing*, and not one of them answered the plainest question there is:
+  **"what did this loop actually produce?"**
+  The answer used to be scattered: `mas artifacts` lists only the *deliverable*,
+  `mas status` only talks about the *machine*, and a file that is neither -
+  a supporting PDF, a font, a 3D model - was not listed anywhere at all.
+  Now there is **`mas files`** (one folder is one index) and **`mas preview`**
+  (read one file). The index guarantees three things: **every file is listed**
+  (including the supporting files no criterion mentions), **the format comes from
+  the file's own header** (a PNG named .txt is reported as `image`), and **a file
+  that cannot be read is listed with its reason** - never silently dropped.
+  The facts are read from the file: the *pages* of a PDF, the *family* of a font,
+  the *duration* of a recording, the *triangles* of a model, the *members* of an
+  archive - **only what the header can prove**. Standard library only, **read-only,
+  never executes anything**, so it runs on any machine with Python.
+  **All seven mutations of the index path were caught.**
 - **The 13th gate `binary_write`** - v0.7.70 made the machine checks read
   **inside** a PDF, but the loop still could not **write** one: the write
   protocol of v0.7.15 could only carry **text**, the worker's output was a
@@ -1775,6 +1791,41 @@ required, and anything unreadable (`"maybe"`, missing, `null`) stays
 **required** - an unreadable flag must never silently relax a standard.
 
 ---
+
+### The unified resource index and multi-format preview (v0.7.71): one folder is one index
+
+```bash
+mas files                  # index every workspace on this machine
+mas files ./out            # index one folder
+mas preview ./out/report.pdf   # preview one file
+```
+
+```bash
+$ mas files ./out
+
+[./out]  5 files  263.7 KB
+    pdf        1
+    image      2
+    model      1
+      836.0 B  pdf        report.pdf  pages 2, text chars 57
+      327.0 B  image      shot.png  width 12, height 7
+      117.0 B  image      liar.txt  width 4, height 4
+      213.0 B  model      ascii.stl  triangles 2
+      251.0 B  zip        bundle.zip  members 2
+```
+
+**The format comes from the file's own header, not from its name** - the
+`liar.txt` above is really a PNG, so it is reported as `image`. **A file that
+cannot be read is listed with the reason** - that warning line is information,
+not noise: an unreadable file in the middle of a deliverable is exactly what a
+reader needs to see.
+
+`mas preview` pulls a PDF's words out of its *compressed stream* and a Word
+document's words out of its *archive member*; an image with no body says so
+plainly instead of showing a blank screen. A missing file or a folder gives
+**exit code 2**.
+
+See **[docs/resources.md](docs/resources.md)**.
 
 ## Parallel multi-agent: let candidates compete
 
