@@ -15,6 +15,7 @@ from mas.config import load_config, load_persisted_config, save_config
 from mas.demo import run_scenarios
 from mas.doctor import format_doctor, run_doctor, summarize, verdict
 from mas.engine import LoopEngine
+from mas.handoff import file_listing_reading
 from mas.installer import (
     format_report,
     format_sync_report,
@@ -695,6 +696,18 @@ def cmd_tickets(args: argparse.Namespace) -> int:
                 "  交回交付物：mas handback %s --file <你的文件>"
                 % ticket["id"]
             )
+            # Where to edit. The ticket has always carried the folder
+            # the run worked in, but no command ever printed it, so a
+            # human who wanted to fix the files had to go and find the
+            # folder by hand first. The folder is now named here, with
+            # the command that hands it back.
+            workspace = str(payload.get("workspace") or "").strip()
+            if workspace:
+                print("  在这里改：%s" % workspace)
+                print(
+                    "  改完交回：mas handback %s --workspace \"%s\""
+                    % (ticket["id"], workspace)
+                )
         print()
 
     if waiting:
@@ -708,6 +721,67 @@ def cmd_tickets(args: argparse.Namespace) -> int:
         for ticket in resolved:
             show(ticket)
     return 0
+
+
+def _print_handback_result(
+    result: Any,
+    args: argparse.Namespace,
+    folder: bool = False,
+) -> int:
+    """Print the outcome of a handback - text or folder.
+
+    Both kinds end in the same place: the same acceptance criteria
+    decided it, and the same ticket either closes or stays open. The
+    only difference the reader needs is *where the work came from* -
+    one file, one blob of text, or a folder they edited in place.
+    """
+    if getattr(args, "json", False):
+        _print(result.to_dict(), True)
+        return 0 if result.closed else 2
+    status_reading_text = status_reading(result.status)
+    cell = (
+        status_reading_text
+        if status_reading_text == result.status
+        else f"{status_reading_text}（{result.status}）"
+    )
+    print(f"状态：{cell}")
+    print(f"工单：{args.ticket_id}")
+    if folder:
+        print(f"工作区：{result.workspace}")
+        if result.files:
+            print(f"交回的文件：{file_listing_reading(result.files)}")
+            for row in result.files[:12]:
+                print(f"  - {row.get('path')}")
+            if len(result.files) > 12:
+                print(f"  （另有 {len(result.files) - 12} 个文件）")
+    for score in result.scores:
+        flag = "PASS" if score["pass"] else ("?" if score["pass"] is None else "FAIL")
+        optional = "" if score.get("blocking", True) else "，可选"
+        reading_note = note_reading(score.get("note"))
+        source = source_reading(score.get("source"))
+        detail = reading_note or str(score.get("note") or "")
+        if source and detail:
+            detail = f"{source}：{detail}"
+        elif source:
+            detail = source
+        print(f"  [{flag}] {score['id']}{optional} {detail}")
+        reading = str(score.get("reading") or "")
+        if reading:
+            print(f"        要求：{reading}")
+    if result.closed:
+        print("人工交付物通过验收，工单已结。")
+        if result.artifact_path:
+            print(f"交付物：{result.artifact_path}")
+    else:
+        print(f"人工交付物没有通过验收：{result.error}")
+        print(f"工单 {args.ticket_id} 仍在人工队列里，失败项已经记在票上。")
+        if folder:
+            # A refused folder handoff changes nothing on the disk:
+            # the human's edits are still there. Saying so is part of
+            # the answer - otherwise the reader may think the work was
+            # thrown away and start over.
+            print("你改过的文件原样保留在工作区里，可以接着改。")
+    return 0 if result.closed else 2
 
 
 def cmd_handback(args: argparse.Namespace) -> int:
@@ -726,6 +800,23 @@ def cmd_handback(args: argparse.Namespace) -> int:
     """
     config = load_config()
     engine = _engine(config)
+    # A folder handoff: the human edited the files the run produced and
+    # hands the folder back. The folder is judged as it stands, and
+    # only a deliverable that passes is written back.
+    if getattr(args, "workspace", None):
+        try:
+            result = engine.handback_workspace(
+                args.ticket_id,
+                args.note or "",
+                args.workspace,
+            )
+        except KeyError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        return _print_handback_result(result, args, folder=True)
     text = args.text or ""
     if getattr(args, "file", None):
         path = pathlib.Path(args.file).expanduser()
@@ -749,39 +840,7 @@ def cmd_handback(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 1
-    if args.json:
-        _print(result.to_dict(), True)
-    else:
-        status_reading_text = status_reading(result.status)
-        cell = (
-            status_reading_text
-            if status_reading_text == result.status
-            else f"{status_reading_text}（{result.status}）"
-        )
-        print(f"状态：{cell}")
-        print(f"工单：{args.ticket_id}")
-        for score in result.scores:
-            flag = "PASS" if score["pass"] else ("?" if score["pass"] is None else "FAIL")
-            optional = "" if score.get("blocking", True) else "，可选"
-            reading_note = note_reading(score.get("note"))
-            source = source_reading(score.get("source"))
-            detail = reading_note or str(score.get("note") or "")
-            if source and detail:
-                detail = f"{source}：{detail}"
-            elif source:
-                detail = source
-            print(f"  [{flag}] {score['id']}{optional} {detail}")
-            reading = str(score.get("reading") or "")
-            if reading:
-                print(f"        要求：{reading}")
-        if result.closed:
-            print("人工交付物通过验收，工单已结。")
-            if result.artifact_path:
-                print(f"交付物：{result.artifact_path}")
-        else:
-            print(f"人工交付物没有通过验收：{result.error}")
-            print(f"工单 {args.ticket_id} 仍在人工队列里，失败项已经记在票上。")
-    return 0 if result.closed else 2
+    return _print_handback_result(result, args, folder=False)
 
 
 def cmd_resume(args: argparse.Namespace) -> int:
@@ -1398,6 +1457,13 @@ def build_parser() -> argparse.ArgumentParser:
     source = handback.add_mutually_exclusive_group(required=True)
     source.add_argument("--file", help="人工交付物所在的文件")
     source.add_argument("--text", help="人工交付物的正文")
+    # The folder handoff: the human edited the files the run produced,
+    # in the run's own workspace, and hands the folder back. The folder
+    # is judged as it stands and only written back if it passes.
+    source.add_argument(
+        "--workspace",
+        help="人工改好的工作区文件夹（直接改原工作区里的文件再交回）",
+    )
     handback.add_argument("--note", default="", help="人工说明")
     add_json(handback)
     handback.set_defaults(func=cmd_handback)

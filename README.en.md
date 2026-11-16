@@ -7,6 +7,34 @@
 
 [English](README.en.md) | [中文](README.md)
 
+- **The 11th gate `folder_handoff`** - v0.7.67 let a human-written deliverable close
+  the loop, but **it only accepted a blob of text**. The tasks this loop actually
+  runs write *files*, and the acceptance criteria that matter are file checks
+  that read the disk. A human who fixes such a task opens the file and edits it;
+  the text handback asked them to paste the file's content into a command line
+  instead - a **second copy of the work**, and the copy that fails: forget one
+  line and the handoff is rejected for a reason that has nothing to do with the
+  answer. The ninth gate watches the *engine*, the tenth watches the *report*;
+  **nothing watched the human path**. Mutation testing proved the gap: six
+  mutations of the folder handoff (read the wrong folder / drop the file content
+  from the deliverable / write a deliverable even when the handoff is refused /
+  offer only the first file / drop the deliverable into a second folder / forget
+  the folder on the ticket) were caught by **none** of them. The eleventh gate
+  now watches that path, and **all six mutations are caught**.
+- **The folder is the unit of the offer** - the human edits the files **where
+  they are** and hands **that folder** back; the deliverable is built from the
+  files, so **nothing is pasted by hand**.
+- **Draft semantics** - the judge reads an overlay (the bytes on the disk right
+  now) and **nothing is written before the judgement**; a **refused handoff
+  changes nothing on the disk** and writes no deliverable - the human's work is
+  never thrown away.
+- **Only an accepted handoff is written back** - and it lands **in the folder the
+  human edited**, not in a second one.
+- **The ticket is the entrance** - `mas tickets` prints "edit it here: <folder>"
+  and "hand it back: mas handback <id> --workspace "<path>"".
+- **The new command `mas handback --workspace <dir>`** - `--file` / `--text`
+  keep working exactly as before.
+
 - **The 10th gate `handback_report`** - v0.7.67 let a human-written deliverable
   close the loop, but **the report could not see it**. The ninth gate watches
   the *engine* (can a human's work close the loop?); **nothing watched the

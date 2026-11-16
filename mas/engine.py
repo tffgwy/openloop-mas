@@ -43,6 +43,7 @@ from mas.filechecks import (
     workspace_root,
 )
 from mas.filewrite import apply_write_blocks, plan_writes, write_instruction
+from mas.handoff import build_deliverable, collect_workspace_files, read_workspace_overlay
 from mas.ledger import Ledger
 from mas.orchestration import (
     ParallelFailure,
@@ -2761,6 +2762,298 @@ class LoopEngine:
                     "last_artifact": artifact,
                     "issues": issues,
                     "criteria": [criterion.to_dict() for criterion in crits],
+                },
+                reason=error,
+            )
+        return result
+
+    # --------------------------------------------------- folder handoff
+    def handback_workspace(
+        self,
+        ticket_id: str,
+        note: str = "",
+        workspace: Optional[str] = None,
+    ) -> RunResult:
+        """Take a *folder* of human edits back into the loop.
+
+        The text handback takes one string. That is the wrong shape for
+        the tasks this loop actually runs: a worker writes files, and
+        the acceptance criteria are file checks that read the disk. A
+        human who fixes such a task edits the files in the workspace -
+        and there was no way to hand that back. The folder they had
+        edited was never read; the handback took a string instead, so
+        the file checks judged the *old* files and the human's work was
+        invisible to the loop.
+
+        This is the "draft first, write back after approval" rule, the
+        same rule a document editor follows:
+
+        * The folder is read as it stands now - the human's edits are
+          already in it.
+        * It is judged against the ticket's own criteria, with the
+          folder's contents as an overlay, so the judge sees the
+          edited files and writes nothing.
+        * Only a deliverable that passes is written back as the
+          finished artifact.
+
+        A refused handoff changes nothing: the human's edits stay on
+        the disk exactly as they left them, because they are the
+        human's work and not this loop's to discard.
+        """
+        ticket = self.tickets.get(ticket_id)
+        if ticket is None:
+            raise KeyError(f"unknown ticket: {ticket_id}")
+        payload = ticket.get("payload") or {}
+        crits = [
+            Criterion.from_raw(raw_criterion, index)
+            for index, raw_criterion in enumerate(payload.get("criteria") or [])
+        ]
+        if not crits:
+            raise ValueError(
+                "工单 %s 没有验收标准，没法验收人工交付物" % ticket_id
+            )
+        problems = validate_criteria(crits)
+        if problems:
+            raise ValueError(
+                "验收标准里有无法执行的机检规则:\n  - " + "\n  - ".join(problems)
+            )
+
+        # The folder the human edited. The ticket knows it - it is
+        # where the run worked - and an explicit path wins over it, so
+        # a human can hand back a copy from somewhere else.
+        root = str(
+            workspace
+            or payload.get("workspace")
+            or self._run_workspace_path()
+        ).strip()
+        if not root:
+            raise ValueError("工单 %s 没有工作区路径，不知道该验收哪个文件夹" % ticket_id)
+        folder = pathlib.Path(root).expanduser()
+        if not folder.exists() or not folder.is_dir():
+            raise ValueError("工作区不存在或不是文件夹：%s" % folder)
+
+        files = collect_workspace_files(folder)
+        if not files:
+            raise ValueError(
+                "工作区 %s 里没有可交回的文件" % folder
+            )
+
+        run_id = "H-" + uuid.uuid4().hex[:10]
+        task_id = f"{run_id}-1"
+        self._run_id = str(run_id)
+        self._written_files = []
+        self._workspace = None
+
+        # The checks of a folder handoff resolve against the folder the
+        # human edited. The overlay is what they read: the bytes that
+        # are on the disk *now*, so the file checks judge the human's
+        # edits rather than the ones the loop left behind.
+        check_config = dict(self.config)
+        check_config["workspace"] = str(folder)
+        self._check_config = check_config
+        overlay = read_workspace_overlay(folder)
+
+        # The deliverable is written *into the folder the human
+        # edited*. The run that produced the ticket had a workspace of
+        # its own, and a handoff has a run id of its own too - so
+        # without this the accepted deliverable would land in a
+        # second folder, and the human's files and the deliverable
+        # that names them would be apart again. The whole point of
+        # editing in place is that the result stays in one place.
+        self._workspace = ensure_workspace(folder)
+
+        # The text of the deliverable: an index of the files plus the
+        # content of the small ones. The text checks are judged against
+        # it, so it has to carry the human's own words.
+        artifact = build_deliverable(files)
+
+        started_at = now_iso()
+        checks = [
+            evaluate_check(criterion, artifact, check_config, overlay)
+            for criterion in crits
+        ]
+        state: Dict[str, Any] = {
+            "goal": str(payload.get("goal") or ""),
+            "title": str(payload.get("title") or ""),
+            "criteria": [criterion.to_dict() for criterion in crits],
+            "attempt": 1,
+            "issues": [],
+            "previous_artifact": str(payload.get("last_artifact") or ""),
+            "human_note": note or str(ticket.get("note") or ""),
+            "handback": True,
+        }
+        verify_state = dict(state)
+        verify_state["candidate_artifact"] = artifact
+        verify_state["checks"] = checks
+        tokens = 0
+        verdict: Dict[str, Any] = {}
+        review_error = ""
+        try:
+            verdict = self._review(verify_state)
+            tokens += int(verdict.get("_usage", {}).get("total_tokens", 0) or 0)
+            if self.reviewers > 1:
+                scores = self._merge_review_scores(crits, checks, verdict)
+            else:
+                scores = self._merge_scores(crits, checks, verdict)
+            extra = self._ask_missing_verdicts(
+                verify_state, crits, checks, verdict, scores
+            )
+            if extra:
+                tokens += int(extra.get("_usage", {}).get("total_tokens", 0) or 0)
+                if self.reviewers > 1:
+                    scores = self._merge_review_scores(crits, checks, extra)
+                else:
+                    scores = self._merge_scores(crits, checks, extra)
+                verdict = extra
+        except Exception as exc:  # noqa: BLE001 - a dead reviewer must not crash a handoff
+            review_error = str(exc) or exc.__class__.__name__
+            verdict = {}
+            scores = self._merge_scores(crits, checks, verdict)
+
+        issues = [
+            str(score.get("note") or "")
+            for score in scores
+            if not score.get("pass") and score.get("blocking", True)
+        ]
+        deliverable_ok = all(
+            score.get("pass")
+            for score in scores
+            if score.get("blocking", True)
+        )
+        unjudged = [
+            str(score.get("id") or "")
+            for score in scores
+            if score.get("pass") is None and score.get("blocking", True)
+        ]
+
+        self._log(
+            run_id,
+            task_id,
+            1,
+            "handback",
+            {
+                "ticket_id": ticket_id,
+                "note": note or str(ticket.get("note") or ""),
+                "artifact_sha": sha256_text(artifact),
+                "artifact_chars": len(artifact),
+                "checks": checks,
+                "scores": scores,
+                "issues": issues,
+                "unjudged": unjudged,
+                "review_error": review_error,
+                "tokens": tokens,
+                # The folder the human edited and the files in it. A
+                # report that cannot say which files were offered cannot
+                # show the human what was handed in.
+                "handoff_workspace": str(folder),
+                "handoff_files": files,
+            },
+        )
+
+        artifact_path = ""
+        written_files: List[Dict[str, Any]] = []
+        if deliverable_ok and not unjudged:
+            status = STATUS_CLOSED
+            error = ""
+            # The write back. The human's files are already on the
+            # disk; what is missing is the deliverable that names them,
+            # and it is written next to them - the same "one folder
+            # holds everything" rule every run obeys.
+            artifact_path = self._save_artifact(run_id, artifact)
+            written_files = [
+                {
+                    "path": str(row.get("path") or ""),
+                    "absolute": str(row.get("absolute") or ""),
+                    "bytes": int(row.get("bytes") or 0),
+                }
+                for row in files
+            ]
+        else:
+            status = STATUS_ESCALATED
+            error = "人工交付物未通过验收标准"
+            if unjudged:
+                error += "（未判定：%s）" % ", ".join(unjudged)
+            if review_error:
+                error += "：评审失败：%s" % review_error
+
+        result = RunResult(
+            run_id=run_id,
+            task_id=task_id,
+            status=status,
+            iterations=1,
+            artifact=artifact,
+            artifact_sha=sha256_text(artifact),
+            issues=issues,
+            scores=scores,
+            ticket_id=ticket_id,
+            tokens_used=tokens,
+            ledger_path=str(self.ledger.path),
+            artifact_path=artifact_path,
+            workspace=str(folder),
+            files=written_files,
+            history=[],
+            started_at=started_at,
+            finished_at=now_iso(),
+            error=error,
+            deliverable_ok=deliverable_ok,
+            budget=dict(payload.get("budget") or {}),
+        )
+        self._log(
+            run_id,
+            task_id,
+            1,
+            "run_end",
+            {
+                "status": status,
+                "iterations": 1,
+                "tokens": tokens,
+                "artifact_sha": result.artifact_sha,
+                "artifact_path": artifact_path,
+                "deliverable_ok": deliverable_ok,
+                "issues": issues,
+                "ticket_id": ticket_id,
+                "workspace": result.workspace,
+                "closed": status == STATUS_CLOSED,
+                "decision": "handback" if status == STATUS_CLOSED else "revise",
+                "error": error,
+                "goal": str(payload.get("goal") or ""),
+                "title": str(payload.get("title") or payload.get("goal") or ""),
+                "artifact_chars": len(artifact),
+                "files": written_files,
+                "parent_ticket_id": ticket_id,
+                "handback": True,
+                "human_note": note or str(ticket.get("note") or ""),
+            },
+        )
+
+        if result.closed:
+            self.tickets.resolve(ticket_id, "handback", note or "人工交付物通过验收")
+            self.tickets.note_success(
+                ticket_id,
+                run_id=run_id,
+                iterations=1,
+                artifact=artifact_path or artifact,
+            )
+        else:
+            self.tickets.reopen(
+                ticket_id,
+                note or "人工交付物未通过验收",
+                reason=(
+                    "handoff did not meet the acceptance criteria"
+                    + (f": {'; '.join(issues)}" if issues else "")
+                ),
+                result=result.to_dict(),
+            )
+            self.tickets.append_attempt(
+                ticket_id,
+                {
+                    "run_id": run_id,
+                    "attempts": 1,
+                    "last_artifact": artifact,
+                    "issues": issues,
+                    "criteria": [criterion.to_dict() for criterion in crits],
+                    "handoff_workspace": str(folder),
+                    "handoff_files": files,
                 },
                 reason=error,
             )

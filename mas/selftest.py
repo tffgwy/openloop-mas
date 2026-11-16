@@ -2238,6 +2238,218 @@ def check_a_handback_shows_up_in_the_report(
 
 # ----------------------------------------------------------------- the gate
 # The short name of a check is a property of the function, so that
+def check_a_folder_handoff_closes_on_human_edits(
+    iterations: int = 10,
+) -> Dict[str, Any]:
+    """The human must be able to fix the files in place and close the loop.
+
+    v0.7.67 made a human deliverable closable - but only as one blob
+    of text. The loop this project runs writes *files*, and the
+    acceptance criteria that matter are file checks that read the
+    disk. A human who fixes such a task opens the file and edits it;
+    the text handback asked them to paste the file's content into a
+    command line instead. That is a second copy of the work, and the
+    copy is the part that fails: forget one line and the handoff is
+    rejected for a reason that has nothing to do with the answer.
+
+    v0.7.69 added the folder handoff: the human edits the files where
+    they are, and hands the folder back. The tenth gate
+    (``handback_report``) watches the *report*. This is the eleventh
+    gate, and it watches the *human path*:
+
+    * the file checks read the **human's edits**, not the ones the
+      loop left behind;
+    * the text checks see the **content of the files**, so the
+      deliverable is built from the work rather than retyped;
+    * a refused handoff **changes nothing** - the human's files stay
+      exactly as they were, because they are the human's work;
+    * a refused handoff writes **no deliverable**;
+    * an accepted handoff writes the deliverable **into the folder the
+      human edited**, not into a second folder;
+    * every file of the folder is part of the offer;
+    * the ticket queue **names the folder**, so a human can find it
+      without going looking.
+    """
+    import tempfile
+
+    from mas.engine import LoopEngine
+    from mas.providers import Provider
+
+    class _AlwaysFails(Provider):
+        """The verifier always says no.
+
+        A folder handoff therefore has to close through the machine
+        checks that came back on the ticket - the model cannot fake it.
+        """
+
+        name = "selftest-folder-handoff"
+
+        def __init__(self, model: str = "selftest-model", **options: Any) -> None:
+            super().__init__(model=model, **options)
+
+        def complete(self, *, system: str, prompt: str, role: str = "worker",
+                     expect_json: bool = False, max_tokens: int = 4000) -> Dict[str, Any]:
+            self.calls += 1
+            usage = {"total_tokens": 10}
+            if role == "planner":
+                text = json.dumps({"summary": "s", "plan": ["p"], "risks": []})
+            elif role == "verifier":
+                text = json.dumps(
+                    {"verdict": "fail",
+                     "scores": [{"id": "c1", "pass": False, "note": "no"}]}
+                )
+            elif role == "reflector":
+                text = json.dumps(
+                    {"summary": "s", "issues": [], "next_action": "revise"}
+                )
+            elif role == "worker":
+                text = "the answer is 41."
+            else:
+                text = "{}"
+            return {"text": text, "usage": usage, "raw": {}}
+
+    criteria = [
+        {
+            "id": "c1",
+            "desc": "finding.txt says 42",
+            "check": {"type": "file_contains", "arg": "finding.txt::42"},
+        },
+        {
+            "id": "c2",
+            "desc": "the deliverable carries the conclusion",
+            "check": {"type": "contains", "arg": "\u7ed3\u8bba"},
+        },
+    ]
+
+    failures: List[str] = []
+    rounds = max(1, int(iterations))
+    for round_index in range(rounds):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = {
+                "provider": "mock",
+                "model": "selftest-model",
+                "state_dir": os.path.join(tmp, "state"),
+                "workspace": "",
+                "budget": {
+                    "max_iterations": 1,
+                    "max_tokens": 1000000,
+                    "deadline_sec": 60,
+                },
+                "orchestration": {
+                    "parallel_workers": 1,
+                    "reviewers": 1,
+                    "review_mode": "all",
+                },
+                "team": {"language": "zh"},
+                "stagnation_limit": 2,
+            }
+            engine = LoopEngine(config, provider=_AlwaysFails(model="selftest-model"))
+            run = engine.run(goal="write the finding", criteria=criteria)
+            if run.closed:
+                failures.append(
+                    "round %d: the loop closed on its own - the gate cannot "
+                    "tell whether the human path works" % (round_index + 1)
+                )
+                continue
+            ticket_id = str(run.ticket_id or "")
+            ticket = engine.tickets.get(ticket_id)
+            workspace = str((ticket or {}).get("payload", {}).get("workspace") or "")
+            if not workspace:
+                failures.append(
+                    "round %d: the ticket does not name the folder to edit"
+                    % (round_index + 1)
+                )
+                continue
+            folder = pathlib.Path(workspace)
+
+            # The human edits the file in place.
+            target = folder / "finding.txt"
+            target.write_text(
+                "the answer is 42.\n\u7ed3\u8bba\uff1a\u5df2\u5b8c\u6210\n",
+                encoding="utf-8",
+            )
+            (folder / "notes.txt").write_text("some notes", encoding="utf-8")
+
+            result = engine.handback_workspace(ticket_id)
+            if not result.closed:
+                failures.append(
+                    "round %d: the folder handoff did not close (%s)"
+                    % (round_index + 1, result.error)
+                )
+                continue
+            by_id = {str(s.get("id")): s for s in result.scores}
+            if not by_id.get("c1", {}).get("pass"):
+                failures.append(
+                    "round %d: the file check did not read the human's edit"
+                    % (round_index + 1)
+                )
+            if not by_id.get("c2", {}).get("pass"):
+                failures.append(
+                    "round %d: the deliverable does not carry the file content"
+                    % (round_index + 1)
+                )
+            if not result.artifact_path:
+                failures.append(
+                    "round %d: the accepted handoff wrote no deliverable"
+                    % (round_index + 1)
+                )
+            else:
+                written = pathlib.Path(result.artifact_path)
+                if written.parent != folder:
+                    failures.append(
+                        "round %d: the deliverable landed outside the folder the "
+                        "human edited" % (round_index + 1)
+                    )
+            paths = {str(row.get("path") or "") for row in result.files}
+            if "finding.txt" not in paths or "notes.txt" not in paths:
+                failures.append(
+                    "round %d: the folder is not the unit of the offer (%s)"
+                    % (round_index + 1, sorted(paths))
+                )
+
+            # A refused handoff must change nothing. The snapshot is
+            # taken *after* the second edit, so it is the state the
+            # refusal has to leave alone.
+            (folder / "finding.txt").write_text("the answer is 41.\n", encoding="utf-8")
+            refused_snapshot = (folder / "finding.txt").read_bytes()
+            refused = engine.handback_workspace(ticket_id)
+            if refused.closed:
+                failures.append(
+                    "round %d: a refused handoff closed the loop" % (round_index + 1)
+                )
+            if (folder / "finding.txt").read_bytes() != refused_snapshot:
+                failures.append(
+                    "round %d: a refused handoff changed the human's files"
+                    % (round_index + 1)
+                )
+            # A refusal must not leave a deliverable behind either. The
+            # run that produced the ticket left one of its own, so the
+            # check is that the refusal did not *replace* it: a draft
+            # that fails must never look like the accepted answer.
+            if refused.artifact_path:
+                failures.append(
+                    "round %d: a refused handoff wrote a deliverable"
+                    % (round_index + 1)
+                )
+
+    return {
+        "name": "folder_handoff",
+        "title": "人在原工作区里改文件，交回后照样验收；不通过时不动他的文件",
+        "invariant": (
+            "文件机检读到的是人改过的内容，文本机检看得到文件正文；"
+            "交回不过磁盘原样不动且不写交付物；"
+            "交回过则交付物落在人改过的那个文件夹里"
+        ),
+        "detail": (
+            "人在原工作区里改文件，交回后按同一套验收判定；不通过时磁盘原样不动"
+        ),
+        "iterations": rounds,
+        "failures": failures,
+        "ok": not failures,
+        "ok_detail": not failures,
+    }
+
+
 # ``--only`` and the JSON output speak the same word.
 check_relay_refusal_keeps_the_connection_usable.CHECK_NAME = "relay_refusal"  # type: ignore[attr-defined]
 check_provider_keeps_the_usage_of_a_failed_call.CHECK_NAME = "provider_usage"  # type: ignore[attr-defined]
@@ -2249,6 +2461,7 @@ check_an_escalated_run_leaves_a_ticket_a_human_can_take_over.CHECK_NAME = "hando
 check_a_takeover_sees_the_work_and_gets_a_fresh_budget.CHECK_NAME = "takeover_handover"  # type: ignore[attr-defined]
 check_a_handback_closes_on_human_work.CHECK_NAME = "handback_closes"  # type: ignore[attr-defined]
 check_a_handback_shows_up_in_the_report.CHECK_NAME = "handback_report"  # type: ignore[attr-defined]
+check_a_folder_handoff_closes_on_human_edits.CHECK_NAME = "folder_handoff"  # type: ignore[attr-defined]
 
 CHECKS = (
     check_relay_refusal_keeps_the_connection_usable,
@@ -2261,6 +2474,7 @@ CHECKS = (
     check_a_takeover_sees_the_work_and_gets_a_fresh_budget,
     check_a_handback_closes_on_human_work,
     check_a_handback_shows_up_in_the_report,
+    check_a_folder_handoff_closes_on_human_edits,
 )
 
 
@@ -2290,6 +2504,7 @@ def run_selftest(
             check_a_takeover_sees_the_work_and_gets_a_fresh_budget,
             check_a_handback_closes_on_human_work,
             check_a_handback_shows_up_in_the_report,
+            check_a_folder_handoff_closes_on_human_edits,
         ):
             row = check(iterations=min(int(iterations), 20))
         else:
