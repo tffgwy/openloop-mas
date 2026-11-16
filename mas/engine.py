@@ -42,7 +42,17 @@ from mas.filechecks import (
     parse_file_check_arg,
     workspace_root,
 )
-from mas.filewrite import apply_write_blocks, plan_writes, write_instruction
+from mas.filewrite import (
+    MAX_WRITE_BYTES,
+    FileWriteError,
+    _request_bytes,
+    _safe_target,
+    _strip_placeholders,
+    apply_write_blocks,
+    parse_write_blocks_with_errors,
+    plan_writes,
+    write_instruction,
+)
 from mas.handoff import build_deliverable, collect_workspace_files, read_workspace_overlay
 from mas.ledger import Ledger
 from mas.orchestration import (
@@ -732,7 +742,8 @@ class LoopEngine:
                 tokens += candidates["tokens"]
 
                 checks = [
-                    evaluate_check(c, artifact, self._check_config) for c in crits
+                    evaluate_check(c, artifact, self._check_config, self._draft_overlay())
+                    for c in crits
                 ]
                 verify_state = dict(state)
                 verify_state["candidate_artifact"] = artifact
@@ -1279,10 +1290,15 @@ class LoopEngine:
             written: List[Dict[str, Any]] = []
             write_errors: List[str] = []
             if state.get("write_paths"):
-                applied = apply_write_blocks(artifact, self._write_workspace())
+                applied = self._apply_writes(artifact)
                 artifact = applied["artifact"]
                 written = applied["written"]
                 write_errors = applied["errors"]
+                if applied.get("drafts"):
+                    self._log(
+                        state["run_id"], state["task_id"], state["attempt"], "draft",
+                        {"drafts": applied["drafts"]},
+                    )
                 if written:
                     self._record_written(written)
                     self._log(
@@ -1402,6 +1418,12 @@ class LoopEngine:
             overlay: Dict[str, bytes] = {}
             if state.get("write_paths"):
                 overlay = self._planned_overlay(artifact)
+                # A pending draft is a change the loop already proposed
+                # for a file that exists. The ranking has to see those
+                # bytes too, or the check would judge the old file while
+                # the loop is proposing the new one.
+                for key, value in self._draft_overlay().items():
+                    overlay.setdefault(key, value)
             passed_count = 0
             for crit in crits:
                 # The configuration carries the workspace, and the file
@@ -1470,10 +1492,15 @@ class LoopEngine:
             # versions of the same file, and the file check would then
             # pass on whichever version happened to be written last -
             # the check would no longer describe the delivered artifact.
-            applied = apply_write_blocks(artifact, self._write_workspace())
+            applied = self._apply_writes(artifact)
             artifact = applied["artifact"]
             written = applied["written"]
             errors.extend(applied["errors"])
+            if applied.get("drafts"):
+                self._log(
+                    state["run_id"], state["task_id"], state["attempt"], "draft",
+                    {"drafts": applied["drafts"]},
+                )
             if written or applied["errors"]:
                 self._record_written(written)
                 self._log(
@@ -1613,6 +1640,128 @@ class LoopEngine:
                     "bytes": int(row.get("bytes") or 0),
                 }
             )
+
+    # ------------------------------------------------------------- drafts
+    def _edit_policy(self) -> str:
+        """What happens when a run writes over a file that already exists.
+
+        "draft" (the default) stages the change as a draft and leaves
+        the original file alone until a human approves it. "overwrite"
+        keeps the old behaviour. A run that creates a *new* file is
+        never affected - there is nothing to lose where there is
+        nothing.
+        """
+        policy = str(self.config.get("edit_policy") or "draft").strip().lower()
+        return policy if policy in ("draft", "overwrite") else "draft"
+
+    def _apply_writes(self, artifact: str) -> Dict[str, Any]:
+        """Write the files a candidate asked for, honouring the edit policy.
+
+        With the default policy, a write that would *replace* an
+        existing file becomes a draft: the original keeps its bytes and
+        the proposed change waits for a human. A write that creates a
+        new file is performed right away - the draft rule is about not
+        destroying work, and there is no work to destroy in a file that
+        does not exist yet.
+
+        The returned dict has the same shape as
+        ``mas.filewrite.apply_write_blocks`` plus a "drafts" list, so
+        the callers do not have to know which path was taken.
+        """
+        workspace = self._write_workspace()
+        if self._edit_policy() != "draft":
+            applied = apply_write_blocks(artifact, workspace)
+            applied["drafts"] = []
+            return applied
+
+        from mas.drafts import stage_draft
+
+        text, placeholders = _strip_placeholders(artifact)
+        cleaned, writes, parse_errors = parse_write_blocks_with_errors(text)
+        written: List[Dict[str, Any]] = []
+        drafts: List[Dict[str, Any]] = []
+        errors: List[str] = list(parse_errors)
+        skipped: List[Dict[str, Any]] = [
+            {"path": path, "reason": "placeholder path from the template"}
+            for path in placeholders
+        ]
+        for request in writes:
+            raw_path = request["path"]
+            try:
+                target = _safe_target(pathlib.Path(workspace), raw_path)
+                data = _request_bytes(request["content"], request.get("encoding"))
+                if len(data) > MAX_WRITE_BYTES:
+                    raise FileWriteError(
+                        f"refusing to write {len(data)} bytes (limit {MAX_WRITE_BYTES})"
+                    )
+            except (FileWriteError, OSError) as exc:
+                errors.append(str(exc))
+                continue
+            if target.exists() and target.is_file():
+                # The file is there and the loop wants to change it.
+                # That is an *edit*, and an edit goes into a draft.
+                try:
+                    draft = stage_draft(
+                        workspace,
+                        str(target.relative_to(pathlib.Path(workspace).resolve())),
+                        data,
+                        reason="the loop proposed a change to an existing file",
+                        source="engine",
+                    )
+                except (ValueError, OSError) as exc:
+                    errors.append(str(exc))
+                    continue
+                drafts.append(
+                    {
+                        "id": draft.get("id"),
+                        "path": draft.get("path"),
+                        "absolute": draft.get("absolute"),
+                        "bytes": int(draft.get("after_bytes") or 0),
+                        "changed": bool(draft.get("changed")),
+                        "written": False,
+                        "draft": True,
+                    }
+                )
+                continue
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                existed = target.exists()
+                target.write_bytes(data)
+                written.append(
+                    {
+                        "path": raw_path,
+                        "absolute": str(target),
+                        "bytes": len(data),
+                        "written": True,
+                        "created": not existed,
+                    }
+                )
+            except OSError as exc:
+                errors.append(str(exc))
+        return {
+            "artifact": cleaned,
+            "written": written,
+            "drafts": drafts,
+            "errors": errors,
+            "skipped": skipped,
+        }
+
+    def _draft_overlay(self) -> Dict[str, bytes]:
+        """The pending drafts, as an overlay for the machine checks.
+
+        A check that reads a file the loop wants to *change* has to see
+        the changed version - otherwise the check judges the old bytes
+        while the loop is proposing the new ones, and the loop can
+        never close on its own proposal. The overlay is the same idea
+        the parallel candidate ranking uses, and it never touches the
+        disk.
+        """
+        try:
+            from mas.drafts import draft_overlay
+
+            return draft_overlay(self._write_workspace())
+        except Exception:  # noqa: BLE001 - a broken overlay must not kill the run
+            return {}
 
     # ------------------------------------------------------ adversarial review
     def _review(self, verify_state: Dict[str, Any]) -> Dict[str, Any]:

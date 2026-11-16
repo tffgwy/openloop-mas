@@ -66,6 +66,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     # v0.2 failover: additional provider backends tried in order when the
     # primary one fails. Each entry is a full provider spec.
     "fallbacks": [],
+    # v0.7.72: what happens when a run wants to write over a file that
+    # already exists. "draft" (the default) stages the change as a
+    # draft next to the file, and only a human approval writes it back.
+    # "overwrite" keeps the old behaviour: the file is replaced right
+    # away. A run that creates a *new* file is never affected - there
+    # is nothing to lose when there is nothing there.
+    "edit_policy": "draft",
 }
 
 

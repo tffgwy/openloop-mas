@@ -3295,6 +3295,240 @@ def _zip_bytes(members: Any) -> bytes:
 
 check_the_index_knows_every_file.CHECK_NAME = "resource_index"  # type: ignore[attr-defined]
 
+DRAFT_APPROVAL_OBSERVATIONS = (
+    "an edit to an existing file waits for a human",
+    "the original file keeps its bytes until the draft is approved",
+    "a new file is still written right away",
+    "the draft carries a diff of the change",
+    "the machine checks see the drafted bytes",
+    "approving the draft writes the change back",
+    "rejecting the draft changes nothing",
+)
+
+
+def _draft_approval_observations(root: Any) -> Dict[str, bool]:
+    """Observe the draft layer, one behaviour at a time.
+
+    Same discipline as the twelfth to fourteenth gates: the observation
+    and the decision are kept apart, so a broken observation shows up as
+    a *missing* observation rather than as a silent pass.
+    """
+    import pathlib
+
+    from mas.drafts import approve_draft, draft_overlay, list_drafts, reject_draft
+    from mas.engine import LoopEngine
+
+    seen: Dict[str, bool] = {}
+    workspace = pathlib.Path(root)
+    existing = workspace / "notes.txt"
+    original = b"the human's own words"
+    existing.write_bytes(original)
+
+    engine = LoopEngine(
+        {
+            "state_dir": str(workspace / "state"),
+            "edit_policy": "draft",
+            # The workspace is named explicitly, so the run writes into
+            # the folder the observation set up - the folder where the
+            # human's own file lives.
+            "workspace": str(workspace),
+        },
+        provider=_StubProvider(),
+    )
+    engine._run_id = "R-selftest-draft"
+    engine._write_workspace()
+
+    block = (
+        '<<<MAS:FILE path="notes.txt">>>>\n'
+        "the loop wants to rewrite this\n"
+        "<<<MAS:END FILE>>>\n"
+    )
+    applied = engine._apply_writes(block)
+
+    drafts = applied.get("drafts") or []
+    seen["an edit to an existing file waits for a human"] = bool(drafts)
+    seen["the original file keeps its bytes until the draft is approved"] = (
+        existing.read_bytes() == original
+    )
+
+    new_block = (
+        '<<<MAS:FILE path="fresh.md">>>>\n'
+        "a brand new file\n"
+        "<<<MAS:END FILE>>>\n"
+    )
+    new_applied = engine._apply_writes(new_block)
+    seen["a new file is still written right away"] = bool(
+        new_applied.get("written")
+    ) and (workspace / "fresh.md").exists()
+
+    if drafts:
+        draft = list_drafts(workspace, "pending")[0] if list_drafts(workspace, "pending") else {}
+        seen["the draft carries a diff of the change"] = bool(draft.get("diff"))
+    else:
+        seen["the draft carries a diff of the change"] = False
+
+    # The overlay is read through the *engine*, not straight from the
+    # store: the machine checks never call the store, they call the
+    # engine. Reading the store directly would let a broken engine
+    # path pass unnoticed.
+    overlay = engine._draft_overlay()
+    seen["the machine checks see the drafted bytes"] = any(
+        b"the loop wants to rewrite this" in data for data in overlay.values()
+    ) and any(
+        b"the loop wants to rewrite this" in data
+        for data in draft_overlay(workspace).values()
+    )
+
+    if drafts:
+        draft_id = str(drafts[0].get("id") or "")
+        approved = approve_draft(workspace, draft_id)
+        seen["approving the draft writes the change back"] = (
+            existing.read_bytes() == b"the loop wants to rewrite this"
+            and approved.get("state") == "approved"
+        )
+    else:
+        seen["approving the draft writes the change back"] = False
+
+    # A second edit, this time rejected.
+    engine._apply_writes(
+        '<<<MAS:FILE path="notes.txt">>>>\n'
+        "a change nobody wanted\n"
+        "<<<MAS:END FILE>>>\n"
+    )
+    pending = list_drafts(workspace, "pending")
+    if pending:
+        keep = existing.read_bytes()
+        reject_draft(workspace, str(pending[0].get("id") or ""))
+        seen["rejecting the draft changes nothing"] = existing.read_bytes() == keep
+    else:
+        seen["rejecting the draft changes nothing"] = False
+
+    return seen
+
+
+class _StubProvider:
+    """A provider that never answers - the draft layer needs no model."""
+
+    name = "stub"
+
+    def complete(self, *, system: str = "", prompt: str = "", role: str = "worker",
+                 expect_json: bool = False, max_tokens: int = 4000) -> Dict[str, Any]:
+        return {"text": "", "usage": {"total_tokens": 0}}
+
+
+def check_a_draft_is_approved_before_it_is_written_back(
+    iterations: int = 10,
+) -> Dict[str, Any]:
+    """A change to an existing file waits for a human.
+
+    The run writes straight into the workspace. That is right for a new
+    file - nothing is lost when the loop creates one. It is wrong for an
+    existing file: the loop overwrote the human's own work without ever
+    showing what it changed, and the reader of this project asked for
+    the MOKI rule - the change goes into a draft, and only a human
+    confirmation writes it back.
+
+    This is the fifteenth gate. It watches that:
+
+    * a write over an existing file becomes a **draft**, and the file on
+      the disk keeps its bytes - byte for byte, not "roughly";
+    * a write that creates a *new* file is still performed right away,
+      because there is nothing there to lose;
+    * the draft carries a diff, so a human can see what would change
+      before anything changes;
+    * the machine checks see the *drafted* bytes, so the loop can close
+      on its own proposal without the human having to approve it first
+      - the approval is about the *file*, not about the verdict;
+    * approving the draft writes the bytes back;
+    * rejecting the draft changes nothing at all.
+
+    And the gate proves it can fail: the draft rule is broken on
+    purpose - the engine overwrites again - and the gate has to notice.
+    """
+    import tempfile
+
+    failures: List[str] = []
+    rounds = max(1, int(iterations))
+    for round_index in range(rounds):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            existing = root / "notes.txt"
+            existing.write_text("the human's own words", encoding="utf-8")
+            try:
+                seen = _draft_approval_observations(root)
+            except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                failures.append(
+                    "round %d: the draft layer broke: %s: %s"
+                    % (round_index + 1, type(exc).__name__, exc)
+                )
+                continue
+            for label in DRAFT_APPROVAL_OBSERVATIONS:
+                if label not in seen:
+                    failures.append(
+                        "round %d: the gate did not observe %s"
+                        % (round_index + 1, label)
+                    )
+                elif not seen[label]:
+                    failures.append("round %d: %s" % (round_index + 1, label))
+
+            # The gate proves it can fail. The rule is broken on
+            # purpose - the engine overwrites the file again instead of
+            # staging a draft - and the gate has to notice. Without
+            # this, a gate whose own observation was broken would
+            # report "all good" for ever.
+            from mas.engine import LoopEngine
+
+            engine = LoopEngine(
+                {
+                    "state_dir": str(root / "state"),
+                    "edit_policy": "draft",
+                    "workspace": str(root),
+                },
+                provider=_StubProvider(),
+            )
+            engine._run_id = "R-selftest-draft-broken"
+            engine._write_workspace()
+            real_apply = LoopEngine._apply_writes
+
+            def _overwrite(self, artifact):
+                from mas.filewrite import apply_write_blocks
+
+                applied = apply_write_blocks(artifact, self._write_workspace())
+                applied["drafts"] = []
+                return applied
+
+            LoopEngine._apply_writes = _overwrite
+            try:
+                broken = _draft_approval_observations(root)
+            except Exception:  # noqa: BLE001 - a crash counts as "noticed"
+                broken = {}
+            finally:
+                LoopEngine._apply_writes = real_apply
+            if broken.get("an edit to an existing file waits for a human"):
+                failures.append(
+                    "round %d: the gate did not notice a broken draft rule - "
+                    "it cannot fail, so it does not watch" % (round_index + 1)
+                )
+
+    return {
+        "name": "draft_approval",
+        "title": "改动先进草稿，人确认后才写回原文件",
+        "invariant": (
+            "覆盖已存在文件的写入变成草稿，原文件字节不变；"
+            "新建文件照常直接写；"
+            "草稿带 diff，人能先看清再决定；"
+            "机检看到草稿里的字节，循环能用自己的提案闭合；"
+            "批准才写回，驳回一个字都不改"
+        ),
+        "detail": "草稿层：mas drafts list/show/approve/reject",
+        "iterations": rounds,
+        "failures": failures,
+        "ok": not failures,
+    }
+
+
+check_a_draft_is_approved_before_it_is_written_back.CHECK_NAME = "draft_approval"  # type: ignore[attr-defined]
+
 CHECKS = (
     check_relay_refusal_keeps_the_connection_usable,
     check_provider_keeps_the_usage_of_a_failed_call,
@@ -3310,6 +3544,7 @@ CHECKS = (
     check_a_content_check_reads_inside_the_file,
     check_a_binary_write_lands_as_bytes,
     check_the_index_knows_every_file,
+    check_a_draft_is_approved_before_it_is_written_back,
 )
 
 
@@ -3343,6 +3578,7 @@ def run_selftest(
             check_a_content_check_reads_inside_the_file,
             check_a_binary_write_lands_as_bytes,
             check_the_index_knows_every_file,
+            check_a_draft_is_approved_before_it_is_written_back,
         ):
             row = check(iterations=min(int(iterations), 20))
         else:

@@ -7,6 +7,20 @@
 
 [English](README.en.md) | [中文](README.md)
 
+- **The 15th gate `draft_approval`** - every version so far worked on *reading*
+  and *writing*, and not one of them asked **"who approves this change?"**
+  When a run wanted to change a file that **already existed**, the engine
+  overwrote it - **your own work was gone, and you never even saw what it had
+  become**. The dangerous moment is not a loop that stalls, it is a loop that
+  runs *too smoothly*. Now the change goes into a **draft**: **the original
+  keeps every byte**, the draft carries a **readable diff**, and only your word
+  - "approve" - writes it back. "Reject" changes nothing at all.
+  **A new file is still written right away** - there is nothing there to lose.
+  **The machine checks read the drafted bytes**, otherwise the loop would be
+  stuck for ever: propose a change, read the old file, fail, propose again,
+  read the old file. The draft lives **in the workspace** (`.mas-drafts/`), so
+  a copied folder carries its drafts along - a lost draft is a change that can
+  never be reviewed. **All eight mutations of the draft path were caught.**
 - **The 14th gate `resource_index`** - every version so far worked on *reading*
   and *writing*, and not one of them answered the plainest question there is:
   **"what did this loop actually produce?"**
@@ -1827,6 +1841,40 @@ plainly instead of showing a blank screen. A missing file or a folder gives
 
 See **[docs/resources.md](docs/resources.md)**.
 
+### The draft layer (v0.7.72): the change goes into a draft, a human writes it back
+
+```bash
+mas drafts                              # what is waiting for a decision
+mas drafts show D-1a2b3c4d              # the diff of one draft
+mas drafts approve D-1a2b3c4d           # approve: write it back
+mas drafts reject  D-1a2b3c4d           # reject: nothing changes
+```
+
+When a run wants to change a file that **already exists**, it no longer
+overwrites it. The change goes into a draft, **the original keeps every byte**,
+the draft carries a **readable diff**, and only your word - "approve" - writes
+it back. "Reject" changes nothing at all.
+
+```bash
+$ mas drafts
+
+workspace ~/mas/artifacts: 1 draft
+  D-1a2b3c4d  pending  notes.txt  changed
+        reason: the loop proposed a change to an existing file
+```
+
+**A new file is still written right away** - there is nothing there to lose.
+Set `"edit_policy": "overwrite"` in the configuration to get the old behaviour
+back (the default is `"draft"`).
+
+**The machine checks read the drafted bytes**, not the old file on the disk -
+otherwise the loop would be stuck forever: propose a change, read the old
+file, fail, propose again, read the old file. The draft lives in the workspace
+next to the file it changes (`.mas-drafts/`), so a copied folder carries its
+drafts along - a lost draft is a change that can never be reviewed.
+
+See **[docs/drafts.md](docs/drafts.md)**.
+
 ## Parallel multi-agent: let candidates compete
 
 One worker produces exactly one kind of solution. v0.2 lets several workers
@@ -2184,6 +2232,9 @@ mas run           # run a closure task
 mas demo          # three offline scenarios
 mas verify        # real closure self-check
 mas bench         # offline benchmark
+mas files         # index the workspace: every file, its format, its facts
+mas preview FILE  # preview one file (PDF / Word / text...)
+mas drafts        # drafts waiting for a human: list / show / approve / reject
 mas status        # local state
 mas ledger        # closure ledger
 mas report        # Markdown closure report

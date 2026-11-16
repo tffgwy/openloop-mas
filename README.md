@@ -3,6 +3,19 @@
 > 一个 **零依赖、纯标准库** 的多智能体闭环运行时：把「规划 → 执行 → 验证 → 复盘」写成**有验收标准、有退出条件、有过程账本**的工程循环。
 > **下载一个脚本就能装**，初学者也能跑起来。
 
+- **第 15 项门禁 `draft_approval`** —— 前面每一版都在**读**和**写**上使劲，
+  却**没有一版问过「谁来批准这次改动」**。
+  一次运行想改一个**已经存在**的文件时，引擎就真的把它覆盖了 ——
+  **你原来写的东西没了，而你甚至没看见它被改成了什么**。
+  最危险的时刻不是循环跑不动，而是它**跑得太顺**。
+  现在改动**先进草稿**：**原文件一个字节都不动**，草稿带一份**可读的 diff**，
+  你说「批准」才写回，你说「驳回」就**一个字都不改**。
+  **新建文件照常直接写** —— 一个还不存在的文件，没有东西可以毁掉。
+  **机检读的是草稿里的新字节**，否则循环会陷入
+  「提改动 → 读旧文件 → 判不通过 → 再提改动」的死结，**永远闭不上**。
+  草稿住在**工作区里**（`.mas-drafts/`），文件夹被复制时草稿跟着走 ——
+  丢掉的草稿，是一份**永远没法被人审阅**的改动。
+  草稿路径的**八个变异全部被捕获**。
 - **第 14 项门禁 `resource_index`** —— 前面每一版都在**读**和**写**上使劲，
   却**没有一版回答过最朴素的那个问题**：「**这个循环到底产出了什么？**」
   答案是散的：`mas artifacts` 只列**交付物**，`mas status` 只讲**机器**，
@@ -1408,6 +1421,40 @@ $ mas files ./out
 详见 **[docs/resources.md](docs/resources.md)**（含与
 [MOKI 资料库](https://github.com/JKZeng-cell/moki-library-for-dsh) 的分工对照）。
 
+### 草稿层（v0.7.72 起）：改动先进草稿，人确认后才写回原文件
+
+```bash
+mas drafts                              # 看有哪些草稿在等
+mas drafts show D-1a2b3c4d              # 看这一份的 diff
+mas drafts approve D-1a2b3c4d           # 批准：写回原文件
+mas drafts reject  D-1a2b3c4d           # 驳回：原样不动
+```
+
+一次运行想改一个**已经存在**的文件时，它**不再直接覆盖**：
+改动先进草稿，**原文件一个字节都不动**，草稿带一份**可读的 diff**，
+你说「批准」才写回，你说「驳回」就**一个字都不改**。
+
+```bash
+$ mas drafts
+
+工作区 ~/mas/artifacts：1 个草稿
+  D-1a2b3c4d  pending  notes.txt  有改动
+        理由：the loop proposed a change to an existing file
+```
+
+**新建文件照常直接写** —— 一个还不存在的文件，没有东西可以毁掉。
+想回到旧行为，把配置里的 `edit_policy` 改成 `"overwrite"`（默认 `"draft"`）。
+
+**机检读的是草稿里的新字节**，不是磁盘上的旧文件 —— 否则循环会陷入
+「提改动 → 读旧文件 → 判不通过 → 再提改动」的死结，**永远闭不上**。
+草稿和它改的文件**住在同一个工作区**（`.mas-drafts/`），文件夹被复制时
+草稿跟着走 —— 丢掉的草稿，是一份**永远没法被人审阅**的改动。
+
+详见 **[docs/drafts.md](docs/drafts.md)**（含与
+[MOKI 资料库](https://github.com/JKZeng-cell/moki-library-for-dsh) 的分工对照：
+MOKI 管**交互层**（`Alt+D`），本项目管**引擎层**（循环跑出来的东西），
+**规则是同一条**）。
+
 ### 写二进制交付物（v0.7.70 起）：worker 怎么产出那个 PDF
 
 内容级机检要读得进 PDF，**前提是有一个 PDF 存在**。写文件协议
@@ -1901,6 +1948,7 @@ openloop-mas/
 │  ├─ setup.py          交互式向导 + 真实闭环自检
 │  ├─ bench.py          离线基准测试
 │  ├─ cli.py            命令行
+│  ├─ drafts.py         草稿层：改动先进草稿，人确认后才写回
 │  ├─ doctor.py         安装自检
 │  ├─ demo.py           三个离线场景
 │  └─ teams/            团队模板（default / review / content）
@@ -1936,6 +1984,7 @@ mas doctor        # 安装自检
 mas selftest      # 隔失门禁：重复打磈易偶发的路径（离线）
 mas files        # 索引工作区：每个文件是什么格式、能读出什么
 mas preview FILE # 预览一个文件（PDF / Word / 文本…）
+mas drafts       # 待确认的草稿：list / show / approve / reject
 mas serve         # 以 MCP stdio 服务运行
 mas http          # 以 HTTP + SSE 运行（远程接入；对外部署请设 MAS_HTTP_TOKEN）
 mas relay         # OpenAI 兼容中继：给「非要 API Key」的客户端用（默认 127.0.0.1:8766）
@@ -1972,6 +2021,8 @@ python -m mas selftest --iterations 120     # 隔失门禁（会拒绝绝经不�
 | [docs/mcp.md](docs/mcp.md) | MCP 接入、握手、9 个工具、协议细节与排障 |
 | [docs/dsh-integration.md](docs/dsh-integration.md) | DeepSeek Harness 集成：DSH 插件、relay 一键流程、MOKI 分工 |
 | [docs/relay.md](docs/relay.md) | `mas relay`：给「非要 API Key」的客户端用的私有端点中继 |
+| [docs/drafts.md](docs/drafts.md) | 草稿层：改动先进草稿，人确认后才写回原文件；与 MOKI 的分工 |
+| [docs/resources.md](docs/resources.md) | 统一资源索引与多格式预览；与 MOKI 的分工 |
 | [docs/positioning.md](docs/positioning.md) | 定位说明：与「私有化代理团队」类项目的关系与传播口径 |
 | [docs/acceptance-report.md](docs/acceptance-report.md) | 安装与验收报告：本机实测证据、CI 结果、已知限制 |
 | [README.en.md](README.en.md) | English version of this README |

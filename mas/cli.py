@@ -7,7 +7,7 @@ import json
 import os
 import pathlib
 import sys
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 from mas import __version__
 from mas.bench import format_bench, run_bench
@@ -1031,6 +1031,193 @@ def cmd_preview(args: argparse.Namespace) -> int:
     return 0
 
 
+def _draft_roots(base: pathlib.Path) -> List[pathlib.Path]:
+    """The folders that may hold drafts.
+
+    The folder the reader names is the first candidate; its
+    sub-folders follow, because a run writes into
+    `<artifacts>/<run_id>/` and the draft sits next to the file it
+    changes.
+    """
+    roots = [base]
+    try:
+        for child in sorted(base.iterdir()):
+            if child.is_dir() and child.name != ".mas-drafts":
+                roots.append(child)
+    except OSError:
+        pass
+    return roots
+
+
+def _all_drafts(
+    roots: List[pathlib.Path],
+    state: Optional[str],
+) -> List[Dict[str, Any]]:
+    """Every draft of every root, newest last."""
+    from mas.drafts import list_drafts
+
+    rows: List[Dict[str, Any]] = []
+    for root in roots:
+        rows.extend(list_drafts(root, state))
+    return rows
+
+
+def _find_draft(
+    roots: List[pathlib.Path],
+    draft_id: str,
+) -> Optional[Tuple[pathlib.Path, Dict[str, Any]]]:
+    """The root that owns a draft, and the draft itself."""
+    from mas.drafts import get_draft
+
+    for root in roots:
+        draft = get_draft(root, draft_id)
+        if draft is not None:
+            return root, draft
+    return None
+
+
+def cmd_drafts(args: argparse.Namespace) -> int:
+    """Show the drafts of a workspace, and approve or reject them.
+
+    A draft is a proposed change to a file that already exists. It
+    sits next to the file until a human approves it, and approving it
+    is the only thing that writes. The command is the human side of
+    that rule: ``mas drafts`` lists what is waiting, ``mas drafts show
+    <id>`` prints the diff, ``mas drafts approve <id>`` writes it back
+    and ``mas drafts reject <id>`` throws it away.
+    """
+    from mas.drafts import approve_draft, reject_draft
+
+    workspace = str(getattr(args, "workspace", "") or "").strip()
+    explicit = bool(workspace)
+    if not workspace:
+        config = load_config()
+        workspace = str(
+            os.path.expanduser(os.path.expandvars(str(config.get("state_dir") or "")))
+        )
+        workspace = os.path.join(workspace, "artifacts")
+    base = pathlib.Path(workspace).expanduser()
+    if not base.exists():
+        if not explicit:
+            # The default workspace does not exist yet - that is not a
+            # failure, it just means no run has produced anything on
+            # this machine. A first-time reader should not be met with
+            # an error code for an empty folder.
+            message = "还没有任何工作区：先跑一次 mas run。"
+            if getattr(args, "json", False):
+                _print({"workspace": str(base), "drafts": [], "count": 0,
+                        "message": message}, True)
+            else:
+                print(message)
+            return 0
+        message = f"找不到这个工作区：{base}"
+        if getattr(args, "json", False):
+            _print({"error": "workspace_not_found", "message": message}, True)
+        else:
+            print(message, file=sys.stderr)
+        return 2
+
+    # A run writes into `<state_dir>/artifacts/<run_id>/`, so the
+    # drafts live one folder deeper than the default workspace. The
+    # command walks *down* into the sub-folders, so a reader does not
+    # have to know the id of the run that produced the draft.
+    roots = _draft_roots(base)
+
+    action = str(getattr(args, "action", "") or "list")
+    if action in ("", "list"):
+        rows = _all_drafts(roots, getattr(args, "state", None))
+        if getattr(args, "json", False):
+            _print(
+                {
+                    "workspace": str(base),
+                    "drafts": rows,
+                    "count": len(rows),
+                },
+                True,
+            )
+            return 0
+        if not rows:
+            print("没有待确认的草稿。")
+            return 0
+        print(f"工作区 {base}：{len(rows)} 个草稿")
+        for row in rows:
+            changed = "有改动" if row.get("changed") else "无变化"
+            print(
+                f"  {row.get('id')}  {row.get('state')}  "
+                f"{row.get('path')}  {changed}"
+            )
+            if row.get("reason"):
+                print(f"        理由：{row.get('reason')}")
+        return 0
+
+    draft_id = str(getattr(args, "draft_id", "") or "")
+    if action == "show":
+        found = _find_draft(roots, draft_id)
+        draft = found[1] if found else None
+        if draft is None:
+            message = f"找不到这个草稿：{draft_id}"
+            if getattr(args, "json", False):
+                _print({"error": "draft_not_found", "message": message}, True)
+            else:
+                print(message, file=sys.stderr)
+            return 2
+        if getattr(args, "json", False):
+            _print({"draft": draft}, True)
+            return 0
+        print(f"草稿 {draft.get('id')}  {draft.get('state')}")
+        print(f"文件：{draft.get('path')}")
+        if draft.get("reason"):
+            print(f"理由：{draft.get('reason')}")
+        print(f"改动前 {draft.get('before_bytes')} 字节，改动后 {draft.get('after_bytes')} 字节")
+        print()
+        for line in draft.get("diff") or []:
+            print(line)
+        return 0
+
+    if action in ("approve", "reject"):
+        found = _find_draft(roots, draft_id)
+        if found is None:
+            message = f"找不到这个草稿：{draft_id}"
+            if getattr(args, "json", False):
+                _print({"error": "draft_not_found", "message": message}, True)
+            else:
+                print(message, file=sys.stderr)
+            return 2
+        owner = found[0]
+        try:
+            if action == "approve":
+                draft = approve_draft(owner, draft_id, str(getattr(args, "note", "") or ""))
+                message = f"已写回：{draft.get('path')}"
+            else:
+                draft = reject_draft(owner, draft_id, str(getattr(args, "note", "") or ""))
+                message = f"已丢弃：{draft.get('path')}"
+        except KeyError:
+            message = f"找不到这个草稿：{draft_id}"
+            if getattr(args, "json", False):
+                _print({"error": "draft_not_found", "message": message}, True)
+            else:
+                print(message, file=sys.stderr)
+            return 2
+        except ValueError as exc:
+            message = str(exc)
+            if getattr(args, "json", False):
+                _print({"error": "draft_refused", "message": message}, True)
+            else:
+                print(message, file=sys.stderr)
+            return 2
+        if getattr(args, "json", False):
+            _print({"draft": draft, "message": message}, True)
+            return 0
+        print(message)
+        return 0
+
+    message = f"未知的草稿操作：{action}"
+    if getattr(args, "json", False):
+        _print({"error": "unknown_action", "message": message}, True)
+    else:
+        print(message, file=sys.stderr)
+    return 2
+
 def cmd_artifacts(args: argparse.Namespace) -> int:
     """List the deliverables this machine has produced.
 
@@ -1615,6 +1802,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_json(preview)
     preview.set_defaults(func=cmd_preview)
+
+    drafts = sub.add_parser(
+        "drafts",
+        help="查看待确认的草稿：批准后才写回原文件",
+    )
+    drafts.add_argument(
+        "action",
+        nargs="?",
+        default="list",
+        choices=["list", "show", "approve", "reject"],
+        help="要做的动作（默认 list）",
+    )
+    drafts.add_argument("draft_id", nargs="?", default="", help="草稿编号")
+    drafts.add_argument(
+        "--workspace",
+        default="",
+        help="草稿所在的工作区文件夹（默认本机 artifacts 目录）",
+    )
+    drafts.add_argument(
+        "--state",
+        choices=["pending", "approved", "rejected"],
+        help="只看某种状态的草稿",
+    )
+    drafts.add_argument("--note", default="", help="人工说明")
+    add_json(drafts)
+    drafts.set_defaults(func=cmd_drafts)
 
     report = sub.add_parser("report", help="生成闭环复盘报告（Markdown）")
     report.add_argument("--run-id", help="只报告某一次运行")
