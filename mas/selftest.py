@@ -1757,6 +1757,244 @@ def check_a_takeover_sees_the_work_and_gets_a_fresh_budget(
         "ok": not failures,
     }
 
+def check_a_handback_closes_on_human_work(
+    iterations: int = 10,
+) -> Dict[str, Any]:
+
+    """A human-written deliverable must be able to close the loop.
+
+    The ticket queue had exactly one answer: resume the loop and let
+    the machine try again. A human who had already written the answer
+    - the case that actually happens when a loop escalates - had
+    nowhere to put it. Their work was thrown away and re-derived by
+    the machine, usually worse.
+
+    The handback path fixes that, and it is only worth having if it is
+    honest. Three properties make it a closure rather than a rubber
+    stamp, and the check asserts all three:
+
+    * **The same standards decide it.** The criteria come back from
+      the ticket, so the deliverable is judged by the rules the task
+      was written with - not by a re-interpretation, and not by the
+      reviewer's mood.
+    * **A deliverable that fails does not close.** The failing
+      criteria are written back onto the ticket and the ticket stays
+      in the human queue. A rejected handback is a second try, not a
+      closure.
+    * **A dead reviewer does not destroy the work.** The machine
+      checks are already decided when the reviewer is called; if the
+      backend dies, the handback still reports what the rules said
+      instead of crashing and losing a deliverable a human had
+      written.
+    """
+    import tempfile
+
+    from mas.engine import LoopEngine
+    from mas.providers import Provider, ProviderError
+
+    class _AlwaysFails(Provider):
+        """The verifier always says no.
+
+        A handback that closes therefore has to close through the
+        machine check that came back on the ticket - the model cannot
+        fake it.
+        """
+
+        name = "selftest-handback"
+
+        def __init__(self, model: str = "selftest-model", **options: Any) -> None:
+            super().__init__(model=model, **options)
+
+        def complete(self, *, system: str, prompt: str, role: str = "worker",
+                     expect_json: bool = False, max_tokens: int = 4000) -> Dict[str, Any]:
+            self.calls += 1
+            usage = {"total_tokens": 10}
+            if role == "planner":
+                text = json.dumps(
+                    {"summary": "计划", "plan": ["写交付物"], "risks": ["写不好"]}
+                )
+                return {"text": text, "usage": usage, "raw": {}}
+            if role == "verifier":
+                text = json.dumps(
+                    {"verdict": "fail",
+                     "scores": [{"id": "c1", "pass": False, "note": "不过"}]}
+                )
+                return {"text": text, "usage": usage, "raw": {}}
+            if role == "reflector":
+                text = json.dumps(
+                    {"summary": "复盘", "issues": [], "next_action": "revise"}
+                )
+                return {"text": text, "usage": usage, "raw": {}}
+            if role == "worker":
+                text = "结论。数据是 41。"
+                return {"text": text, "usage": usage, "raw": {}}
+            return {"text": "{}", "usage": usage, "raw": {}}
+
+    class _DeadBackend(Provider):
+        """A backend that is simply not there."""
+
+        name = "selftest-handback-dead"
+
+        def complete(self, *, system: str, prompt: str, role: str = "worker",
+                     expect_json: bool = False, max_tokens: int = 4000) -> Dict[str, Any]:
+            raise ProviderError("the endpoint is not reachable")
+
+    def _config(tmp: str, **budget: Any) -> Dict[str, Any]:
+        base = {"max_iterations": 1, "max_tokens": 1000000, "deadline_sec": 60}
+        base.update(budget)
+        return {
+            "provider": "mock",
+            "model": "selftest-model",
+            "state_dir": os.path.join(tmp, "state"),
+            "workspace": "",
+            "budget": base,
+            "orchestration": {
+                "parallel_workers": 1, "reviewers": 1, "review_mode": "all",
+            },
+            "team": {"language": "zh"},
+            "stagnation_limit": 2,
+        }
+
+    criteria = [
+        {
+            "id": "c1",
+            "desc": "正文里要出现 42",
+            "check": {"type": "contains", "arg": "42"},
+        }
+    ]
+
+    def _one_round(index: int) -> List[str]:
+        problems: List[str] = []
+        prefix = "第 %d 次：" % (index + 1)
+
+        # A run that escalates, and a ticket a human can pick up.
+        with tempfile.TemporaryDirectory(prefix="mas-selftest-handback-") as tmp:
+            engine = LoopEngine(_config(tmp), provider=_AlwaysFails(model="selftest-model"))
+            try:
+                result = engine.run(goal="写一份 Q3 报告", criteria=criteria)
+            except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                return [prefix + "运行报错：%s" % exc]
+            ticket_id = str(result.ticket_id or "")
+            if not ticket_id:
+                return [prefix + "没有留下可接手的票据"]
+            ticket = engine.tickets.get(ticket_id) or {}
+            payload = ticket.get("payload") or {}
+            if not (payload.get("criteria") or []):
+                problems.append(prefix + "票据没有带回验收标准")
+                return problems
+            if not payload.get("workspace"):
+                problems.append(prefix + "票据没有记下这一轮的工作区")
+
+            # 1. The human's work closes the loop.
+            good = "结论。数据是 42。"
+            try:
+                accepted = engine.handback(ticket_id, good, note="手写的")
+            except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                problems.append(prefix + "接回人工交付物报错：%s" % exc)
+                return problems
+            if not accepted.closed:
+                problems.append(
+                    "%s：合格的人工交付物没有闭合（status=%s, error=%s）"
+                    % (prefix, accepted.status, accepted.error)
+                )
+            by_id = {str(s.get("id")): s for s in (accepted.scores or [])}
+            score = by_id.get("c1") or {}
+            if score.get("source") != "rule":
+                problems.append(
+                    "%s：闭合不是靠机检（source=%r）" % (prefix, score.get("source"))
+                )
+            if not score.get("pass"):
+                problems.append(prefix + "闭合里 c1 没有通过")
+            if not accepted.artifact_path:
+                problems.append(prefix + "通过验收的交付物没有落盘")
+            elif not pathlib.Path(accepted.artifact_path).exists():
+                problems.append(prefix + "落盘的交付物不在磁盘上")
+            final = engine.tickets.get(ticket_id) or {}
+            if final.get("state") != "resolved":
+                problems.append(
+                    "%s：闭合后票据没有归档（state=%r）" % (prefix, final.get("state"))
+                )
+            if final.get("decision") != "handback":
+                problems.append(
+                    "%s：票据的处理结果不是 handback（%r）"
+                    % (prefix, final.get("decision"))
+                )
+
+        # 2. Work that does not meet the standards does not close, and
+        #    the failure is recorded on the ticket.
+        with tempfile.TemporaryDirectory(prefix="mas-selftest-handback-") as tmp:
+            engine = LoopEngine(_config(tmp), provider=_AlwaysFails(model="selftest-model"))
+            try:
+                result = engine.run(goal="写一份 Q3 报告", criteria=criteria)
+            except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                return [prefix + "运行报错：%s" % exc]
+            ticket_id = str(result.ticket_id or "")
+            if not ticket_id:
+                return [prefix + "没有留下可接手的票据"]
+            bad = "结论。数据是 41。"
+            try:
+                rejected = engine.handback(ticket_id, bad, note="不合格的")
+            except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                problems.append(prefix + "接回不合格交付物报错：%s" % exc)
+                return problems
+            if rejected.closed:
+                problems.append(prefix + "不合格的人工交付物竟然闭合了")
+            if not rejected.issues:
+                problems.append(prefix + "不合格的人工交付物没有记下失败项")
+            still = engine.tickets.get(ticket_id) or {}
+            if still.get("state") != "waiting_human":
+                problems.append(
+                    "%s：不合格的接回把工单从人工队列里弄丢了（state=%r）"
+                    % (prefix, still.get("state"))
+                )
+            attempts = list((still.get("payload") or {}).get("resume_attempts") or [])
+            if not attempts:
+                problems.append(prefix + "不合格的接回没有记录在票上")
+
+        # 3. A dead reviewer must not destroy the human's work.
+        with tempfile.TemporaryDirectory(prefix="mas-selftest-handback-") as tmp:
+            engine = LoopEngine(_config(tmp), provider=_DeadBackend(model="selftest-model"))
+            try:
+                result = engine.run(goal="写一份 Q3 报告", criteria=criteria)
+            except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                return [prefix + "运行报错：%s" % exc]
+            ticket_id = str(result.ticket_id or "")
+            if not ticket_id:
+                return [prefix + "没有留下可接手的票据"]
+            try:
+                survived = engine.handback(ticket_id, "结论。数据是 42。", note="手写的")
+            except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                problems.append(
+                    "%s：评审挂了以后人工交付物也丢了（%s）" % (prefix, exc)
+                )
+                return problems
+            if not survived.closed:
+                problems.append(
+                    "%s：评审挂了，但机检已经通过，交付物仍应闭合（status=%s, error=%s）"
+                    % (prefix, survived.status, survived.error)
+                )
+        return problems
+
+    failures: List[str] = []
+    rounds = max(1, int(iterations))
+    for index in range(rounds):
+        failures.extend(_one_round(index))
+        if len(failures) >= 5:
+            break
+
+    return {
+        "name": "handback_closes",
+        "title": "人工写的交付物也能通过同一套验收把闭环关上",
+        "invariant": (
+            "人工交付物按票上的同一套验收标准判定；不合格的接回不闭合、"
+            "失败项留在票上；评审挂了也不会毁掉人已经写好的交付物"
+        ),
+        "iterations": rounds,
+        "failures": failures,
+        "ok": not failures,
+    }
+
+
 # ----------------------------------------------------------------- the gate
 # The short name of a check is a property of the function, so that
 # ``--only`` and the JSON output speak the same word.
@@ -1768,6 +2006,7 @@ check_a_stream_folds_into_one_answer.CHECK_NAME = "stream_folds"  # type: ignore
 check_parallel_candidates_pick_the_same_winner_every_time.CHECK_NAME = "parallel_pick"  # type: ignore[attr-defined]
 check_an_escalated_run_leaves_a_ticket_a_human_can_take_over.CHECK_NAME = "handover_ticket"  # type: ignore[attr-defined]
 check_a_takeover_sees_the_work_and_gets_a_fresh_budget.CHECK_NAME = "takeover_handover"  # type: ignore[attr-defined]
+check_a_handback_closes_on_human_work.CHECK_NAME = "handback_closes"  # type: ignore[attr-defined]
 
 CHECKS = (
     check_relay_refusal_keeps_the_connection_usable,
@@ -1778,6 +2017,7 @@ CHECKS = (
     check_parallel_candidates_pick_the_same_winner_every_time,
     check_an_escalated_run_leaves_a_ticket_a_human_can_take_over,
     check_a_takeover_sees_the_work_and_gets_a_fresh_budget,
+    check_a_handback_closes_on_human_work,
 )
 
 
@@ -1805,6 +2045,7 @@ def run_selftest(
             check_parallel_candidates_pick_the_same_winner_every_time,
             check_an_escalated_run_leaves_a_ticket_a_human_can_take_over,
             check_a_takeover_sees_the_work_and_gets_a_fresh_budget,
+            check_a_handback_closes_on_human_work,
         ):
             row = check(iterations=min(int(iterations), 20))
         else:

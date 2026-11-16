@@ -7,6 +7,33 @@
 
 [English](README.en.md) | [中文](README.md)
 
+**What v0.7.67 adds** (**a deliverable a human wrote can close the loop**):
+
+- **The 9th gate `handback_closes`** - the ticket queue used to have exactly
+  one answer: "resume, and let the machine try again". But the case that
+  actually happens when a loop escalates is the opposite - **the human has
+  already written the answer** and had nowhere to put it. This release adds
+  that path, and a gate catches it on the spot.
+- **The same acceptance criteria decide it** - the criteria come back from
+  the ticket, so the deliverable is judged by the rules the task was written
+  with. A criterion with a machine check is decided by that check; **the
+  reviewer cannot overrule it.**
+- **A rejected handback does not pretend to close** - the failing criteria
+  are written back onto the ticket, and the ticket **stays in the human
+  queue**. A rejected handback is a second try, not a closure.
+- **A dead reviewer does not destroy the work** - the machine checks are
+  already decided when the reviewer is called. **The probe caught this on the
+  spot**: the catch was narrower than the one in the main loop, so a plain
+  exception from a provider lost a deliverable a human had written.
+- **The new command `mas handback`** - every open ticket now prints:
+
+  ```
+  mas handback T-20261116-075440-8aae --file <your file>
+  ```
+
+- **The MCP tool `mas_handback`** - Codex / Claude can hand a deliverable
+  back into the loop without leaving the session.
+
 **What v0.7.66 adds** (**a takeover sees the work of the last attempt, and
 gets a budget of its own**):
 

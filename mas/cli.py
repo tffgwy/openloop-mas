@@ -687,6 +687,14 @@ def cmd_tickets(args: argparse.Namespace) -> int:
                     payload.get("budget"),
                 )
             )
+            # A human who has already written the answer should not be
+            # told to let the machine try again. The handback path puts
+            # their deliverable through the *same* acceptance criteria
+            # the loop was held to.
+            print(
+                "  交回交付物：mas handback %s --file <你的文件>"
+                % ticket["id"]
+            )
         print()
 
     if waiting:
@@ -700,6 +708,80 @@ def cmd_tickets(args: argparse.Namespace) -> int:
         for ticket in resolved:
             show(ticket)
     return 0
+
+
+def cmd_handback(args: argparse.Namespace) -> int:
+    """Hand a human-written deliverable back into the loop.
+
+    The ticket queue used to have exactly one answer: resume the loop
+    and let the machine try again. A human who had already written the
+    answer - the case that actually happens when a loop escalates -
+    had nowhere to put it. This command takes the human's deliverable
+    and puts it through *the same acceptance standards* the loop was
+    held to. The standards come from the ticket, so they are the ones
+    the task was written with.
+
+    The deliverable may be a file or plain text. A file is the usual
+    case: the human edited what the run produced.
+    """
+    config = load_config()
+    engine = _engine(config)
+    text = args.text or ""
+    if getattr(args, "file", None):
+        path = pathlib.Path(args.file).expanduser()
+        if not path.exists():
+            print(f"找不到文件：{path}", file=sys.stderr)
+            return 1
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            print(f"读不了文件：{exc}", file=sys.stderr)
+            return 1
+    try:
+        result = engine.handback(
+            args.ticket_id,
+            text,
+            args.note or "",
+        )
+    except KeyError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    if args.json:
+        _print(result.to_dict(), True)
+    else:
+        status_reading_text = status_reading(result.status)
+        cell = (
+            status_reading_text
+            if status_reading_text == result.status
+            else f"{status_reading_text}（{result.status}）"
+        )
+        print(f"状态：{cell}")
+        print(f"工单：{args.ticket_id}")
+        for score in result.scores:
+            flag = "PASS" if score["pass"] else ("?" if score["pass"] is None else "FAIL")
+            optional = "" if score.get("blocking", True) else "，可选"
+            reading_note = note_reading(score.get("note"))
+            source = source_reading(score.get("source"))
+            detail = reading_note or str(score.get("note") or "")
+            if source and detail:
+                detail = f"{source}：{detail}"
+            elif source:
+                detail = source
+            print(f"  [{flag}] {score['id']}{optional} {detail}")
+            reading = str(score.get("reading") or "")
+            if reading:
+                print(f"        要求：{reading}")
+        if result.closed:
+            print("人工交付物通过验收，工单已结。")
+            if result.artifact_path:
+                print(f"交付物：{result.artifact_path}")
+        else:
+            print(f"人工交付物没有通过验收：{result.error}")
+            print(f"工单 {args.ticket_id} 仍在人工队列里，失败项已经记在票上。")
+    return 0 if result.closed else 2
 
 
 def cmd_resume(args: argparse.Namespace) -> int:
@@ -1281,6 +1363,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_json(resume)
     resume.set_defaults(func=cmd_resume)
+
+    handback = sub.add_parser(
+        "handback",
+        help="把人工写的交付物交回闭环验收",
+    )
+    handback.add_argument("ticket_id")
+    source = handback.add_mutually_exclusive_group(required=True)
+    source.add_argument("--file", help="人工交付物所在的文件")
+    source.add_argument("--text", help="人工交付物的正文")
+    handback.add_argument("--note", default="", help="人工说明")
+    add_json(handback)
+    handback.set_defaults(func=cmd_handback)
 
     artifacts = sub.add_parser("artifacts", help="列出本机产出的交付物")
     artifacts.add_argument("--run-id", help="只看某一次运行")

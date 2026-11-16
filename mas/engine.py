@@ -1181,6 +1181,7 @@ class LoopEngine:
                 last_error=last_error,
                 parent_ticket_id=parent_ticket_id,
                 budget=effective_budget,
+                workspace=self._run_workspace_path(),
             )
 
         self._log(
@@ -2374,6 +2375,7 @@ class LoopEngine:
         status: str,
         reason: str,
         budget: Optional[Dict[str, Any]] = None,
+        workspace: str = "",
     ) -> Dict[str, Any]:
         """Build the context a human needs to take a failed run over.
 
@@ -2413,6 +2415,10 @@ class LoopEngine:
             # stopped" but not "it stopped *here*" leaves the reader
             # guessing which ceiling to raise.
             "budget": dict(budget or {}),
+            # The folder the run worked in. A human who edits the
+            # files the run produced has to edit them *there* - and a
+            # handback that checks the files has to look there too.
+            "workspace": str(workspace or ""),
         }
 
     def _open_handover_ticket(
@@ -2432,6 +2438,7 @@ class LoopEngine:
         last_error: str,
         parent_ticket_id: Optional[str] = None,
         budget: Optional[Dict[str, Any]] = None,
+        workspace: str = "",
     ) -> str:
         """Open a human ticket for a run that did not close.
 
@@ -2466,6 +2473,7 @@ class LoopEngine:
             status=status,
             reason=reason,
             budget=budget,
+            workspace=workspace,
         )
         if parent_ticket_id:
             # A resumed loop keeps the ticket it already has: one
@@ -2474,6 +2482,257 @@ class LoopEngine:
             return parent_ticket_id
         ticket = self.tickets.create(kind, payload)
         return str(ticket["id"])
+
+    # -------------------------------------------------------------- handback
+    def handback(
+        self,
+        ticket_id: str,
+        artifact: str,
+        note: str = "",
+        run_id: Optional[str] = None,
+    ) -> RunResult:
+        """Take a human-written deliverable back into the loop.
+
+        The ticket queue could only be answered in one way: resume the
+        loop and let the machine try again. A human who had already
+        written the deliverable - the case that actually happens when a
+        loop escalates - had nowhere to put it. Their work would be
+        re-derived by the machine, usually worse, and the human had no
+        way to say "this is the answer, check it".
+
+        This is the handback path: the human submits a deliverable, and
+        the *same* acceptance standards that the loop was held to decide
+        it. The standards come back from the ticket, so they are the
+        ones the task was written with - not a re-interpretation.
+
+        Two things make this honest rather than a rubber stamp:
+
+        * A criterion with a machine check is decided by that check.
+          The reviewer cannot override it, exactly as in a normal run.
+        * A deliverable that fails is *not* accepted. The failing
+          criteria are written back onto the ticket, and the ticket
+          stays in the human queue. A handback that fails is a second
+          try, not a closure.
+
+        The deliverable is written to disk on success, next to the
+        ledger, so the accepted answer survives the process that
+        accepted it.
+        """
+        ticket = self.tickets.get(ticket_id)
+        if ticket is None:
+            raise KeyError(f"unknown ticket: {ticket_id}")
+        payload = ticket.get("payload") or {}
+        crits = [
+            Criterion.from_raw(raw_criterion, index)
+            for index, raw_criterion in enumerate(payload.get("criteria") or [])
+        ]
+        if not crits:
+            raise ValueError(
+                "工单 %s 没有验收标准，没法验收人工交付物" % ticket_id
+            )
+        problems = validate_criteria(crits)
+        if problems:
+            raise ValueError(
+                "验收标准里有无法执行的机检规则:\n  - " + "\n  - ".join(problems)
+            )
+        if not artifact.strip():
+            raise ValueError("人工交付物是空的，没法验收")
+
+        run_id = run_id or "H-" + uuid.uuid4().hex[:10]
+        task_id = f"{run_id}-1"
+        self._run_id = str(run_id)
+        self._written_files = []
+        self._workspace = None
+        # The file checks of a handback resolve against the workspace of
+        # the run that produced the ticket - the human edited files in
+        # *that* folder, and checking them anywhere else would report
+        # every file as missing.
+        check_config = dict(self.config)
+        check_config["workspace"] = str(
+            payload.get("workspace") or self._run_workspace_path()
+        )
+        self._check_config = check_config
+
+        started_at = now_iso()
+        checks = [
+            evaluate_check(criterion, artifact, self._check_config) for criterion in crits
+        ]
+        state: Dict[str, Any] = {
+            "goal": str(payload.get("goal") or ""),
+            "title": str(payload.get("title") or ""),
+            "criteria": [criterion.to_dict() for criterion in crits],
+            "attempt": 1,
+            "issues": [],
+            "previous_artifact": str(payload.get("last_artifact") or ""),
+            "human_note": note or str(ticket.get("note") or ""),
+            "handback": True,
+        }
+        verify_state = dict(state)
+        verify_state["candidate_artifact"] = artifact
+        verify_state["checks"] = checks
+        tokens = 0
+        verdict: Dict[str, Any] = {}
+        review_error = ""
+        try:
+            verdict = self._review(verify_state)
+            tokens += int(verdict.get("_usage", {}).get("total_tokens", 0) or 0)
+            if self.reviewers > 1:
+                scores = self._merge_review_scores(crits, checks, verdict)
+            else:
+                scores = self._merge_scores(crits, checks, verdict)
+            extra = self._ask_missing_verdicts(
+                verify_state, crits, checks, verdict, scores
+            )
+            if extra:
+                tokens += int(extra.get("_usage", {}).get("total_tokens", 0) or 0)
+                if self.reviewers > 1:
+                    scores = self._merge_review_scores(crits, checks, extra)
+                else:
+                    scores = self._merge_scores(crits, checks, extra)
+                verdict = extra
+        except Exception as exc:  # noqa: BLE001 - a dead reviewer must not crash a handback
+            # The machine checks are already decided. A reviewer that
+            # dies must not turn a handback into a crash - the
+            # standards that can be checked without a model are checked
+            # anyway, and the failure is reported.
+            #
+            # The catch is deliberately broad, and it matches the one
+            # the main loop uses: a provider can fail in ways that are
+            # not a ProviderError (a broken transport, a KeyError in a
+            # response shape, a TimeoutError from a socket). The main
+            # loop survives those; a handback that crashed on one of
+            # them would lose a deliverable a human had already
+            # written - the exact thing this path exists to protect.
+            review_error = str(exc) or exc.__class__.__name__
+            verdict = {}
+            scores = self._merge_scores(crits, checks, verdict)
+
+        issues = [
+            str(score.get("note") or "")
+            for score in scores
+            if not score.get("pass") and score.get("blocking", True)
+        ]
+        deliverable_ok = all(
+            score.get("pass")
+            for score in scores
+            if score.get("blocking", True)
+        )
+        # A criterion nobody judged is not a passing criterion. It is
+        # reported as unjudged, and the handback does not close.
+        unjudged = [
+            str(score.get("id") or "")
+            for score in scores
+            if score.get("pass") is None and score.get("blocking", True)
+        ]
+
+        self._log(
+            run_id,
+            task_id,
+            1,
+            "handback",
+            {
+                "ticket_id": ticket_id,
+                "note": note or str(ticket.get("note") or ""),
+                "artifact_sha": sha256_text(artifact),
+                "artifact_chars": len(artifact),
+                "checks": checks,
+                "scores": scores,
+                "issues": issues,
+                "unjudged": unjudged,
+                "review_error": review_error,
+                "tokens": tokens,
+            },
+        )
+
+        artifact_path = ""
+        if deliverable_ok and not unjudged:
+            status = STATUS_CLOSED
+            error = ""
+            artifact_path = self._save_artifact(run_id, artifact)
+        else:
+            status = STATUS_ESCALATED
+            error = "人工交付物未通过验收标准"
+            if unjudged:
+                error += "（未判定：%s）" % ", ".join(unjudged)
+            if review_error:
+                error += "：评审失败：%s" % review_error
+
+        result = RunResult(
+            run_id=run_id,
+            task_id=task_id,
+            status=status,
+            iterations=1,
+            artifact=artifact,
+            artifact_sha=sha256_text(artifact),
+            issues=issues,
+            scores=scores,
+            ticket_id=ticket_id,
+            tokens_used=tokens,
+            ledger_path=str(self.ledger.path),
+            artifact_path=artifact_path,
+            workspace=self._run_workspace_path(),
+            files=list(self._written_files),
+            history=[],
+            started_at=started_at,
+            finished_at=now_iso(),
+            error=error,
+            deliverable_ok=deliverable_ok,
+            budget=dict(payload.get("budget") or {}),
+        )
+        self._log(
+            run_id,
+            task_id,
+            1,
+            "run_end",
+            {
+                "status": status,
+                "iterations": 1,
+                "tokens": tokens,
+                "artifact_sha": result.artifact_sha,
+                "artifact_path": artifact_path,
+                "deliverable_ok": deliverable_ok,
+                "issues": issues,
+                "ticket_id": ticket_id,
+                "workspace": result.workspace,
+            },
+        )
+
+        if result.closed:
+            # The handback closed the problem, so the ticket closes with
+            # it - and it points at the run that closed it, so the queue
+            # can answer "how was this solved?" with one click.
+            self.tickets.resolve(ticket_id, "handback", note or "人工交付物通过验收")
+            self.tickets.note_success(
+                ticket_id,
+                run_id=run_id,
+                iterations=1,
+                artifact=artifact_path or artifact,
+            )
+        else:
+            # A rejected handback is evidence on the ticket, not a new
+            # ticket. One problem stays one thread, and the failing
+            # criteria travel with it.
+            self.tickets.reopen(
+                ticket_id,
+                note or "人工交付物未通过验收",
+                reason=(
+                    "handback did not meet the acceptance criteria"
+                    + (f": {'; '.join(issues)}" if issues else "")
+                ),
+                result=result.to_dict(),
+            )
+            self.tickets.append_attempt(
+                ticket_id,
+                {
+                    "run_id": run_id,
+                    "attempts": 1,
+                    "last_artifact": artifact,
+                    "issues": issues,
+                    "criteria": [criterion.to_dict() for criterion in crits],
+                },
+                reason=error,
+            )
+        return result
 
     # --------------------------------------------------------------- resume
     def resume(

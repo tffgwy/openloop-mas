@@ -8,6 +8,7 @@ that a beginner only needs Python - no ``pip install`` step.
 from __future__ import annotations
 
 import json
+import pathlib
 import sys
 from typing import Any, Dict, List, Optional
 
@@ -143,6 +144,30 @@ TOOLS: List[Dict[str, Any]] = [
         },
     ),
     _tool(
+        "mas_handback",
+        "Hand a human-written deliverable back into the loop. The same "
+        "acceptance criteria from the ticket decide it; a deliverable "
+        "that fails stays in the human queue with the failing criteria "
+        "recorded on the ticket.",
+        {
+            "type": "object",
+            "properties": {
+                "ticket_id": {"type": "string"},
+                # The deliverable itself, or a file that holds it.
+                "artifact": {
+                    "type": "string",
+                    "description": "人工交付物的正文（与 file 二选一）",
+                },
+                "file": {
+                    "type": "string",
+                    "description": "人工交付物所在的文件（与 artifact 二选一）",
+                },
+                "note": {"type": "string"},
+            },
+            "required": ["ticket_id"],
+        },
+    ),
+    _tool(
         "mas_report",
         "Render a Markdown closure report from the run ledger.",
         {
@@ -268,6 +293,30 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             deadline_sec=arguments.get("deadline_sec"),
             max_tokens=arguments.get("max_tokens"),
         )
+        return result.to_dict()
+
+    if name == "mas_handback":
+        engine = _engine(config)
+        ticket_id = str(arguments.get("ticket_id"))
+        text = str(arguments.get("artifact") or "")
+        file_path = str(arguments.get("file") or "").strip()
+        if file_path:
+            path = pathlib.Path(file_path).expanduser()
+            if not path.exists():
+                return {"error": f"file not found: {file_path}"}
+            text = path.read_text(encoding="utf-8")
+        if not text.strip():
+            return {"error": "handback needs an artifact or a file"}
+        try:
+            result = engine.handback(
+                ticket_id,
+                text,
+                str(arguments.get("note", "")),
+            )
+        except KeyError as exc:
+            return {"error": str(exc)}
+        except ValueError as exc:
+            return {"error": str(exc)}
         return result.to_dict()
 
     if name == "mas_report":
