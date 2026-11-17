@@ -4799,6 +4799,609 @@ def check_a_draft_never_throws_away_newer_work(
 check_a_draft_never_throws_away_newer_work.CHECK_NAME = "conflict_guard"  # type: ignore[attr-defined]
 
 
+COMPARE_OBSERVATIONS = (
+    "the draft keeps the baseline it was made against",
+    "the comparison names the lines the draft would take away",
+    "the comparison does not call unchanged lines a loss",
+    "a forced approval is still refused without a force",
+    "the command line shows what would be lost",
+    "the command line says so in plain words",
+    "an agent can ask the same question over mcp",
+    "a binary file is not mistaken for a changed file",
+)
+
+
+def _compare_observations(root: Any) -> Dict[str, Any]:
+    """Watch what a forced approval is about to cost.
+
+    A conflict says "the file moved". That is a fact, but it is not a
+    decision: a human cannot tell whether the change that moved is
+    worth keeping without seeing *what* it was. So the draft keeps the
+    baseline, and the comparison names the lines that a forced
+    approval would take away.
+
+    The gate proves it can fail: the loss detection is broken on
+    purpose - every line counts as lost - and the gate has to notice.
+    """
+    import pathlib
+
+    from mas.drafts import draft_compare, stage_draft
+    from mas.mcp_server import handle_tool
+
+    seen: Dict[str, Any] = {}
+    workspace = pathlib.Path(root) / "ws"
+    workspace.mkdir(parents=True, exist_ok=True)
+    target = workspace / "notes.txt"
+    target.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+
+    staged = stage_draft(
+        workspace,
+        "notes.txt",
+        "alpha\nbeta-agent\ngamma\n".encode("utf-8"),
+        reason="the agent proposes this",
+    )
+    draft_id = str(staged.get("id") or "")
+    seen["draft_id"] = draft_id
+
+    # The human adds a line of their own while the draft waits.
+    target.write_text("alpha\nbeta\ngamma\nhuman-added\n", encoding="utf-8")
+
+    comparison = draft_compare(workspace, staged)
+    seen["conflict"] = bool(comparison.get("conflict"))
+    seen["would_lose"] = list(comparison.get("would_lose") or [])
+    seen["would_lose_count"] = int(comparison.get("would_lose_count") or 0)
+    seen["baseline_available"] = bool(comparison.get("baseline_available"))
+    seen["readable"] = bool(comparison.get("readable"))
+    seen["baseline_to_current"] = list(comparison.get("baseline_to_current") or [])
+    seen["current_to_draft"] = list(comparison.get("current_to_draft") or [])
+    seen["draft_sha256"] = str(comparison.get("draft_sha256") or "")
+    seen["current_sha256"] = str(comparison.get("current_sha256") or "")
+
+    # The same question, asked over MCP: an agent has to be able to
+    # find out what a forced approval would cost, too.
+    over_mcp = handle_tool(
+        "mas_draft_compare",
+        {"draft_id": draft_id, "workspace": str(workspace)},
+    )
+    mcp_comparison = over_mcp.get("comparison") or {}
+    seen["mcp_error"] = str(over_mcp.get("error") or "")
+    seen["mcp_would_lose"] = list(mcp_comparison.get("would_lose") or [])
+
+    # A binary file must not be mistaken for a file that changed.
+    blob = workspace / "blob.bin"
+    blob.write_bytes(bytes(range(256)))
+    binary_draft = stage_draft(workspace, "blob.bin", bytes(reversed(range(256))))
+    binary_comparison = draft_compare(workspace, binary_draft)
+    seen["binary_conflict"] = bool(binary_comparison.get("conflict"))
+    seen["binary_readable"] = bool(binary_comparison.get("readable"))
+
+    # The command line has to answer the same question in words.
+    import argparse
+    import contextlib
+    import io
+
+    from mas.cli import cmd_drafts
+
+    quiet = io.StringIO()
+    with contextlib.redirect_stdout(quiet):
+        cli_result = cmd_drafts(
+            argparse.Namespace(
+                action="compare",
+                draft_id=draft_id,
+                workspace=str(workspace),
+                state=None,
+                note="",
+                token="",
+                ticket_action="approve",
+                force=False,
+                json=True,
+            )
+        )
+    seen["cli_exit_code"] = int(cli_result)
+    seen["cli_text"] = quiet.getvalue()
+
+    # And the same answer in plain words, the way a human reads it.
+    plain = io.StringIO()
+    with contextlib.redirect_stdout(plain):
+        plain_result = cmd_drafts(
+            argparse.Namespace(
+                action="compare",
+                draft_id=draft_id,
+                workspace=str(workspace),
+                state=None,
+                note="",
+                token="",
+                ticket_action="approve",
+                force=False,
+                json=False,
+            )
+        )
+    seen["cli_plain_exit_code"] = int(plain_result)
+    seen["cli_plain_text"] = plain.getvalue()
+    return seen
+
+
+def _compare_verdicts(facts: Dict[str, Any]) -> Dict[str, bool]:
+    """Turn the collected facts into the verdicts of the gate."""
+    lost = [str(line) for line in (facts.get("would_lose") or [])]
+    return {
+        "the draft keeps the baseline it was made against": (
+            facts.get("baseline_available") is True
+        ),
+        "the comparison names the lines the draft would take away": (
+            len(lost) == 1
+            and "human-added" in lost[0]
+        ),
+        "the comparison does not call unchanged lines a loss": (
+            all(
+                line.strip() not in ("alpha", "beta", "gamma")
+                for line in lost
+            )
+        ),
+        "a forced approval is still refused without a force": (
+            facts.get("conflict") is True
+        ),
+        "the command line shows what would be lost": (
+            facts.get("cli_exit_code") == 0
+            and "human-added" in str(facts.get("cli_text") or "")
+        ),
+        "the command line says so in plain words": (
+            facts.get("cli_plain_exit_code") == 0
+            and "会丢掉" in str(facts.get("cli_plain_text") or "")
+        ),
+        "an agent can ask the same question over mcp": (
+            facts.get("mcp_error") == ""
+            and list(facts.get("mcp_would_lose") or []) == lost
+        ),
+        "a binary file is not mistaken for a changed file": (
+            facts.get("binary_conflict") is False
+            and facts.get("binary_readable") is False
+        ),
+    }
+
+
+def _compare_verdicts_independent(facts: Dict[str, Any]) -> Dict[str, bool]:
+    """A second, independent reading of the same facts.
+
+    Written from the rule rather than from the first implementation;
+    the gate needs the two to agree.
+    """
+    verdicts: Dict[str, bool] = {}
+    lost = facts.get("would_lose") or []
+    verdicts["the draft keeps the baseline it was made against"] = (
+        facts.get("baseline_available") is True
+    )
+    verdicts["the comparison names the lines the draft would take away"] = (
+        len(lost) == 1 and "human-added" in str(lost[0])
+    )
+    verdicts["the comparison does not call unchanged lines a loss"] = (
+        len([line for line in lost if str(line).strip() in ("alpha", "beta", "gamma")]) == 0
+    )
+    verdicts["a forced approval is still refused without a force"] = (
+        facts.get("conflict") is True
+    )
+    verdicts["the command line shows what would be lost"] = (
+        facts.get("cli_exit_code") == 0
+        and "human-added" in str(facts.get("cli_text") or "")
+    )
+    verdicts["the command line says so in plain words"] = (
+        facts.get("cli_plain_exit_code") == 0
+        and "会丢掉" in str(facts.get("cli_plain_text") or "")
+    )
+    verdicts["an agent can ask the same question over mcp"] = (
+        facts.get("mcp_error") == "" and facts.get("mcp_would_lose") == lost
+    )
+    verdicts["a binary file is not mistaken for a changed file"] = (
+        facts.get("binary_conflict") is False
+        and facts.get("binary_readable") is False
+    )
+    return verdicts
+
+
+def check_a_forced_approval_says_what_it_would_cost(
+    iterations: int = 10,
+) -> Dict[str, Any]:
+    """Before a forced approval, the human is told what it would cost.
+
+    The conflict guard refuses to write over newer work. That is the
+    right answer, but "it changed" is not a decision - so the draft
+    keeps the baseline it was made against, and the comparison names
+    the lines a forced approval would take away.
+
+    The gate proves it can fail: the loss detection is broken on
+    purpose - every line counts as lost - and the gate has to notice.
+    """
+    import shutil
+    import tempfile
+
+    failures: List[str] = []
+    rounds = 0
+    for round_index in range(max(1, int(iterations))):
+        root = pathlib.Path(tempfile.mkdtemp(prefix="mas-compare-"))
+        rounds += 1
+        try:
+            try:
+                facts = _compare_observations(root)
+            except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                failures.append(
+                    "round %d: the comparison broke: %s: %s"
+                    % (round_index + 1, type(exc).__name__, exc)
+                )
+                continue
+            seen = _compare_verdicts(facts)
+            independent = _compare_verdicts_independent(facts)
+            for label in COMPARE_OBSERVATIONS:
+                if label in independent and independent[label] != seen.get(label):
+                    failures.append(
+                        "round %d: the two readings of %s disagree (%r vs %r) - "
+                        "the verdict was tampered with"
+                        % (round_index + 1, label, seen.get(label), independent[label])
+                    )
+                    break
+            for label in COMPARE_OBSERVATIONS:
+                if label not in seen:
+                    failures.append(
+                        "round %d: the gate did not observe %s"
+                        % (round_index + 1, label)
+                    )
+                elif not seen[label]:
+                    failures.append("round %d: %s" % (round_index + 1, label))
+
+            # The gate proves it can fail. The loss detection is
+            # broken on purpose - every line of the file counts as
+            # lost - and the gate has to notice.
+            import mas.drafts as drafts_module
+
+            real_lost = drafts_module._lost_lines
+            try:
+                # The mutant calls the lines nobody touched a loss.
+                drafts_module._lost_lines = lambda *_args, **_kwargs: ["alpha"]
+                broken = {}
+                try:
+                    broken = _compare_verdicts(_compare_observations(root))
+                except Exception:  # noqa: BLE001 - a crash counts as "noticed"
+                    broken = {}
+            finally:
+                drafts_module._lost_lines = real_lost
+            if broken.get("the comparison names the lines the draft would take away"):
+                failures.append(
+                    "round %d: the gate did not notice that the loss detection "
+                    "stopped being made - it cannot fail, so it does not watch"
+                    % (round_index + 1)
+                )
+            if broken.get("the comparison does not call unchanged lines a loss"):
+                failures.append(
+                    "round %d: the gate did not notice that unchanged lines "
+                    "were called a loss" % (round_index + 1)
+                )
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    return {
+        "name": "force_cost",
+        "title": "覆盖之前先看清会丢什么",
+        "invariant": (
+            "草稿留下基线；对比点名覆盖会丢掉的那几行；没改过的行不算丢失；"
+            "命令行与 MCP 都用大白话说清代价；二进制文件不被误判为已改动"
+        ),
+        "detail": "三方对比：mas drafts compare <草稿编号>",
+        "iterations": rounds,
+        "failures": failures,
+        "ok": not failures,
+    }
+
+
+check_a_forced_approval_says_what_it_would_cost.CHECK_NAME = "force_cost"  # type: ignore[attr-defined]
+
+
+UNDO_OBSERVATIONS = (
+    "the undo puts the file back exactly as it was",
+    "the draft survives the undo and can be approved again",
+    "an undo of an unapproved draft is refused",
+    "an undo after the file moved is refused",
+    "the refusal names what the undo would cost",
+    "the command line can undo a draft",
+    "an agent can undo a draft over mcp",
+)
+
+
+def _undo_observations(root: Any) -> Dict[str, Any]:
+    """Watch what an undo does to the file.
+
+    An approval that cannot be taken back is a one-way door. The
+    draft kept the baseline, so the undo is not a guess - it puts back
+    exactly what was there. But the undo has to be careful in the same
+    way the approval is: if the file moved *after* the approval,
+    undoing would throw the newer work away.
+
+    The gate proves it can fail: the undo is broken on purpose - it
+    writes the wrong bytes - and the gate has to notice.
+    """
+    import argparse
+    import contextlib
+    import io
+    import pathlib
+
+    from mas.cli import cmd_drafts
+    from mas.drafts import approve_draft, draft_undo_plan, stage_draft, undo_draft
+    from mas.mcp_server import handle_tool
+
+    seen: Dict[str, Any] = {}
+    workspace = pathlib.Path(root) / "ws"
+    workspace.mkdir(parents=True, exist_ok=True)
+    target = workspace / "notes.txt"
+    original = "alpha\nbeta\n"
+    target.write_text(original, encoding="utf-8")
+
+    staged = stage_draft(
+        workspace,
+        "notes.txt",
+        "alpha\nbeta-agent\n".encode("utf-8"),
+        reason="the agent proposes this",
+    )
+    draft_id = str(staged.get("id") or "")
+    seen["draft_id"] = draft_id
+
+    approve_draft(workspace, draft_id)
+    seen["after_approval"] = target.read_text(encoding="utf-8")
+
+    undone = undo_draft(workspace, draft_id, note="approved the wrong thing")
+    seen["after_undo"] = target.read_text(encoding="utf-8")
+    seen["undo_state"] = str(undone.get("state") or "")
+    seen["undo_note"] = str(undone.get("undo_note") or "")
+
+    # The draft is not dead: the same change can be approved again.
+    again = approve_draft(workspace, draft_id)
+    seen["reapproved_state"] = str(again.get("state") or "")
+    seen["after_reapproval"] = target.read_text(encoding="utf-8")
+
+    # An undo of a draft that was never approved is refused. It gets
+    # its own file, so the scenarios cannot step on each other.
+    pending_file = workspace / "pending.txt"
+    pending_file.write_text("one\n", encoding="utf-8")
+    other = stage_draft(workspace, "pending.txt", "two\n".encode("utf-8"))
+    other_id = str(other.get("id") or "")
+    try:
+        undo_draft(workspace, other_id)
+        seen["unapproved_refused"] = False
+        seen["unapproved_reason"] = ""
+    except ValueError as exc:
+        seen["unapproved_refused"] = True
+        seen["unapproved_reason"] = str(exc)
+
+    # An undo after the file moved is refused - and the refusal says
+    # what the undo would cost.
+    moving_file = workspace / "moving.txt"
+    moving_file.write_text("alpha\nbeta\n", encoding="utf-8")
+    moving = stage_draft(
+        workspace, "moving.txt", "alpha\nbeta-agent\n".encode("utf-8")
+    )
+    moving_id = str(moving.get("id") or "")
+    approve_draft(workspace, moving_id)
+    moving_file.write_text(
+        "alpha\nbeta-agent\nhuman-after-approval\n", encoding="utf-8"
+    )
+    plan = draft_undo_plan(workspace, moving)
+    seen["plan_reason"] = str(plan.get("reason") or "")
+    seen["plan_would_lose"] = list(plan.get("would_lose") or [])
+    try:
+        undo_draft(workspace, moving_id)
+        seen["moved_refused"] = False
+        seen["moved_reason"] = ""
+    except Exception as exc:  # noqa: BLE001 - the refusal is the subject
+        seen["moved_refused"] = True
+        seen["moved_reason"] = str(exc)
+        seen["moved_clash"] = dict(getattr(exc, "plan", {}) or {})
+    seen["file_after_refusal"] = moving_file.read_text(encoding="utf-8")
+
+    # The command line has to be able to undo - on a draft that is
+    # still in the state an undo accepts.
+    cli_file = workspace / "cli.txt"
+    cli_file.write_text("one\n", encoding="utf-8")
+    cli_draft = stage_draft(workspace, "cli.txt", "two\n".encode("utf-8"))
+    cli_id = str(cli_draft.get("id") or "")
+    approve_draft(workspace, cli_id)
+    cli = argparse.Namespace(
+        action="undo",
+        draft_id=cli_id,
+        workspace=str(workspace),
+        state=None,
+        note="",
+        token="",
+        ticket_action="approve",
+        force=False,
+        json=False,
+    )
+    plain = io.StringIO()
+    noise = io.StringIO()
+    with contextlib.redirect_stdout(plain), contextlib.redirect_stderr(noise):
+        cli_result = cmd_drafts(cli)
+    seen["cli_exit_code"] = int(cli_result)
+    seen["cli_text"] = plain.getvalue()
+    seen["cli_file_after"] = cli_file.read_text(encoding="utf-8")
+
+    # And an agent has to be able to ask the same thing over MCP.
+    over_mcp = handle_tool(
+        "mas_draft_undo",
+        {"draft_id": moving_id, "workspace": str(workspace)},
+    )
+    seen["mcp_error"] = str(over_mcp.get("error") or "")
+    seen["mcp_would_lose"] = list(
+        (over_mcp.get("would_lose") or (over_mcp.get("plan") or {}).get("would_lose") or [])
+    )
+    return seen
+
+
+def _undo_verdicts(facts: Dict[str, Any]) -> Dict[str, bool]:
+    """Turn the collected facts into the verdicts of the gate."""
+    return {
+        "the undo puts the file back exactly as it was": (
+            facts.get("after_undo") == "alpha\nbeta\n"
+            and facts.get("cli_file_after") == "one\n"
+        ),
+        "the draft survives the undo and can be approved again": (
+            facts.get("undo_state") == "undone"
+            and facts.get("reapproved_state") == "approved"
+            and facts.get("after_reapproval") == "alpha\nbeta-agent\n"
+        ),
+        "an undo of an unapproved draft is refused": (
+            facts.get("unapproved_refused") is True
+        ),
+        "an undo after the file moved is refused": (
+            facts.get("moved_refused") is True
+            and facts.get("plan_reason") == "file_changed"
+        ),
+        "the refusal names what the undo would cost": (
+            len(list(facts.get("plan_would_lose") or [])) == 1
+            and "human-after-approval"
+            in next(iter(facts.get("plan_would_lose") or []))
+        ),
+        "the command line can undo a draft": (
+            facts.get("cli_exit_code") == 0
+            and "已撤销" in str(facts.get("cli_text") or "")
+        ),
+        "an agent can undo a draft over mcp": (
+            facts.get("mcp_error") == "undo_conflict"
+            and len(list(facts.get("mcp_would_lose") or [])) == 1
+        ),
+    }
+
+
+def _undo_verdicts_independent(facts: Dict[str, Any]) -> Dict[str, bool]:
+    """A second, independent reading of the same facts."""
+    verdicts: Dict[str, bool] = {}
+    lost = [str(line) for line in (facts.get("plan_would_lose") or [])]
+    verdicts["the undo puts the file back exactly as it was"] = (
+        str(facts.get("after_undo")) == "alpha\nbeta\n"
+    )
+    verdicts["the draft survives the undo and can be approved again"] = (
+        str(facts.get("undo_state")) == "undone"
+        and str(facts.get("reapproved_state")) == "approved"
+    )
+    verdicts["an undo of an unapproved draft is refused"] = (
+        facts.get("unapproved_refused") is True
+    )
+    verdicts["an undo after the file moved is refused"] = (
+        facts.get("moved_refused") is True
+        and str(facts.get("plan_reason")) == "file_changed"
+    )
+    verdicts["the refusal names what the undo would cost"] = (
+        len(lost) == 1 and "human-after-approval" in lost[0]
+    )
+    verdicts["the command line can undo a draft"] = (
+        facts.get("cli_exit_code") == 0
+        and "\u5df2\u64a4\u9500" in str(facts.get("cli_text") or "")
+    )
+    verdicts["an agent can undo a draft over mcp"] = (
+        str(facts.get("mcp_error")) == "undo_conflict" and len(lost) == 1
+    )
+    return verdicts
+
+
+def check_an_approved_change_can_be_taken_back(
+    iterations: int = 10,
+) -> Dict[str, Any]:
+    """An approved change can be taken back.
+
+    The draft layer made the approval the only way a change reaches
+    the file - but it also made it a one-way door: once the human
+    approved the wrong thing, the only way back was to edit the file
+    by hand. The draft already keeps the baseline, so the undo is not
+    a guess.
+
+    The gate proves it can fail: the undo is broken on purpose - it
+    writes the wrong bytes - and the gate has to notice.
+    """
+    import shutil
+    import tempfile
+
+    failures: List[str] = []
+    rounds = 0
+    for round_index in range(max(1, int(iterations))):
+        root = pathlib.Path(tempfile.mkdtemp(prefix="mas-undo-"))
+        rounds += 1
+        try:
+            try:
+                facts = _undo_observations(root)
+            except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                failures.append(
+                    "round %d: the undo broke: %s: %s"
+                    % (round_index + 1, type(exc).__name__, exc)
+                )
+                facts = {}
+            verdicts = _undo_verdicts(facts)
+            independent = _undo_verdicts_independent(facts)
+            for label in UNDO_OBSERVATIONS:
+                if label not in verdicts:
+                    failures.append(
+                        "round %d: the gate did not observe %s"
+                        % (round_index + 1, label)
+                    )
+                    continue
+                if not verdicts[label]:
+                    failures.append("round %d: %s" % (round_index + 1, label))
+                if independent.get(label) != verdicts.get(label):
+                    failures.append(
+                        "round %d: %s - the two readings disagree (%s vs %s)"
+                        % (
+                            round_index + 1,
+                            label,
+                            verdicts.get(label),
+                            independent.get(label),
+                        )
+                    )
+
+            # The gate proves it can fail: the undo writes the wrong
+            # bytes, and the gate has to notice.
+            import mas.drafts as drafts_module
+
+            real_undo = drafts_module.undo_draft
+
+            def _undo_to_the_wrong_bytes(workspace, draft_id, note="", force=False):
+                """An undo that puts the file back to the wrong version."""
+                draft = drafts_module.get_draft(workspace, draft_id)
+                if draft is None:
+                    raise KeyError(draft_id)
+                target = pathlib.Path(str(draft.get("absolute") or ""))
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b"wrong bytes\n")
+                return draft
+
+            try:
+                drafts_module.undo_draft = _undo_to_the_wrong_bytes
+                broken = {}
+                try:
+                    broken = _undo_verdicts(_undo_observations(root))
+                except Exception:  # noqa: BLE001 - a crash counts as "noticed"
+                    broken = {}
+            finally:
+                drafts_module.undo_draft = real_undo
+            if broken.get("the undo puts the file back exactly as it was"):
+                failures.append(
+                    "round %d: the gate did not notice that the undo wrote the "
+                    "wrong bytes - it cannot fail, so it does not watch"
+                    % (round_index + 1)
+                )
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    return {
+        "name": "undo_guard",
+        "title": "批错了还能退回来",
+        "invariant": (
+            "撤销把文件逐字节退回改动前；草稿撤销后仍在、可以再次批准；"
+            "没批准的草稿不能撤；批准后文件又变过就拒绝撤销并说清代价"
+        ),
+        "detail": "撤销一个已批准的草稿：mas drafts undo <草稿编号>",
+        "iterations": rounds,
+        "failures": failures,
+        "ok": not failures,
+    }
+
+
+check_an_approved_change_can_be_taken_back.CHECK_NAME = "undo_guard"  # type: ignore[attr-defined]
+
+
 CHECKS = (
     check_relay_refusal_keeps_the_connection_usable,
     check_provider_keeps_the_usage_of_a_failed_call,
@@ -4818,6 +5421,8 @@ CHECKS = (
     check_an_agent_can_propose_but_not_approve,
     check_a_ticket_opens_one_door_once,
     check_a_draft_never_throws_away_newer_work,
+    check_a_forced_approval_says_what_it_would_cost,
+    check_an_approved_change_can_be_taken_back,
 )
 
 

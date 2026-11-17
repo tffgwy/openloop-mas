@@ -7,6 +7,54 @@
 
 [English](README.en.md) | [中文](README.md)
 
+- **The 20th gate `undo_guard`** - v0.7.72 made the **approval** the only
+  way a change reaches a file. That is right, but it also made the
+  approval a **one-way door**: once you approved the wrong thing, the
+  only way back was to **edit the file by hand**.
+  The **baseline** v0.7.76 keeps was sitting in the draft, unused.
+  Now `mas drafts undo <draft id>` takes the change **back**: the file
+  returns **byte for byte** to what it held when the draft was made -
+  not an approximation, not a reverse patch, but the baseline itself
+  written back.
+  The draft **does not disappear**: after an undo it can be
+  **approved again**, once you understand why it was undone.
+  The undo **asks the price too**: if the file was changed *after* the
+  approval, the undo is **refused** and it **names the lines it would
+  cost** - a rule **symmetric** to the approval: the approval stops
+  "overwriting someone else's update", the undo stops "wiping the work
+  that came after the approval".
+  On the MCP side **`mas_draft_undo`** needs the **human token or a
+  one-shot ticket**, just like an approval: an agent may propose a
+  draft and ask what it would cost, but **changing a decision that is
+  already on disk has to be a human's job**.
+  `mas_status` now carries `undone_drafts`: an undone change is **not
+  "did not happen"** - it says **an approval was wrong**, and the
+  draft is still there, waiting to be approved a second time.
+  The seam was found by **refutation**: the undo is broken on purpose -
+  it writes the wrong bytes - and the gate has to notice.
+
+- **The 19th gate `force_cost`** - v0.7.75 made the draft remember the
+  baseline hash and **refuse** to write back when the file moved. But
+  "the file moved" is a **fact**, not a **decision**: nobody can tell
+  from that sentence whether the change that moved is worth keeping.
+  You have to see **what** moved.
+  The draft now **keeps the baseline**, and the cost of overwriting is
+  put on the table: `mas drafts compare <draft id>` shows the three
+  versions - **baseline → now → draft** - and **names the lines the
+  overwrite would take away** (the ones you wrote and the draft does
+  not carry). Lines nobody touched are **not** a loss.
+  On the MCP side **`mas_draft_compare`** asks the same question.
+  The **digest basis** is recorded with the draft (`digest_basis`), so
+  an old draft is compared through its baseline, and a draft with no
+  baseline **does not cry wolf** - a false alarm is worse than no alarm,
+  because it teaches you to ignore the real ones.
+  A **binary file is not mistaken** for a changed file.
+  `mas_status` now shows the **drafts stuck on a conflict**: that is a
+  decision the human still owes, and a draft nobody can see is a
+  decision nobody makes.
+  The seam was found by **refutation**: the loss detection is broken on
+  purpose - every line counts as a loss - and the gate has to notice.
+
 - **The 18th gate `conflict_guard`** - v0.7.72 put the change into a
   draft, but the draft never **checked** the file it was made against:
   if you edited the file while the draft was waiting, approving it

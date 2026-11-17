@@ -80,6 +80,8 @@ env = { PYTHONPATH = "<install-dir>/app" }
 | `mas_drafts` | 列出待确认的草稿，或看某一份的 diff | `action`（`list` / `show`）、`draft_id`、`state`、`workspace` |
 | `mas_draft_stage` | **提**一份改动；原文件一个字节都不动 | `path`（必填）、`content`（必填）、`reason`、`workspace` |
 | `mas_draft_resolve` | 批准 / 驳回草稿；**批准要人类令牌或一次性票据** | `action`（`approve` / `reject`）、`draft_id`（必填）、`token`、`ticket`、`note`、`force` |
+| `mas_draft_compare` | **比一比**覆盖会丢什么：基线 / 现在 / 草稿三方对比 | `draft_id`（必填）、`workspace` |
+| `mas_draft_undo` | **撤回**一次已批准的改动：文件逐字节回到改动前；**要人类令牌或一次性票据** | `draft_id`（必填）、`token`、`ticket`、`note`、`force`、`workspace` |
 | `mas_files` | 索引工作区：每个文件是什么格式、能读出什么 | `path`（可选，默认所有工作区）、`workspace` |
 | `mas_preview` | 预览一个文件（PDF / Word / 文本…） | `path`（必填）、`workspace`、`max_chars` |
 
@@ -148,6 +150,72 @@ env = { PYTHONPATH = "<install-dir>/app" }
 ```
 
 `force` 是**给人的**开关：agent 不该自己决定覆盖掉别人的活。
+
+### 4.0.4 覆盖之前先看清会丢什么
+
+`mas_draft_compare` 让 agent 问出**同一个问题**：
+「批准这份草稿，我会丢掉什么？」
+
+```json
+{
+  "name": "mas_draft_compare",
+  "arguments": {
+    "draft_id": "D-1a2b3c4d",
+    "workspace": "<工作区>"
+  }
+}
+```
+
+回答里有三段：**基线 → 现在**（你写的改动）、**现在 → 草稿**
+（草稿要写的改动）、以及 `would_lose` ——
+**覆盖会丢掉的那几行**（你写的、草稿里没有的）。
+`would_lose` 为空就说明**覆盖不会丢掉你写的任何一行**。
+
+**这个动作不改任何东西**，是一份报告。
+
+`mas_status` 里还有 `conflicting_drafts` / `conflicting_draft_count`：
+卡在冲突上的草稿是**人还欠的一个决定** —— 票据队列是给循环问问题用的，
+不写进那里就等于**没人看见**。
+
+### 4.0.5 批错了还能退回来
+
+`mas_draft_undo` 让 agent 执行**撤回**：把一次已批准的改动收回来，
+文件**逐字节**回到草稿建立时的样子。
+
+```json
+{
+  "name": "mas_draft_undo",
+  "arguments": {
+    "draft_id": "D-1a2b3c4d",
+    "token": "<人类令牌>",
+    "workspace": "<工作区>"
+  }
+}
+```
+
+它和批准一样**需要人类令牌或一次性票据** ——
+agent 能提草稿、能问代价，但**改一个已经写进文件的决定，得是人干的**。
+
+它也和批准一样**先问代价**：文件在**批准之后**又被人改过的话，
+撤销**被拒**，回答里会带 `would_lose` —— **撤回会丢掉的那几行**：
+
+```json
+{
+  "error": "undo_conflict",
+  "approved_sha256": "cdf843f6332b...",
+  "current_sha256": "e7a872fcc345...",
+  "would_lose": ["human-after-approval"],
+  "would_lose_count": 1
+}
+```
+
+确认要连这些改动一起退掉，就加 `"force": true`。
+
+撤销之后**草稿还在**（状态 `undone`），同一个改动**还能再批准一次**。
+
+`mas_status` 里还有 `undone_drafts` / `undone_draft_count`：
+一个被撤销的改动**不是「还没发生」**，它说明**有一次批准是错的**，
+而那份草稿还在原地等着被批准第二次。
 
 ### 4.1 `mas_run` 示例
 

@@ -64,6 +64,38 @@ DRAFT_PENDING = "pending"
 DRAFT_APPROVED = "approved"
 DRAFT_REJECTED = "rejected"
 
+#: The state of a draft whose change was written back and then taken
+#: back again. The draft is not dead - it can be approved a second
+#: time - but the *undo* is the newest fact about it.
+DRAFT_UNDONE = "undone"
+
+
+class DraftUndoConflict(ValueError):
+    """The file moved *after* the approval, so the undo would cost.
+
+    An undo is meant to repair a bad approval. If the file was edited
+    after that approval, undoing would throw the newer work away -
+    the same loss the undo exists to prevent, just moved. The
+    exception carries the facts so the human can see what would be
+    lost before deciding.
+    """
+
+    def __init__(self, plan: Dict[str, Any], draft: Dict[str, Any]) -> None:
+        self.plan = dict(plan or {})
+        self.draft = dict(draft or {})
+        self.draft_id = str(self.draft.get("id") or "")
+        self.path = str(self.draft.get("path") or "")
+        super().__init__(
+            "the file %s changed after the draft was approved "
+            "(approved %s, found %s) - undoing now would throw the "
+            "newer work away; undo with force to do it anyway"
+            % (
+                self.path,
+                str(self.plan.get("approved_sha256") or "")[:12],
+                str(self.plan.get("current_sha256") or "")[:12],
+            )
+        )
+
 
 class DraftConflict(ValueError):
     """The file moved under the draft while the draft was waiting.
@@ -139,6 +171,40 @@ def _decode(data: bytes) -> str:
         return data.decode("utf-8", errors="replace")
 
 
+#: The digest basis of a draft made now: the hash of the file's bytes.
+DIGEST_BASIS_BYTES = "bytes"
+
+#: The digest basis of a draft made before v0.7.76: the hash of the
+#: decoded text. A file that is not valid UTF-8 has a different text
+#: hash and a different byte hash, so the two bases cannot be mixed -
+#: comparing a text hash against a byte hash would call every binary
+#: file a conflict, forever.
+DIGEST_BASIS_TEXT = "text"
+
+
+def _digest_bytes(data: bytes) -> str:
+    """The hash of some bytes."""
+    return hashlib.sha256(data).hexdigest()
+
+
+def _digest_text(data: bytes) -> str:
+    """The hash of the decoded text of some bytes."""
+    return short_sha(_decode(data), 64)
+
+
+def _is_text(data: bytes) -> bool:
+    """Whether some bytes are readable as UTF-8.
+
+    A binary file cannot be shown as a diff, so the comparison says so
+    instead of printing mojibake and calling it a difference.
+    """
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
 def stage_draft(
     workspace: Any,
     relative_path: str,
@@ -180,8 +246,13 @@ def stage_draft(
         "source": str(source or ""),
         "created_at": now_iso(),
         "resolved_at": None,
-        "before_sha256": short_sha(_decode(before), 64),
-        "after_sha256": short_sha(_decode(data), 64),
+        # The hash is taken over the *bytes*, and the basis is recorded
+        # next to it. A draft that records only a number cannot say
+        # how that number was made, and a comparison across two bases
+        # is not a comparison at all - it is a false alarm.
+        "before_sha256": _digest_bytes(before),
+        "after_sha256": _digest_bytes(data),
+        "digest_basis": DIGEST_BASIS_BYTES,
         "before_bytes": len(before),
         "after_bytes": len(data),
         "changed": before != data,
@@ -195,6 +266,11 @@ def stage_draft(
     # a change, not the change. Approving the draft has to write the
     # *bytes* the editor produced, so they are stored as well.
     (drafts_dir(base) / ("%s.data" % draft_id)).write_bytes(data)
+    # The baseline is kept as well. A draft that remembers only *that*
+    # the file was different cannot say *how* it was different - and
+    # "how" is the whole question when somebody is about to overwrite
+    # newer work with --force.
+    (drafts_dir(base) / ("%s.base" % draft_id)).write_bytes(before)
     return payload
 
 
@@ -266,13 +342,38 @@ def draft_conflict(workspace: Any, draft: Dict[str, Any]) -> Dict[str, Any]:
     if not absolute:
         return {"conflict": False, "reason": "no_file"}
     expected = str(draft.get("before_sha256") or "")
-    current = file_digest(absolute)
     if not expected:
         # An old draft without a recorded hash: nothing to compare
         # against, so nothing to claim about a conflict.
         return {"conflict": False, "reason": "no_recorded_hash"}
+    current = file_digest(absolute)
     if current == expected:
         return {"conflict": False, "reason": "unchanged"}
+    # A draft made before v0.7.76 recorded the hash of the *decoded
+    # text*. Its number cannot be compared with a byte hash - for a
+    # file that is valid UTF-8 the two happen to differ anyway (the
+    # text hash is the hash of the decoded string, the byte hash the
+    # hash of the raw bytes; for a file with a BOM or with a newline
+    # the platform rewrote, they are different numbers for the same
+    # file). Such a draft is compared the only honest way there is:
+    # by reading the baseline it was made against, if it kept one.
+    basis = str(draft.get("digest_basis") or "")
+    if basis != DIGEST_BASIS_BYTES:
+        baseline = _draft_baseline_bytes(workspace, draft)
+        if baseline is None:
+            # The draft is old, has no basis, and kept no baseline.
+            # Nothing can be said about the file with confidence, so
+            # nothing is claimed: a false alarm is worse than no
+            # alarm, because it teaches the human to ignore the real
+            # ones.
+            return {
+                "conflict": False,
+                "reason": "unknown_basis",
+                "expected_sha256": expected,
+                "current_sha256": current,
+            }
+        if _digest_bytes(baseline) == current:
+            return {"conflict": False, "reason": "unchanged"}
     return {
         "conflict": True,
         "reason": "file_changed",
@@ -280,6 +381,125 @@ def draft_conflict(workspace: Any, draft: Dict[str, Any]) -> Dict[str, Any]:
         "expected_sha256": expected,
         "current_sha256": current,
     }
+
+
+def _draft_data_path(workspace: Any, draft_id: str, suffix: str) -> pathlib.Path:
+    """The path of a side file that belongs to a draft."""
+    return drafts_dir(workspace) / ("%s%s" % (_safe_id(draft_id), suffix))
+
+
+def _draft_baseline_bytes(workspace: Any, draft: Dict[str, Any]) -> Optional[bytes]:
+    """The bytes the target held when the draft was made.
+
+    ``None`` when the draft did not keep them - which is the case for
+    every draft made before v0.7.76.
+    """
+    draft_id = str(draft.get("id") or "")
+    if not draft_id:
+        return None
+    path = _draft_data_path(workspace, draft_id, ".base")
+    if not path.exists():
+        return None
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
+def draft_compare(workspace: Any, draft: Dict[str, Any]) -> Dict[str, Any]:
+    """The three versions of one file, side by side.
+
+    A conflict says "the file moved". That is a fact, but it does not
+    tell the human *what* moved, and "what" is the only thing that
+    makes a decision possible. This compares three versions:
+
+    * the **baseline** - what the file held when the draft was made;
+    * the **current** file - what it holds now;
+    * the **draft** - what the draft proposes to write.
+
+    The interesting part is not the two diffs but the *overlap*: the
+    lines the human changed themselves, and which the draft would
+    therefore throw away. That set is what ``would_lose`` names.
+
+    Nothing is written and nothing is decided here. The comparison is
+    a report, so it can be asked for as often as one likes.
+    """
+    absolute = str(draft.get("absolute") or "")
+    relative = str(draft.get("path") or "")
+    draft_id = str(draft.get("id") or "")
+    proposed = _draft_bytes(workspace, draft_id)
+    baseline = _draft_baseline_bytes(workspace, draft)
+
+    current: Optional[bytes] = None
+    if absolute:
+        target = pathlib.Path(absolute)
+        try:
+            if target.exists() and target.is_file():
+                current = target.read_bytes()
+        except OSError:
+            current = None
+
+    readable = baseline is not None and _is_text(baseline)
+    if readable and current is not None and _is_text(current):
+        base_text = _decode(baseline)
+        current_text = _decode(current)
+        draft_text = _decode(proposed)
+        baseline_to_current = _diff_lines(base_text, current_text, relative)
+        current_to_draft = _diff_lines(current_text, draft_text, relative)
+        lost = _lost_lines(base_text, current_text, draft_text)
+    else:
+        base_text = ""
+        current_text = ""
+        draft_text = ""
+        baseline_to_current = []
+        current_to_draft = []
+        lost = []
+
+    clash = draft_conflict(workspace, draft)
+    return {
+        "draft_id": draft_id,
+        "path": relative,
+        "conflict": bool(clash.get("conflict")),
+        "reason": clash.get("reason"),
+        "expected_sha256": clash.get("expected_sha256"),
+        "current_sha256": clash.get("current_sha256"),
+        "baseline_sha256": _digest_bytes(baseline) if baseline is not None else "",
+        "draft_sha256": _digest_bytes(proposed),
+        "baseline_bytes": len(baseline) if baseline is not None else 0,
+        "current_bytes": len(current) if current is not None else 0,
+        "draft_bytes": len(proposed),
+        "file_missing": current is None,
+        "readable": bool(readable and current is not None and _is_text(current)),
+        "baseline_to_current": baseline_to_current,
+        "current_to_draft": current_to_draft,
+        "would_lose": lost,
+        "would_lose_count": len(lost),
+        "baseline_available": baseline is not None,
+    }
+
+
+def _lost_lines(before: str, current: str, draft: str) -> List[str]:
+    """The lines the human changed and the draft would take back.
+
+    A line counts as lost when it is in the *current* file but not in
+    the *draft*, and it is not in the baseline either - so it is
+    something the human added or rewrote after the draft was made.
+    A line the draft also carries is not lost, whatever else it did to
+    it.
+    """
+    base_lines = set(before.splitlines())
+    draft_lines = set(draft.splitlines())
+    lost: List[str] = []
+    for line in current.splitlines():
+        if not line.strip():
+            continue
+        if line in draft_lines:
+            continue
+        if line in base_lines:
+            continue
+        if line not in lost:
+            lost.append(line)
+    return lost
 
 
 def approve_draft(
@@ -303,7 +523,7 @@ def approve_draft(
     draft = get_draft(workspace, draft_id)
     if draft is None:
         raise KeyError("unknown draft: %s" % draft_id)
-    if draft.get("state") != DRAFT_PENDING:
+    if draft.get("state") not in (DRAFT_PENDING, DRAFT_UNDONE):
         raise ValueError(
             "draft %s is %s, not pending" % (draft.get("id"), draft.get("state"))
         )
@@ -351,6 +571,162 @@ def reject_draft(
     draft["resolved_at"] = now_iso()
     draft["note"] = str(note or "")
     _draft_file(workspace, str(draft.get("id"))).write_text(
+        json.dumps(draft, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    return draft
+
+
+def draft_undo_plan(workspace: Any, draft: Dict[str, Any]) -> Dict[str, Any]:
+    """What an undo would do - and what it would cost.
+
+    An undo puts the file back the way it was before the draft was
+    made. That is only safe while the file still holds the draft's
+    own bytes: if somebody edited the file *after* the approval, the
+    undo would throw *their* work away, and that is a different - and
+    worse - loss than the one the undo is meant to repair.
+
+    So the plan says three things before anything is written:
+
+    * ``ready``      - the undo can go ahead without losing anything;
+    * ``changed``    - the file moved after the approval, so the undo
+      would take those changes away and needs ``force``;
+    * ``no_baseline``- the draft kept no baseline (it was made before
+      v0.7.76), so there is nothing to go back to.
+
+    Nothing is written here. This is a report, like the comparison.
+    """
+    draft_id = str(draft.get("id") or "")
+    # The state on the disk is the truth. A caller may hold a copy of
+    # the draft from before it was approved - and an undo that used
+    # that stale copy would either refuse an undo that should work or
+    # undo a draft that was never approved at all.
+    current_draft = get_draft(workspace, draft_id) or draft
+    absolute = str(current_draft.get("absolute") or "")
+    relative = str(current_draft.get("path") or "")
+    state = str(current_draft.get("state") or "")
+
+    baseline = _draft_baseline_bytes(workspace, current_draft)
+    proposed = _draft_bytes(workspace, draft_id)
+
+    current: Optional[bytes] = None
+    if absolute:
+        target = pathlib.Path(absolute)
+        try:
+            if target.exists() and target.is_file():
+                current = target.read_bytes()
+        except OSError:
+            current = None
+
+    result: Dict[str, Any] = {
+        "draft_id": draft_id,
+        "path": relative,
+        "state": state,
+        "ready": False,
+        "reason": "",
+        "baseline_available": baseline is not None,
+        "baseline_sha256": _digest_bytes(baseline) if baseline is not None else "",
+        "current_sha256": _digest_bytes(current) if current is not None else "",
+        "approved_sha256": _digest_bytes(proposed),
+        "current_bytes": len(current) if current is not None else 0,
+        "baseline_bytes": len(baseline) if baseline is not None else 0,
+        "file_missing": current is None,
+        "would_lose": [],
+        "would_lose_count": 0,
+        "current_to_baseline": [],
+    }
+
+    if state != DRAFT_APPROVED:
+        result["reason"] = "not_approved"
+        return result
+    if baseline is None:
+        result["reason"] = "no_baseline"
+        return result
+    if current is None:
+        result["reason"] = "file_missing"
+        return result
+
+    # The file has to still hold what the approval wrote. Anything
+    # else means somebody - or another agent - worked on it since.
+    if _digest_bytes(current) != _digest_bytes(proposed):
+        result["reason"] = "file_changed"
+        if _is_text(current) and _is_text(baseline):
+            lost = _lost_lines(_decode(proposed), _decode(current), _decode(baseline))
+            result["would_lose"] = lost
+            result["would_lose_count"] = len(lost)
+            result["current_to_baseline"] = _diff_lines(
+                _decode(current), _decode(baseline), relative
+            )
+        return result
+
+    result["ready"] = True
+    result["reason"] = "ready"
+    return result
+
+
+def undo_draft(
+    workspace: Any,
+    draft_id: str,
+    note: str = "",
+    force: bool = False,
+) -> Dict[str, Any]:
+    """Take an approved change back: the file goes back to the baseline.
+
+    The draft kept the bytes the file held when it was made, so the
+    undo is not a guess - it puts back exactly what was there. The
+    draft itself is **not** thrown away: it returns to ``pending``, so
+    the same change can be approved again once the reason it was
+    undone is understood.
+
+    The undo is **conditional**, in the same spirit as the approval:
+    if the file was changed after the approval, undoing would throw
+    that newer work away, so the undo is refused unless ``force`` says
+    "I know".
+    """
+    draft = get_draft(workspace, draft_id)
+    if draft is None:
+        raise KeyError("unknown draft: %s" % draft_id)
+    base = pathlib.Path(workspace)
+    target = pathlib.Path(str(draft.get("absolute") or ""))
+    try:
+        target.resolve().relative_to(base.resolve())
+    except (ValueError, OSError) as exc:
+        raise ValueError(
+            "refusing to write outside the workspace: %s" % draft.get("path")
+        ) from exc
+
+    plan = draft_undo_plan(workspace, draft)
+    if not force:
+        if plan.get("reason") == "not_approved":
+            raise ValueError(
+                "draft %s is %s, only an approved draft can be undone"
+                % (draft.get("id"), draft.get("state"))
+            )
+        if plan.get("reason") == "no_baseline":
+            raise ValueError(
+                "draft %s kept no baseline, so there is nothing to undo to"
+                % draft.get("id")
+            )
+        if plan.get("reason") == "file_missing":
+            raise ValueError(
+                "the file %s is gone, so there is nothing to undo"
+                % draft.get("path")
+            )
+        if plan.get("reason") == "file_changed":
+            raise DraftUndoConflict(plan, draft)
+
+    baseline = _draft_baseline_bytes(workspace, draft)
+    if baseline is None:
+        raise ValueError(
+            "draft %s kept no baseline, so there is nothing to undo to"
+            % draft.get("id")
+        )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(baseline)
+    draft["state"] = DRAFT_UNDONE
+    draft["undone_at"] = now_iso()
+    draft["undo_note"] = str(note or "")
+    draft["resolved_at"] = None
+    _draft_file(base, str(draft.get("id"))).write_text(
         json.dumps(draft, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     return draft

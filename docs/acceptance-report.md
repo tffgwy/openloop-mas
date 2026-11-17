@@ -2385,3 +2385,95 @@ python -X utf8 tools/setup_dsh_bridge.py --profile masbridge2 --relay-port 8767 
 - npm registry **必须走代理** `http://127.0.0.1:7890`，直连必超时；
 - `dsh --profile X web` 语法错误；`headless` 是 profile 名不是子命令；
 - DSH web 宿主认证必须先 `GET /?token=` 取 `dsh-auth-*` cookie。
+
+## R. v0.7.77 — 批错了还能退回来（撤销是对称的另一半）
+
+### R.0 起因：v0.7.72 把批准变成了一扇单向门
+
+v0.7.72 让**批准**成为改动到达文件的唯一通道。这是对的，但它同时把
+「人批错了」这件事的代价推给了手工编辑文件：批准是一个**没有反向**的决定。
+
+v0.7.76 已经在草稿里存下了**基线**（`.base`），却**没有任何办法使用它**——
+存了不用，等于没存。闭环的最后一段当时是断的。
+
+本版把这一段接通。
+
+### R.1 交付物
+
+| 位置 | 内容 |
+|---|---|
+| `mas/drafts.py` | `DRAFT_UNDONE = "undone"`、`DraftUndoConflict`、`draft_undo_plan()`、`undo_draft()`；`approve_draft()` 现在同时接受 `pending` 与 `undone` |
+| `mas/cli.py` | `mas drafts undo <草稿编号>`（`--json` / `--note` / `--force`）；`--state` 新增 `undone`；列表页对 `undone` 有专门提示 |
+| `mas/mcp_server.py` | 新工具 `mas_draft_undo`（需人类令牌或一次性票据）；`mas_status` 增加 `undone_drafts` / `undone_draft_count` |
+| `mas/selftest.py` | 第 **20** 项门禁 `undo_guard`（七个观察点，判定独立实现两遍，且自证能失败） |
+| `tests/test_draft_undo_777.py` | 新增 28 个测试 |
+
+### R.2 行为契约（本轮实际实现，非事后描述）
+
+- **逐字节退回**：撤销把当初存下来的基线**原样写回**——不是近似、不是反向 patch。
+- **草稿不消失**：撤销后草稿状态变 `undone`，**还能再批准一次**。
+  批准→撤销→批准是**合法路径**，不是异常。
+- **未批准不可撤**：`draft_undo_plan()` 返回 `reason = "not_approved"`。
+- **撤销先问代价**：文件在**批准之后**又被人改过 → 抛 `DraftUndoConflict`，
+  并**点名会丢掉哪几行**（复用 `_lost_lines()`：当前有、批准版没有、基线也没有的行）。
+  `force=True` 可强退。
+- **状态从磁盘读**：`draft_undo_plan()` 内部用 `get_draft()` 取草稿，
+  不信任调用方可能过期的副本。
+- **不越界**：写到工作区之外的路径一律拒绝。
+- **对称性**：批准挡住「覆盖掉别人的更新」，撤销挡住「抹掉批准之后的新工作」。
+
+### R.3 `draft_undo_plan()` 返回结构
+
+`ready` / `reason` / `baseline_available` / `baseline_sha256` / `current_sha256` /
+`approved_sha256` / `would_lose` / `would_lose_count` / `current_to_baseline`
+
+reason 取值：`ready` / `not_approved` / `no_baseline` / `file_missing` / `file_changed`
+
+**报告阶段不改任何东西**，与 `draft_compare()` 同一性质。
+
+### R.4 本轮实测证据（本轮命令输出，非历史转述）
+
+| 检查 | 命令 | 结果 |
+|---|---|---|
+| 全量测试 | `python -X utf8 -m pytest tests -q` | **1300 passed, 4 skipped, 95 subtests passed**（383.68s） |
+| 新旧草稿测试 | `pytest tests/test_draft_undo_777.py tests/test_draft_compare_776.py -q` | **54 passed**（9.49s） |
+| 自检门禁 | `python -X utf8 -m mas.cli selftest` | **20 项全绿**，第 20 项「批错了还能退回来」**打了 200 次** |
+| 静态检查 | `python -X utf8 -m ruff check mas tests tools` | **All checks passed!** |
+
+上一版为 1272 passed；本版新增 28 个测试（`tests/test_draft_undo_777.py`）。
+
+### R.5 门禁 `undo_guard` 的七个观察点
+
+1. 撤销把文件**逐字节**退回改动前；
+2. 草稿撤销后**仍在**，**可以再次批准**；
+3. 没批准的草稿**不能撤**；
+4. 批准后文件又变过 → **拒绝撤销**；
+5. 拒绝时**说清代价**（点名会丢的行）；
+6. **命令行**能撤；
+7. **MCP**能撤。
+
+判定用 `_undo_verdicts()` 与 `_undo_verdicts_independent()` **独立实现两遍**，必须一致；
+并**故意让撤销写错字节**，门禁必须报红（自证能失败）。
+
+### R.6 端到端手工验证（MCP 与 CLI 各一遍）
+
+MCP（`work/_e2e_777.py`，脚本已清理）：
+
+- 提草稿 → 无令牌批准**被拒** → 有令牌批准成功
+- → 批准后改文件 → 撤销**被拒**且点名「人后来加的一行」
+- → 强制撤销**逐字节回退** → 再批准成功
+
+MCP 状态可见性（`work/_e2e2_777.py`）→ `undone_draft_count: 1`
+
+CLI（PowerShell）→ 列表 / 批准 / 撤销 / 列表显示 `undone` 全部正确。
+
+### R.7 边界说明（v0.7.77）
+
+- 撤销**只退回文件内容**，不撤销别的副作用（例如命令历史、已发出的外部请求）；
+- `force=True` 会**真的丢掉**批准之后的新工作，只在用户明确知道代价时使用；
+- 撤销本身也**需要人类令牌或一次性票据**：agent 能提草稿、能问代价，
+  但**改一个已经写进文件的决定，得是人干的**；
+- `mas doctor` 的 3 项注意（skills_sync / mcp_codex / mcp_claude）是**本机预装状态**
+  （未跑 `mas install`），**不是代码缺陷**；
+- PyPI 仍未发布；`tffgwy/openloop-mas` 当前 stars=0 / forks=0；
+- 「四个小 Skills 400+ 星」说法**不可核实**，不要复述为事实（OpenMausBot 实测 22,078 stars）。

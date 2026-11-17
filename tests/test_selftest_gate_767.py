@@ -30,7 +30,7 @@ class HandbackClosesGateTest(unittest.TestCase):
 
         names = {getattr(c, "CHECK_NAME", c.__name__) for c in CHECKS}
         self.assertIn("handback_closes", names)
-        self.assertEqual(len(CHECKS), 18)
+        self.assertEqual(len(CHECKS), 20)
 
     def test_the_check_passes_offline(self):
         from mas.selftest import check_a_handback_closes_on_human_work
@@ -68,7 +68,7 @@ class HandbackClosesGateTest(unittest.TestCase):
 
         result = run_selftest(iterations=2)
         self.assertTrue(result["ok"], result)
-        self.assertEqual(len(result["checks"]), 18)
+        self.assertEqual(len(result["checks"]), 20)
 
 
 class CliTest(unittest.TestCase):
@@ -85,7 +85,7 @@ class CliTest(unittest.TestCase):
         proc = self._run("selftest", "--iterations", "1", "--json")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         payload = json.loads(proc.stdout)
-        self.assertEqual(len(payload["checks"]), 18)
+        self.assertEqual(len(payload["checks"]), 20)
         self.assertTrue(payload["ok"])
 
     def test_it_runs_without_a_model_endpoint(self):

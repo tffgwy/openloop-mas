@@ -275,6 +275,49 @@ TOOLS: List[Dict[str, Any]] = [
         },
     ),
     _tool(
+        "mas_draft_compare",
+        "Show the three versions of one file side by side: the baseline "
+        "the draft was made against, the file as it is on disk now, and "
+        "what the draft proposes. It also names the lines the draft "
+        "would take away from the human - the ones that would be lost "
+        "by a forced approval. It changes nothing.",
+        {
+            "type": "object",
+            "properties": {
+                "draft_id": {"type": "string", "description": "草稿编号"},
+                "workspace": {"type": "string", "description": "工作区路径"},
+            },
+            "required": ["draft_id"],
+        },
+    ),
+    _tool(
+        "mas_draft_undo",
+        "Take an approved change back: the file goes back to the bytes "
+        "it held before the draft was made. The draft itself stays, so "
+        "the same change can be approved again. It needs the human "
+        "token or a one-shot ticket, and it refuses to run when the "
+        "file was changed after the approval unless force is set - "
+        "because undoing then would throw the newer work away.",
+        {
+            "type": "object",
+            "properties": {
+                "draft_id": {"type": "string", "description": "草稿编号"},
+                "token": {"type": "string", "description": "人类令牌：mas drafts token"},
+                "ticket": {
+                    "type": "string",
+                    "description": "一次性票据：mas drafts ticket <草稿编号> 签发",
+                },
+                "note": {"type": "string", "description": "给人看的备注"},
+                "workspace": {"type": "string", "description": "工作区路径"},
+                "force": {
+                    "type": "boolean",
+                    "description": "明知文件在批准之后被改过，仍要撤销",
+                },
+            },
+            "required": ["draft_id"],
+        },
+    ),
+    _tool(
         "mas_files",
         "Index a folder: every file it holds, named by its own header, "
         "with the facts the file carries (pages of a PDF, family of a "
@@ -343,6 +386,20 @@ def _all_workspace_roots(config: Dict[str, Any]) -> List[pathlib.Path]:
     return [child for child in sorted(root.iterdir()) if child.is_dir()]
 
 
+def _workspace_roots(config: Dict[str, Any], workspace: Any) -> List[pathlib.Path]:
+    """The workspaces a caller asked about.
+
+    A named workspace wins - the caller said which folder it means.
+    Otherwise every run workspace of this machine is scanned, because a
+    draft stuck on a conflict is a decision the human still owes and it
+    must not stay invisible just because nobody named the folder.
+    """
+    named = str(workspace or "").strip()
+    if named:
+        return [pathlib.Path(named).expanduser()]
+    return _all_workspace_roots(config)
+
+
 def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     config = load_config()
     arguments = arguments or {}
@@ -371,7 +428,7 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     if name == "mas_status":
         engine = _engine(config)
         tickets = engine.tickets.list()
-        return {
+        payload = {
             "config": {
                 "provider": config.get("provider"),
                 "model": config.get("model"),
@@ -381,6 +438,54 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             "ledger": engine.ledger.summary(),
             "open_tickets": [t.get("id") for t in tickets if t.get("state") == "waiting_human"],
         }
+        # A draft that sits on a conflict is a decision the human still
+        # owes. It is invisible from the tickets - those are for the
+        # *loop* to ask a question - so an agent reading the status
+        # would never learn that the work is stuck on it.
+        try:
+            from mas.drafts import draft_conflict, drafts_in
+
+            roots = _workspace_roots(config, arguments.get("workspace"))
+            stuck: List[Dict[str, Any]] = []
+            for root in roots:
+                for draft in drafts_in(root, "pending"):
+                    clash = draft_conflict(root, draft)
+                    if clash.get("conflict"):
+                        stuck.append(
+                            {
+                                "draft_id": draft.get("id"),
+                                "path": clash.get("path") or draft.get("path"),
+                                "expected_sha256": clash.get("expected_sha256"),
+                                "current_sha256": clash.get("current_sha256"),
+                            }
+                        )
+            payload["conflicting_drafts"] = stuck
+            payload["conflicting_draft_count"] = len(stuck)
+
+            # The drafts that were approved and then taken back. They
+            # are not "open" - the human already dealt with them - but
+            # they are also not nothing: an undone change says the
+            # approval was wrong, and the draft is still there, ready
+            # to be approved again once the reason is understood.
+            undone_rows: List[Dict[str, Any]] = []
+            for root in roots:
+                for draft in drafts_in(root, "undone"):
+                    undone_rows.append(
+                        {
+                            "draft_id": draft.get("id"),
+                            "path": draft.get("path"),
+                            "undone_at": draft.get("undone_at"),
+                            "note": draft.get("undo_note") or "",
+                        }
+                    )
+            payload["undone_drafts"] = undone_rows
+            payload["undone_draft_count"] = len(undone_rows)
+        except Exception:  # noqa: BLE001 - status must never crash
+            payload["conflicting_drafts"] = []
+            payload["conflicting_draft_count"] = 0
+            payload["undone_drafts"] = []
+            payload["undone_draft_count"] = 0
+        return payload
 
     if name == "mas_ledger":
         engine = _engine(config)
@@ -634,6 +739,147 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         except ValueError as exc:
             return {"error": "draft_refused", "message": str(exc)}
         return {"draft": draft, "message": message}
+
+    if name == "mas_draft_compare":
+        from mas.drafts import draft_compare, find_draft
+
+        base = _workspace_base(config, arguments.get("workspace"))
+        draft_id = str(arguments.get("draft_id") or "").strip()
+        if not draft_id:
+            return {"error": "draft_id_required", "message": "a comparison needs a draft id"}
+        found = find_draft(base, draft_id)
+        if found is None:
+            return {"error": "draft_not_found", "message": "draft not found: %s" % draft_id}
+        owner = found[0]
+        draft = found[1]
+        try:
+            comparison = draft_compare(owner, draft)
+        except Exception as exc:  # noqa: BLE001 - a report must not crash
+            return {
+                "error": "compare_failed",
+                "message": "%s: %s" % (type(exc).__name__, exc),
+            }
+        comparison["workspace"] = str(base)
+        return {"comparison": comparison}
+
+    if name == "mas_draft_undo":
+        from mas.drafts import (
+            DraftUndoConflict,
+            draft_undo_plan,
+            find_draft,
+            peek_ticket,
+            redeem_ticket,
+            undo_draft,
+            verify_human_token,
+        )
+
+        draft_id = str(arguments.get("draft_id") or "").strip()
+        if not draft_id:
+            return {"error": "draft_id_required", "message": "an undo needs a draft id"}
+        base = _workspace_base(config, arguments.get("workspace"))
+        force = bool(arguments.get("force"))
+        found = find_draft(base, draft_id)
+        if found is None:
+            return {"error": "draft_not_found", "message": "draft not found: %s" % draft_id}
+        owner = found[0]
+        draft = found[1]
+
+        # The plan comes first: it says what the undo would do and
+        # what it would cost, and it changes nothing.
+        plan = draft_undo_plan(owner, draft)
+        if not force:
+            reason = str(plan.get("reason") or "")
+            if reason == "not_approved":
+                return {
+                    "error": "draft_not_approved",
+                    "message": "draft %s is %s, only an approved draft can be undone"
+                    % (draft_id, draft.get("state")),
+                }
+            if reason == "no_baseline":
+                return {
+                    "error": "no_baseline",
+                    "message": (
+                        "draft %s kept no baseline, so there is nothing to undo to"
+                        % draft_id
+                    ),
+                }
+            if reason == "file_missing":
+                return {
+                    "error": "file_missing",
+                    "message": "the file %s is gone" % draft.get("path"),
+                }
+            if reason == "file_changed":
+                lost = list(plan.get("would_lose") or [])
+                return {
+                    "error": "undo_conflict",
+                    "message": (
+                        "the file changed after the draft was approved "
+                        "(approved %s, found %s); undoing now would throw the "
+                        "newer work away - undo with force to do it anyway"
+                        % (
+                            str(plan.get("approved_sha256") or "")[:12],
+                            str(plan.get("current_sha256") or "")[:12],
+                        )
+                    ),
+                    "path": draft.get("path"),
+                    "approved_sha256": plan.get("approved_sha256"),
+                    "current_sha256": plan.get("current_sha256"),
+                    "would_lose": lost,
+                    "would_lose_count": len(lost),
+                    "draft_id": draft_id,
+                    "state": draft.get("state"),
+                }
+
+        ticket = str(arguments.get("ticket") or "").strip()
+        if ticket:
+            peeked = peek_ticket(_state_dir(config), draft_id, ticket, action="approve")
+            if not peeked.get("ok"):
+                return {
+                    "error": "ticket_refused",
+                    "reason": peeked.get("reason"),
+                    "message": "the ticket does not open this door: %s"
+                    % peeked.get("reason"),
+                }
+        elif not verify_human_token(_state_dir(config), arguments.get("token")):
+            return {
+                "error": "human_token_required",
+                "message": (
+                    "undoing a draft needs the human token or a one-shot ticket; "
+                    "run `mas drafts token` or `mas drafts ticket <id>` "
+                    "on the machine that owns the files"
+                ),
+            }
+
+        if ticket:
+            redeemed = redeem_ticket(_state_dir(config), draft_id, ticket, action="approve")
+            if not redeemed.get("ok"):
+                return {
+                    "error": "ticket_refused",
+                    "reason": redeemed.get("reason"),
+                    "message": "the ticket does not open this door: %s"
+                    % redeemed.get("reason"),
+                }
+        note = str(arguments.get("note") or "")
+        try:
+            undone = undo_draft(owner, draft_id, note, force=force)
+        except KeyError:
+            return {"error": "draft_not_found", "message": "draft not found: %s" % draft_id}
+        except DraftUndoConflict as exc:
+            return {
+                "error": "undo_conflict",
+                "message": str(exc),
+                "path": draft.get("path"),
+                "approved_sha256": plan.get("approved_sha256"),
+                "current_sha256": plan.get("current_sha256"),
+                "draft_id": draft_id,
+            }
+        except ValueError as exc:
+            return {"error": "undo_refused", "message": str(exc)}
+        return {
+            "draft": undone,
+            "plan": plan,
+            "message": "undone: %s" % undone.get("path"),
+        }
 
     if name == "mas_files":
         from mas.resources import describe_folder, format_summary

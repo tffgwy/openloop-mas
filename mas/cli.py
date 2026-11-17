@@ -1228,6 +1228,11 @@ def cmd_drafts(args: argparse.Namespace) -> int:
             )
             if row.get("reason"):
                 print(f"        理由：{row.get('reason')}")
+            if row.get("state") == "undone":
+                print(
+                    "        （已撤销：文件已退回改动前的样子，"
+                    "这个草稿还在，可以再次批准）"
+                )
             clash = _draft_clash(row)
             if clash:
                 print(
@@ -1324,6 +1329,212 @@ def cmd_drafts(args: argparse.Namespace) -> int:
         print()
         for line in draft.get("diff") or []:
             print(line)
+        return 0
+
+    if action == "compare":
+        # "What would I lose?" - asked before the --force. A conflict
+        # says the file moved; this says *what* the human wrote there
+        # and the draft would take back.
+        found = _find_draft(roots, draft_id)
+        if found is None:
+            message = f"找不到这个草稿：{draft_id}"
+            if getattr(args, "json", False):
+                _print({"error": "draft_not_found", "message": message}, True)
+            else:
+                print(message, file=sys.stderr)
+            return 2
+        owner = found[0]
+        draft = found[1]
+        from mas.drafts import draft_compare
+
+        try:
+            comparison = draft_compare(owner, draft)
+        except Exception as exc:  # noqa: BLE001 - a report must not crash
+            message = f"没法比较这个草稿：{type(exc).__name__}: {exc}"
+            if getattr(args, "json", False):
+                _print({"error": "compare_failed", "message": message}, True)
+            else:
+                print(message, file=sys.stderr)
+            return 2
+        if getattr(args, "json", False):
+            _print({"workspace": str(base), "comparison": comparison}, True)
+            return 0
+        print(f"草稿 {comparison.get('draft_id')}  {comparison.get('path')}")
+        if comparison.get("conflict"):
+            print(
+                "⚠ 文件在草稿等待期间被改过：期望 %s，实际 %s。"
+                % (
+                    str(comparison.get("expected_sha256") or "")[:12],
+                    str(comparison.get("current_sha256") or "")[:12],
+                )
+            )
+        else:
+            print("文件自草稿建立以来没有被改过。")
+        if not comparison.get("readable"):
+            if comparison.get("file_missing"):
+                print("文件现在不在磁盘上了。")
+            elif not comparison.get("baseline_available"):
+                print("这份草稿没有留下基线（它是旧版本留下的），比不出逐行差异。")
+            else:
+                print("这个文件不是 UTF-8 文本，比不出逐行差异，只能比哈希。")
+            print(
+                "基线 %s / 当前 %s / 草稿 %s"
+                % (
+                    str(comparison.get("baseline_sha256") or "")[:12],
+                    str(comparison.get("current_sha256") or "")[:12],
+                    str(comparison.get("draft_sha256") or "")[:12],
+                )
+            )
+            return 0
+        lost = list(comparison.get("would_lose") or [])
+        if lost:
+            print()
+            print(f"覆盖会丢掉这 {len(lost)} 行（你写的，草稿里没有）：")
+            for line in lost:
+                print("  - %s" % line)
+        else:
+            print()
+            print("覆盖不会丢掉任何一行：草稿涵盖了你写的全部内容。")
+        print()
+        print("--- 你写的改动（基线 → 当前） ---")
+        for line in comparison.get("baseline_to_current") or []:
+            print(line)
+        print()
+        print("--- 草稿要写的改动（当前 → 草稿） ---")
+        for line in comparison.get("current_to_draft") or []:
+            print(line)
+        return 0
+
+    if action == "undo":
+        # "Take it back." The draft kept the bytes the file held before
+        # the change, so the undo puts the file back exactly - and the
+        # draft stays, so the same change can be approved again once
+        # the reason it was undone is understood.
+        found = _find_draft(roots, draft_id)
+        if found is None:
+            message = f"找不到这个草稿：{draft_id}"
+            if getattr(args, "json", False):
+                _print({"error": "draft_not_found", "message": message}, True)
+            else:
+                print(message, file=sys.stderr)
+            return 2
+        owner = found[0]
+        owner_draft = found[1]
+        from mas.drafts import DraftUndoConflict, draft_undo_plan, undo_draft
+
+        plan = draft_undo_plan(owner, owner_draft)
+        if not getattr(args, "force", False):
+            reason = str(plan.get("reason") or "")
+            if reason == "not_approved":
+                message = (
+                    f"这个草稿还没批准过（当前状态 {owner_draft.get('state')}），"
+                    "没什么可撤销的。"
+                )
+                if getattr(args, "json", False):
+                    _print({"error": "draft_not_approved", "message": message}, True)
+                else:
+                    print(message, file=sys.stderr)
+                return 2
+            if reason == "no_baseline":
+                message = (
+                    "这个草稿没有留下改动前的基线（v0.7.76 之前建立的），"
+                    "没有可以退回的内容。"
+                )
+                if getattr(args, "json", False):
+                    _print({"error": "no_baseline", "message": message}, True)
+                else:
+                    print(message, file=sys.stderr)
+                return 2
+            if reason == "file_missing":
+                message = f"文件已经不在磁盘上了：{owner_draft.get('path')}"
+                if getattr(args, "json", False):
+                    _print({"error": "file_missing", "message": message}, True)
+                else:
+                    print(message, file=sys.stderr)
+                return 2
+            if reason == "file_changed":
+                lost = list(plan.get("would_lose") or [])
+                message = (
+                    "文件在批准之后又被改过，撤销被拒："
+                    "批准时 %s，现在 %s。文件保持现在的内容不变；"
+                    "确认要连这些改动一起退掉就用 --force。"
+                    % (
+                        str(plan.get("approved_sha256") or "")[:12],
+                        str(plan.get("current_sha256") or "")[:12],
+                    )
+                )
+                if getattr(args, "json", False):
+                    _print(
+                        {
+                            "error": "undo_conflict",
+                            "message": message,
+                            "path": owner_draft.get("path"),
+                            "approved_sha256": plan.get("approved_sha256"),
+                            "current_sha256": plan.get("current_sha256"),
+                            "would_lose": lost,
+                            "would_lose_count": len(lost),
+                            "draft_id": draft_id,
+                            "state": owner_draft.get("state"),
+                        },
+                        True,
+                    )
+                else:
+                    # The refusal and what it would cost belong
+                    # together, and both go to stderr: this is an
+                    # error report, not a result.
+                    print(message, file=sys.stderr)
+                    if lost:
+                        print(
+                            f"撤销会丢掉这 {len(lost)} 行（批准之后才写进去的）：",
+                            file=sys.stderr,
+                        )
+                        for line in lost:
+                            print("  - %s" % line, file=sys.stderr)
+                return 2
+        try:
+            draft = undo_draft(
+                owner,
+                draft_id,
+                str(getattr(args, "note", "") or ""),
+                force=bool(getattr(args, "force", False)),
+            )
+        except DraftUndoConflict as exc:
+            clash = dict(getattr(exc, "plan", {}) or {})
+            message = str(exc)
+            if getattr(args, "json", False):
+                _print(
+                    {
+                        "error": "undo_conflict",
+                        "message": message,
+                        "path": clash.get("path") or owner_draft.get("path"),
+                        "approved_sha256": clash.get("approved_sha256"),
+                        "current_sha256": clash.get("current_sha256"),
+                        "draft_id": draft_id,
+                    },
+                    True,
+                )
+            else:
+                print(message, file=sys.stderr)
+            return 2
+        except KeyError:
+            message = f"找不到这个草稿：{draft_id}"
+            if getattr(args, "json", False):
+                _print({"error": "draft_not_found", "message": message}, True)
+            else:
+                print(message, file=sys.stderr)
+            return 2
+        except ValueError as exc:
+            message = str(exc)
+            if getattr(args, "json", False):
+                _print({"error": "undo_refused", "message": message}, True)
+            else:
+                print(message, file=sys.stderr)
+            return 2
+        message = f"已撤销：{draft.get('path')}（回到改动前的样子，草稿还在，可以再次批准）"
+        if getattr(args, "json", False):
+            _print({"draft": draft, "plan": plan, "message": message}, True)
+            return 0
+        print(message)
         return 0
 
     if action in ("approve", "reject"):
@@ -1999,7 +2210,17 @@ def build_parser() -> argparse.ArgumentParser:
         "action",
         nargs="?",
         default="list",
-        choices=["list", "show", "approve", "reject", "token", "ticket", "conflict"],
+        choices=[
+            "list",
+            "show",
+            "compare",
+            "undo",
+            "approve",
+            "reject",
+            "token",
+            "ticket",
+            "conflict",
+        ],
         help="要做的动作（默认 list）",
     )
     drafts.add_argument("draft_id", nargs="?", default="", help="草稿编号")
@@ -2010,14 +2231,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     drafts.add_argument(
         "--state",
-        choices=["pending", "approved", "rejected"],
+        choices=["pending", "approved", "rejected", "undone"],
         help="只看某种状态的草稿",
     )
     drafts.add_argument("--note", default="", help="人工说明")
     drafts.add_argument(
         "--force",
         action="store_true",
-        help="明知文件在草稿等待期间被改过，仍要写回",
+        help="明知文件在草稿等待期间（或批准之后）被改过，仍要写回或撤销",
     )
     drafts.add_argument(
         "--token",
