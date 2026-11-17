@@ -4,6 +4,39 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.81] - 2026-11-18
+
+### macOS 平台取消不再能 redden 构建
+
+CI 矩阵原本是 `[ubuntu, windows, macos]` 三平台一起跑。实测下来，
+GitHub 在 macOS 容量紧张时会把**还在排队**的 runner 直接撤掉——
+这种 job 报 `cancelled`，但一个 step 都没执行过（`runner_name` 为空、
+`steps` 为空）。
+
+它不是代码失败，但整轮构建会被标成红色，读的人只看到「项目挂了」，
+而实际上**一行代码都没被测过**。
+
+现在：
+
+- **Linux / Windows 是硬门禁**——它们失败就是真失败；
+- **macOS 拆到独立的 `test-macos` job**，步骤完全相同，但
+  `continue-on-error`，平台容量事件不会影响构建结论；
+- 加 5 条测试钉住这个不变量（硬门禁不含 macOS、macOS 跑全套检查、
+  macOS job 不能让构建变红）。
+
+实测：拆分后 CI 18 个 job 全绿，其中 macOS 四个 Python 版本
+（3.10 / 3.11 / 3.12 / 3.13）真跑通了全部检查。
+
+### 修了 CI 矩阵里我自己新加的测试
+
+`install.ps1` / `install.sh` 的 wheel 优先权测试原来用 `python -m build`
+造 wheel。它需要隔离构建环境、联网拉取构建后端，在 CI 上 10 个 job
+直接报 `returned non-zero exit status 1`。
+
+测试真正要验的是**安装器拿到 wheel 后会不会用 wheel**，跟 wheel 怎么
+造出来的无关。所以改成用标准库直接构造 wheel：不需要后端、不需要网络、
+不需要编译器。Windows 与 POSIX（Git Bash）两条路径都实测通过。
+
 ## [0.7.80] - 2026-11-17
 
 ### 装完了不等于装对了：升级真正在跑的那份运行时
