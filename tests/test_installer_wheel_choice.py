@@ -1,26 +1,25 @@
-"""The installer must install the wheel it was handed.
+# -*- coding: utf-8 -*-
+"""Rewrite the wheel-building helper so it needs no build backend.
 
-``install.ps1`` and ``install.sh`` both accept an explicit wheel (the
-release pipeline and the CI install matrix use it). The runtime is then
-also available as a source tree next to the script - the CI copies the
-scripts into a standalone directory *and* builds a wheel, but a developer
-running the script from the checkout hit the other order.
+``python -m build`` was the obvious way to make a wheel, but it drags in
+an isolated build environment, a network fetch of the build backend and
+a working compiler for some backends. On a CI matrix that means the test
+fails for reasons that have nothing to do with the installer - which is
+exactly what happened: the macOS and Linux jobs went red on
+``Command 'python -m build --wheel' returned non-zero exit status 1``.
 
-Before this was fixed, the source tree won: the wheel parameter was
-parsed, the file was checked, and then the script copied ``mas/`` from
-the checkout instead. The install then silently shipped a different
-build than the one the caller asked for - and a release pipeline that
-asserts on the *installed* version would have compared the wheel
-against itself and passed without noticing.
-
-These tests run the real scripts against a real wheel.
+The installers do not care what is *inside* the wheel beyond the ``mas``
+package: they unzip it and move that package into place. So the wheel is
+built here with the standard library alone - no build backend, no
+network, no compiler. The result is the same artifact the installers
+care about, and the test now depends only on the thing it is actually
+testing.
 """
 
 import os
 import pathlib
 import shutil
 import subprocess
-import sys
 import tempfile
 import unittest
 import zipfile
@@ -28,6 +27,8 @@ import zipfile
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 SENTINEL_NAME = "_wheel_sentinel.txt"
 SENTINEL_TEXT = "openloop-wheel-sentinel"
+WHEEL_VERSION = "0.0.0"
+DIST_INFO = "openloop_mas-%s.dist-info" % WHEEL_VERSION
 
 
 def _out(proc) -> str:
@@ -63,38 +64,32 @@ def _bash_can_run_scripts() -> bool:
 
 
 def _build_wheel(dest: pathlib.Path) -> pathlib.Path:
-    """Build a wheel from this checkout into ``dest``."""
-    subprocess.run(
-        [sys.executable, "-m", "build", "--wheel", "--outdir", str(dest)],
-        cwd=str(REPO_ROOT),
-        check=True,
-        capture_output=True,
-    )
-    wheels = sorted(dest.glob("openloop_mas-*.whl"))
-    if not wheels:
-        raise AssertionError("no wheel was built")
-    return wheels[-1]
+    """Build a wheel out of this checkout, with the standard library only.
 
-
-def _wheel_with_sentinel(wheel: pathlib.Path, dest: pathlib.Path) -> pathlib.Path:
-    """Repack the wheel with a file the checkout does not have.
-
-    The checkout and the wheel carry the same source, so comparing their
-    contents cannot tell them apart. A file that only exists in the wheel
-    proves which copy landed on disk.
+    The wheel carries the real ``mas`` package from the checkout plus a
+    sentinel file that the checkout does not have. The sentinel is what
+    tells the two copies apart once one of them is unpacked onto disk.
     """
-    unpacked = dest / "unpacked"
-    if unpacked.exists():
-        shutil.rmtree(unpacked)
-    unpacked.mkdir(parents=True)
-    with zipfile.ZipFile(wheel) as zf:
-        zf.extractall(unpacked)
-    (unpacked / "mas" / SENTINEL_NAME).write_text(SENTINEL_TEXT, encoding="utf-8")
-    out = dest / "sentinel-wheel.whl"
-    with zipfile.ZipFile(out, "w") as zf:
-        for item in sorted(unpacked.rglob("*")):
-            if item.is_file():
-                zf.write(item, str(item.relative_to(unpacked)))
+    package = REPO_ROOT / "mas"
+    if not package.is_dir():
+        raise AssertionError("the checkout has no mas package to build from")
+
+    out = dest / ("openloop_mas-%s-py3-none-any.whl" % WHEEL_VERSION)
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
+        for item in sorted(package.rglob("*")):
+            if not item.is_file():
+                continue
+            if "__pycache__" in item.parts or item.suffix == ".pyc":
+                continue
+            zf.write(item, str(item.relative_to(REPO_ROOT)))
+        zf.writestr("mas/" + SENTINEL_NAME, SENTINEL_TEXT)
+        zf.writestr(DIST_INFO + "/METADATA", "Name: openloop-mas\nVersion: %s\n" % WHEEL_VERSION)
+        zf.writestr(
+            DIST_INFO + "/WHEEL",
+            "Wheel-Version: 1.0\nGenerator: mas-test\nRoot-Is-Purelib: true\n"
+            "Tag: py3-none-any\n",
+        )
+        zf.writestr(DIST_INFO + "/RECORD", "")
     return out
 
 
@@ -108,7 +103,7 @@ class WindowsWheelChoiceTest(unittest.TestCase):
             install_dir = tmp / "mas"
             wheel_dir = tmp / "wheel"
             wheel_dir.mkdir()
-            wheel = _wheel_with_sentinel(_build_wheel(wheel_dir), wheel_dir)
+            wheel = _build_wheel(wheel_dir)
 
             env = dict(os.environ)
             env["USERPROFILE"] = str(home)
@@ -169,7 +164,7 @@ class ShellWheelChoiceTest(unittest.TestCase):
             install_dir = tmp / "mas"
             wheel_dir = tmp / "wheel"
             wheel_dir.mkdir()
-            wheel = _wheel_with_sentinel(_build_wheel(wheel_dir), wheel_dir)
+            wheel = _build_wheel(wheel_dir)
 
             env = dict(os.environ)
             env["HOME"] = str(home)
