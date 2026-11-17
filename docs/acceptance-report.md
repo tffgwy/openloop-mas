@@ -2477,3 +2477,77 @@ CLI（PowerShell）→ 列表 / 批准 / 撤销 / 列表显示 `undone` 全部�
   （未跑 `mas install`），**不是代码缺陷**；
 - PyPI 仍未发布；`tffgwy/openloop-mas` 当前 stars=0 / forks=0；
 - 「四个小 Skills 400+ 星」说法**不可核实**，不要复述为事实（OpenMausBot 实测 22,078 stars）。
+
+### R.8 修复：一个平台相关的假通过（CI 在 Linux/macOS 上抓到）
+
+v0.7.77 推送后，CI 在 **ubuntu / macos** 的全部 5+6 个 Python 版本上失败，
+在 **windows** 的全部 4 个版本上通过：
+
+```
+FAIL: test_an_old_draft_without_a_basis_is_not_a_false_alarm
+      (test_draft_compare_776.CompareBaselineTests)
+AssertionError: 'unchanged' != 'unknown_basis'
+```
+
+**根因（本轮实测确认，不是推测）**：
+
+- v0.7.76 之前的老草稿记录的是**文本哈希**（`short_sha(_decode(before), 64)`），
+  v0.7.76 之后记录的是**字节哈希**（`hashlib.sha256(bytes)`）。
+- 实测结论：**对任何能解码成 UTF-8 的文件，文本哈希与字节哈希恒等**
+  （decode 再 encode 得到同一串字节）；只有解码不了的文件两者才不同。
+- 所以 `mas/drafts.py` 里原先那句注释「合法 UTF-8 时两者碰巧会不同」**是写错的**。
+- Windows 的 `Path.write_text()` 会把 `\n` 翻译成 `\r\n`，两个哈希才**碰巧**不等，
+  老草稿才走得到 `unknown_basis` 分支 → 测试「通过」；
+  Linux/macOS 不做翻译 → 走成 `unchanged` → 测试失败。
+
+**也就是说：实现当时的结论是对的，测试的前提是错的**，而这个错误只在
+Windows 上被掩盖。CI 把它翻了出来。
+
+**修复**：
+
+| 位置 | 改动 |
+|---|---|
+| `mas/drafts.py` | 老草稿（`digest_basis` 不是 `bytes`）的判定**完全不再使用那个不可比的记录数字**，只认它自己存下的基线字节；基线不一致时明确返回 `file_changed` |
+| `mas/drafts.py` | 修正了那条写错的技术注释 |
+| `tests/test_draft_compare_776.py` | `setUp` 改用 `write_bytes`（字节精确，与平台无关），并说明为什么不能用 `write_text` |
+| `tests/test_draft_compare_776.py` | 新增 `test_an_old_draft_is_judged_by_its_baseline_not_by_its_number`，钉死新行为 |
+
+**新草稿的路径行为完全不变，锁没有被削弱。** 本轮实测：
+
+```
+新草稿，文件在草稿之后被改 -> reason=file_changed, conflict=True
+老草稿，无基线            -> reason=unknown_basis
+老草稿，有基线，文件没动   -> reason=unchanged
+老草稿，有基线，文件动过   -> reason=file_changed
+```
+
+**修复后本机证据**：
+
+| 检查 | 结果 |
+|---|---|
+| `pytest tests -q` | **1301 passed, 4 skipped, 95 subtests passed**（354.31s；修复前 1300） |
+| `pytest tests/test_draft_compare_776.py -q` | **27 passed**（修复前 26） |
+| `python -X utf8 -m mas.cli selftest` | **20 项全绿** |
+| `python -X utf8 -m ruff check mas tests tools` | **All checks passed!** |
+
+跨平台（Linux/macOS）的最终判定由 CI 给出：
+
+**CI 结论（run `44019977580`，本轮真实输出）**：**15/15 任务成功**
+
+| 平台 | Python | 结果 |
+|---|---|---|
+| ubuntu-latest | 3.10 / 3.11 / 3.12 / 3.13 | 全部 success |
+| macos-latest | 3.10 / 3.11 / 3.12 / 3.13 | 全部 success |
+| windows-latest | 3.10 / 3.11 / 3.12 / 3.13 | 全部 success |
+| build / lint / site | — | 全部 success |
+
+修复前 ubuntu 与 macos **全部失败**、windows 全部成功；修复后**三平台一致通过**。
+这正是这个 bug 的价值：它只在 Windows 上被掩盖，而 CI 把它翻了出来。
+
+### R.9 边界说明（本节新增）
+
+- 本机**没有** Docker / WSL，POSIX 行为**无法在本机执行**，
+  跨平台结论由 GitHub Actions 的 ubuntu-latest 与 macos-latest 给出；
+- 上述修复的正确性判断基于「文本哈希与字节哈希对合法 UTF-8 恒等」这一**实测事实**，
+  而不是平台假设；
+- `work/` 下的临时脚本与 E2E 目录在 `.gitignore` 内（`.gitignore:10`），不进版本库。
