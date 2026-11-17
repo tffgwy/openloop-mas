@@ -4,6 +4,75 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.80] - 2026-11-17
+
+### 装完了不等于装对了：升级真正在跑的那份运行时
+
+一键安装脚本把运行时复制到 `<安装目录>/app/mas`。之后 `mas install`
+只做两件事：同步 skills、刷新 MCP 注册。
+
+**它从来不碰运行时本体。**
+
+于是有一个很难发现的局面：用户装了新版、跑 `mas install`、看到
+「skills installed: 9」「MCP registration refreshed」——一切正常，
+但**真正在跑的还是旧代码**。MCP 服务器指向 `<安装目录>/app/mas`，
+那份东西还是几个月前的版本。agent 调到的行为是旧的，
+而自检全绿。
+
+这一版把这个洞补上。
+
+### 新增
+
+- **`mas upgrade`** —— 把落后的已安装运行时换成**当前正在跑的这一版**，
+  旧版本备份到 `<状态目录>/backup/runtime/<旧版本>`。
+  升级后**当场核对磁盘上的版本号**，对不上就报失败，不报成功；
+- **`mas runtime`** —— 看本机装的是哪一版运行时，和当前跑的差多少；
+- **`mas doctor` 新增 `runtime` 检查** —— 本机装的运行时比你现在跑的
+  这版旧时，直接告诉你路径和旧版本号，并给出 `mas upgrade`；
+- **MCP 工具 `mas_upgrade`**（第 **22** 个工具）—— agent 也能触发升级。
+
+### 修了两个真 bug
+
+**1. `install.ps1` / `install.sh` 显式传 wheel 时，wheel 会被静默丢掉。**
+
+脚本先判断「旁边有没有源码目录」，有就复制源码——
+**哪怕调用方明确指定了 wheel**。wheel 参数被解析、被检查，
+然后被扔掉。安装的是源码，调用方以为装的是 wheel。
+
+CI 恰好躲过了这个坑：它把安装脚本**复制到独立目录**再跑，
+那里根本没有 `mas/` 可复制。真实用户从源码目录跑，或发布流水线
+在同一目录里跑，就会踩到。
+
+现在**显式指定的 wheel 永远优先**，而且会明确说出来：
+「A wheel was supplied - using it instead of the source checkout」。
+
+**2. `mas upgrade --force` 是个空操作。**
+
+`--force` 想做的是「版本相同也替换」。但候选列表只收**比当前旧的**
+那一份，当前版本压根进不了候选，于是 `--force` 什么都不做。
+根因在候选筛选，修在筛选处，不是打补丁绕过。
+
+**3. `mas doctor` 把「版本落后」说成了「还没装」。**
+
+`runtime` 检查和 skills、MCP 注册一样属于「可选」，于是它的告警被
+归进了同一个桶，结论句就变成「智能体接不上：runtime 还没装」。
+
+**运行时明明就在那儿，它只是旧。** 而且 `mas install` 根本不碰运行时
+本体——照着「还没装」的提示去跑 `mas install`，旧代码会一直跑下去。
+初学者在这个提示上绕圈是很自然的事。
+
+现在 `runtime` 有自己的一档结论：
+
+- 状态 `runtime_outdated`：闭环能跑，但机器上装的运行时比你现在跑的
+  这版旧，还在跑老代码；
+- 下一步直接给 `mas upgrade`，而不是 `mas install`；
+- 就算同时还有别的可选件缺失，两条命令也都会出现在下一步里。
+
+补 21 条测试：版本比较、状态检测、替换、备份、force、失败即失败、
+doctor 集成、两个安装脚本的 wheel 优先权、doctor 的措辞分档。
+其中 wheel 优先权和 doctor 措辞这两条**自证能失败**：把修复回退，
+测试立刻变红。
+
 ## [0.7.79] - 2026-11-17
 
 ### `mas doctor` 现在会说清楚：这个包名到底能不能用

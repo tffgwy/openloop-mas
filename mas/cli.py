@@ -166,6 +166,54 @@ def cmd_sync(args: argparse.Namespace) -> int:
     return 0 if not report.get("errors") else 1
 
 
+def _current_state_dir() -> pathlib.Path:
+    """The state directory the user actually uses.
+
+    The same resolution the rest of the CLI uses: the persisted
+    configuration, with the environment override applied on top. The
+    upgrade command has to look at *this* directory - looking anywhere
+    else would report "nothing to upgrade" while the old runtime kept
+    serving.
+    """
+    config = load_config()
+    raw = str(config.get("state_dir") or "")
+    return pathlib.Path(os.path.expanduser(os.path.expandvars(raw))).resolve()
+
+
+def cmd_upgrade(args: argparse.Namespace) -> int:
+    """Replace an outdated installed runtime with the running one.
+
+    The one-click installer copies the runtime into ``<install-dir>/app``.
+    Refreshing the skills and the MCP registration does not change that
+    copy, so an old runtime can keep serving while every check says
+    "registered". This command replaces it and says what it did.
+    """
+    from mas.upgrade import format_upgrade_report, upgrade_runtime
+
+    state = _current_state_dir()
+    report = upgrade_runtime(state, force=getattr(args, "force", False))
+    if getattr(args, "json", False):
+        _print(report, as_json=True)
+    else:
+        print(format_upgrade_report(report))
+        if report.get("upgraded"):
+            print("")
+            print("下一步：运行 mas install 让 MCP 注册指向新版本")
+    return 1 if report.get("errors") else 0
+
+
+def cmd_runtime_status(args: argparse.Namespace) -> int:
+    """Show the runtime that is installed on disk next to the running one."""
+    from mas.upgrade import format_runtime_status, runtime_status
+
+    status = runtime_status(_current_state_dir())
+    if getattr(args, "json", False):
+        _print(status, as_json=True)
+    else:
+        print(format_runtime_status(status))
+    return 0
+
+
 def cmd_uninstall(args: argparse.Namespace) -> int:
     """Remove the agent skills and the MCP server registration.
 
@@ -2151,6 +2199,21 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--dry-run", action="store_true", help="只报告漂移，不写入")
     add_json(sync)
     sync.set_defaults(func=cmd_sync)
+
+    upgrade = sub.add_parser(
+        "upgrade",
+        help="把已安装的旧版运行时换成当前这版（升级真正的运行时本体）",
+    )
+    upgrade.add_argument("--force", action="store_true", help="版本相同也强制替换")
+    add_json(upgrade)
+    upgrade.set_defaults(func=cmd_upgrade)
+
+    runtime = sub.add_parser(
+        "runtime",
+        help="看本机装的是哪一版运行时，和当前运行的差多少",
+    )
+    add_json(runtime)
+    runtime.set_defaults(func=cmd_runtime_status)
 
     uninstall = sub.add_parser("uninstall", help="移除 skills 与 MCP 注册（保留账本）")
     uninstall.add_argument("--skip-skills", action="store_true", help="不移除 agent skills")

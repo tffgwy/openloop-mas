@@ -37,6 +37,7 @@ CHECK_PLAIN_LANGUAGE: Dict[str, str] = {
     "skills_sync": "已装的 skill 是不是和包内最新版本一致（不一致就同步）",
     "mcp_codex": "给 Codex 注册的 MCP 服务：让 Codex 能直接调 mas 的工具",
     "mcp_claude": "给 Claude 注册的 MCP 服务：让 Claude 能直接调 mas 的工具",
+    "runtime": "本机装的是哪一版运行时（装了旧版就升级，别让它一直跑老代码）",
     "provider": "模型后端配好了没有（mock 是离线演示模式）",
     "endpoint": "模型端点连得上吗",
     "instruction": "模型端点认不认角色指令（不认就等于没有闭环）",
@@ -47,7 +48,14 @@ CHECK_PLAIN_LANGUAGE: Dict[str, str] = {
 #: The checks that are *optional* - the loop runs without them, they
 #: only make the loop reachable from an agent.
 OPTIONAL_CHECKS = frozenset(
-    {"skill_codex", "skill_claude", "skills_sync", "mcp_codex", "mcp_claude"}
+    {
+        "skill_codex",
+        "skill_claude",
+        "skills_sync",
+        "mcp_codex",
+        "mcp_claude",
+        "runtime",
+    }
 )
 
 #: The checks that decide whether the loop can run at all.
@@ -259,6 +267,39 @@ def run_doctor(config: Dict[str, Any] | None = None, allow_network: bool = True)
                 )
     else:
         results.append(_check("mcp_claude", "warn", "未找到 ~/.claude.json"))
+
+    # The runtime that is installed on disk next to the running one. An
+    # old copy keeps serving the agents while every other check says
+    # "registered" - so the version gap is worth its own line.
+    try:
+        from mas.upgrade import runtime_status
+
+        status = runtime_status(
+            pathlib.Path(
+                os.path.expanduser(os.path.expandvars(str(config.get("state_dir") or "")))
+            ).resolve()
+        )
+        outdated = int(status.get("outdated_count") or 0)
+        if outdated:
+            versions = ", ".join(
+                f"{row['path']}（{row['version']}）"
+                for row in (status.get("installed") or [])
+                if row.get("outdated")
+            )
+            results.append(
+                _check(
+                    "runtime",
+                    "warn",
+                    f"本机装的运行时比你现在跑的这版旧：{versions}；"
+                    f"运行 mas upgrade 升级",
+                )
+            )
+        else:
+            results.append(
+                _check("runtime", "ok", f"本机装的运行时是 {status.get('running_version')}，不用升级")
+            )
+    except Exception as exc:  # pragma: no cover - defensive
+        results.append(_check("runtime", "warn", f"查不到运行时版本：{exc}"))
 
     provider = str(config.get("provider") or "mock")
     env_name = str(config.get("api_key_env") or "MAS_API_KEY")
@@ -472,10 +513,22 @@ def verdict(results: List[Dict[str, Any]]) -> Dict[str, Any]:
         for row in results
         if row["status"] == "fail" and row["check"] not in ESSENTIAL_CHECKS
     ]
+    # `runtime` is optional in the sense that the loop runs without it -
+    # but "optional" must not turn a version gap into "not installed".
+    # The runtime is *there*, it is just old, and the fix is `mas upgrade`,
+    # not `mas install`. Keeping it in its own bucket makes the sentence
+    # honest.
+    runtime_outdated = [
+        row["check"]
+        for row in results
+        if row["status"] == "warn" and row["check"] == "runtime"
+    ]
     missing_optional = [
         row["check"]
         for row in results
-        if row["status"] == "warn" and row["check"] in OPTIONAL_CHECKS
+        if row["status"] == "warn"
+        and row["check"] in OPTIONAL_CHECKS
+        and row["check"] != "runtime"
     ]
     missing_recommended = [
         row["check"]
@@ -496,6 +549,14 @@ def verdict(results: List[Dict[str, Any]]) -> Dict[str, Any]:
             "闭环能跑，但智能体接不上：{} 还没装。".format("、".join(missing_optional))
         )
         action = "运行 mas install，一条命令装上 skill 并注册 MCP 服务。"
+        if runtime_outdated:
+            action += " 另外机器上装的运行时是旧版，运行 mas upgrade 升级。"
+    elif runtime_outdated:
+        state = "runtime_outdated"
+        headline = (
+            "闭环能跑，但机器上装的运行时比你现在跑的这版旧，还在跑老代码。"
+        )
+        action = "运行 mas upgrade 把旧版换成现在这版，再运行 mas install 刷新注册。"
     else:
         state = "ready"
         headline = "一切就绪：闭环能跑，智能体也接得上。"
@@ -515,6 +576,7 @@ def verdict(results: List[Dict[str, Any]]) -> Dict[str, Any]:
         "agent_reachable": not missing_optional and not broken_optional,
         "broken": broken,
         "missing_optional": missing_optional,
+        "runtime_outdated": runtime_outdated,
         "missing_recommended": missing_recommended,
         "checks": {
             name: {

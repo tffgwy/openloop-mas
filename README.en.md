@@ -1729,10 +1729,18 @@ registers the MCP server and runs a self-check.
 ```bash
 pip install openloop-mas     # see the note below: this name is not on PyPI yet
 mas install        # install skills + register the MCP server
-mas doctor         # self-check (including skill version drift)
+mas doctor         # self-check (skill drift + runtime version gap)
 mas sync           # bring the installed skills back to the packaged version
+mas runtime        # show which runtime build is installed on disk
+mas upgrade        # replace an outdated installed runtime with this one
 mas demo           # no API key needed - watch it close a loop on its own
 ```
+
+> **Upgrading?** Run `mas upgrade` first (it replaces the runtime that is
+> actually serving), then `mas install` (so the MCP registration points at
+> the new build). Doing only the latter refreshes the skills and the
+> registration while **the old code keeps running** - which is exactly
+> what the new `runtime` check in `mas doctor` now points out.
 
 > **About `pip install openloop-mas`**: the name has **not been created on
 > PyPI yet**, so pip answers `No matching distribution found`. Use the

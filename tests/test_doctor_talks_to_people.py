@@ -115,6 +115,40 @@ class VerdictTest(unittest.TestCase):
         self.assertIn("config", final["missing_recommended"])
         self.assertIn("mas init", final["action"])
 
+    def test_an_outdated_runtime_is_not_reported_as_not_installed(self):
+        # The runtime *is* installed - it is just an old copy. Calling it
+        # "还没装" sent beginners to `mas install`, which does not touch
+        # the installed runtime at all, so the old code kept running.
+        final = verdict(
+            [
+                _row("python", "ok"),
+                _row("ledger", "ok"),
+                _row("runtime", "warn", "本机装的运行时比你现在跑的这版旧"),
+            ]
+        )
+        self.assertEqual(final["state"], "runtime_outdated")
+        self.assertNotIn("还没装", final["headline"])
+        self.assertIn("mas upgrade", final["action"])
+        self.assertEqual(final["runtime_outdated"], ["runtime"])
+        self.assertEqual(final["missing_optional"], [])
+
+    def test_an_outdated_runtime_still_leaves_the_loop_usable(self):
+        final = verdict([_row("python", "ok"), _row("runtime", "warn")])
+        self.assertTrue(final["loop_usable"])
+
+    def test_an_old_runtime_is_mentioned_next_to_missing_optional_parts(self):
+        final = verdict(
+            [
+                _row("python", "ok"),
+                _row("skill_codex", "warn"),
+                _row("runtime", "warn"),
+            ]
+        )
+        self.assertEqual(final["state"], "agent_not_reachable")
+        self.assertIn("mas install", final["action"])
+        self.assertIn("mas upgrade", final["action"])
+        self.assertEqual(final["missing_optional"], ["skill_codex"])
+
     def test_the_verdict_carries_the_check_details(self):
         final = verdict([_row("python", "ok", "3.14.0")])
         self.assertEqual(final["checks"]["python"]["status"], "ok")

@@ -206,6 +206,24 @@ TOOLS: List[Dict[str, Any]] = [
         _EMPTY_OBJECT,
     ),
     _tool(
+        "mas_upgrade",
+        "Replace an outdated installed runtime with the running one. "
+        "The one-click installer copies the runtime into the install "
+        "directory; refreshing the skills and the MCP registration does "
+        "not change that copy, so an old runtime can keep serving while "
+        "every check reports 'registered'. This replaces it and reports "
+        "what was replaced.",
+        {
+            "type": "object",
+            "properties": {
+                "force": {
+                    "type": "boolean",
+                    "description": "版本相同也强制替换（默认 false）",
+                },
+            },
+        },
+    ),
+    _tool(
         "mas_config",
         "Read or update the local configuration.",
         {
@@ -624,6 +642,14 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
 
     if name == "mas_doctor":
         return summarize(run_doctor(config))
+
+    if name == "mas_upgrade":
+        from mas.upgrade import upgrade_runtime
+
+        state = pathlib.Path(
+            os.path.expanduser(os.path.expandvars(str(config.get("state_dir") or "")))
+        ).resolve()
+        return upgrade_runtime(state, force=bool(arguments.get("force")))
 
     if name == "mas_config":
         action = str(arguments.get("action", "get"))

@@ -93,7 +93,22 @@ New-Item -ItemType Directory -Force -Path $AppDir | Out-Null
 $pkgTarget = Join-Path $AppDir "mas"
 $pkgSource = Join-Path $SourceRoot "mas"
 
-if (Test-Path $pkgSource) {
+# An explicitly supplied wheel always wins. Without this, a caller that
+# hands the installer a wheel (the release pipeline, the CI install matrix)
+# while running from a source checkout silently got the *source* instead:
+# the wheel parameter was parsed, checked, and then dropped on the floor.
+# The two paths install different builds, so the choice has to be explicit
+# rather than a side effect of the directory the script happens to sit in.
+$useWheel = [bool]$Wheel
+if ($useWheel) {
+    # A source checkout is also present. Say so, so nobody is surprised
+    # that the wheel - not the checkout - is what ended up on disk.
+    if (Test-Path $pkgSource) {
+        Write-Step "A wheel was supplied - using it instead of the source checkout next to this script"
+    }
+}
+
+if (-not $useWheel -and (Test-Path $pkgSource)) {
     # A source checkout is available: copy the runtime from it.
     if (Test-Path $pkgTarget) { Remove-Item -Recurse -Force $pkgTarget }
     Copy-Item -Recurse -Force $pkgSource $pkgTarget

@@ -50,7 +50,21 @@ ok "interpreter: $PYTHON_BIN"
 step "Installing runtime into $APP_DIR"
 mkdir -p "$APP_DIR"
 rm -rf "$APP_DIR/mas"
-if [ -d "$SRC_ROOT/mas" ]; then
+# An explicitly supplied wheel always wins. Without this, a caller that
+# hands the installer a wheel (the release pipeline, the CI install matrix)
+# while running from a source checkout silently got the *source* instead:
+# the wheel was checked and then dropped on the floor. The two paths install
+# different builds, so the choice has to be explicit rather than a side
+# effect of the directory the script happens to sit in.
+USE_WHEEL=0
+if [ -n "${MAS_WHEEL:-}" ]; then
+  USE_WHEEL=1
+  if [ -d "$SRC_ROOT/mas" ]; then
+    step "A wheel was supplied - using it instead of the source checkout next to this script"
+  fi
+fi
+
+if [ "$USE_WHEEL" -eq 0 ] && [ -d "$SRC_ROOT/mas" ]; then
   # A source checkout is available: copy the runtime from it.
   cp -R "$SRC_ROOT/mas" "$APP_DIR/mas"
   find "$APP_DIR/mas" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true

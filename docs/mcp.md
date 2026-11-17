@@ -60,7 +60,7 @@ env = { PYTHONPATH = "<install-dir>/app" }
 
 ---
 
-## 4. 工具清单（21 个）
+## 4. 工具清单（22 个）
 
 | 工具 | 作用 | 关键参数 |
 | --- | --- | --- |
@@ -75,7 +75,8 @@ env = { PYTHONPATH = "<install-dir>/app" }
 | `mas_replay` | 回放运行轨迹 | `run_id`（可选） |
 | `mas_export` | 导出账本为 Markdown 表格 | `run_id`（可选） |
 | `mas_teams` | 列出团队模板 | 无 |
-| `mas_doctor` | 安装自检（9 项） | 无 |
+| `mas_doctor` | 安装自检（17 项） | 无 |
+| `mas_upgrade` | 把落后的已安装运行时换成当前这版（旧版本留备份） | `force`（可选） |
 | `mas_config` | 读取 / 更新配置 | `set`（可选，键值对） |
 | `mas_drafts` | 列出待确认的草稿，或看某一份的 diff | `action`（`list` / `show`）、`draft_id`、`state`、`workspace` |
 | `mas_draft_stage` | **提**一份改动；原文件一个字节都不动 | `path`（必填）、`content`（必填）、`reason`、`workspace` |

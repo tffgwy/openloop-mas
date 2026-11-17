@@ -1306,9 +1306,16 @@ irm https://raw.githubusercontent.com/tffgwy/openloop-mas/main/install.ps1 | iex
 pip install openloop-mas     # 见下方说明：这个包名目前还没上 PyPI
 mas install        # 装 skills + 注册 MCP 服务器
 mas demo           # 不需要任何 API Key，先看它自己跑通闭环
-mas doctor         # 自检（包含 skills 版本是否漂移）
+mas doctor         # 自检（包含 skills 漂移、运行时版本落后）
 mas sync           # 把已安装的 skills 同步回包内版本
+mas runtime        # 看本机装的是哪一版运行时
+mas upgrade        # 把落后的旧版运行时换成当前这版
 ```
+
+> **升级过、想换新版本？** 先 `mas upgrade`（换掉真正在跑的那份运行时），
+> 再 `mas install`（让 MCP 注册指向新版本）。
+> 只做后者的话，skills 和注册都刷新了，**但真正在跑的还是旧代码**——
+> 这正是 `mas doctor` 的 `runtime` 检查现在会指出来的事。
 
 > **关于 `pip install openloop-mas`**：这个包名**目前还没有在 PyPI 上建立**，
 > 直接 pip 会得到 `No matching distribution found`。现在请用上面的**安装脚本**，
