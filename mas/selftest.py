@@ -45,6 +45,9 @@ from mas.providers import OpenAICompatProvider, ProviderError
 from mas.selftest_audit import (
     check_a_human_decision_leaves_a_trace_that_cannot_be_changed,
 )
+from mas.selftest_onboarding import (
+    check_a_beginner_can_walk_the_docs_and_close_a_loop,
+)
 from mas.selftest_shadow import (
     check_the_program_you_type_is_the_program_that_was_checked,
 )
@@ -5431,6 +5434,7 @@ CHECKS = (
     check_an_approved_change_can_be_taken_back,
     check_a_human_decision_leaves_a_trace_that_cannot_be_changed,
     check_the_program_you_type_is_the_program_that_was_checked,
+    check_a_beginner_can_walk_the_docs_and_close_a_loop,
 )
 
 #: How many gates the suite is expected to hold.

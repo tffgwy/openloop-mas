@@ -7,6 +7,902 @@
 
 [English](README.en.md) | [中文](README.md)
 
+
+[![ci](https://github.com/tffgwy/openloop-mas/actions/workflows/ci.yml/badge.svg)](https://github.com/tffgwy/openloop-mas/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![deps](https://img.shields.io/badge/dependencies-0-orange.svg)]()
+
+**First time here?** Jump to the [5-minute quickstart](#5-minute-quickstart) -
+one script installs it, and you can close a real loop without any API key.
+
+**Why does it claim to close?** See [Why](#why).
+
+**Want the scars?** The last section, [Gate archaeology](#gate-archaeology),
+records where each of the gates came from.
+
+---
+
+## 5-minute quickstart
+
+> The configuration always lives in `~/.mas/config.json` (Windows:
+> `%USERPROFILE%\.mas\config.json`). The run ledger lives under `state_dir`
+> instead - the two are separate, so moving the state directory never loses
+> your setup. In CI, use `MAS_CONFIG_PATH` for the config file and
+> `MAS_STATE_DIR` for the state directory.
+
+### Option 1: one script (cross-platform, no Python setup needed)
+
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/tffgwy/openloop-mas/main/install.sh | bash
+
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/tffgwy/openloop-mas/main/install.ps1 | iex
+```
+
+The script creates the virtual environment, installs the package,
+registers the MCP server and runs a self-check.
+
+### Option 2: pip install (needs Python 3.10+)
+
+```bash
+pip install openloop-mas     # see the note below: this name is not on PyPI yet
+mas install        # install skills + register the MCP server
+mas doctor         # self-check (skill drift + runtime version gap)
+mas sync           # bring the installed skills back to the packaged version
+mas runtime        # show which runtime build is installed on disk
+mas upgrade        # replace an outdated installed runtime with this one
+mas demo           # no API key needed - watch it close a loop on its own
+```
+
+> **Upgrading?** Run `mas upgrade` first (it replaces the runtime that is
+> actually serving), then `mas install` (so the MCP registration points at
+> the new build). Doing only the latter refreshes the skills and the
+> registration while **the old code keeps running** - which is exactly
+> what the new `runtime` check in `mas doctor` now points out.
+
+> **About `pip install openloop-mas`**: the name has **not been created on
+> PyPI yet**, so pip answers `No matching distribution found`. Use the
+> install script above for now, or take a wheel from
+> [Releases](https://github.com/tffgwy/openloop-mas/releases/latest).
+> `mas doctor` **looks the name up** on PyPI and tells you the truth -
+> once the name is published, both the note and the check line up.
+
+`mas doctor` talks to a person: every check explains what it *is*, is
+tagged **required / recommended / optional**, and the report ends with
+one conclusion and one next command.
+
+```
+[OK  ] python（必需）
+       3.14.10
+       是什么：Python 版本够不够新（3.10 以上才能跑）
+[注意] skill_codex（可选）
+       未安装: ...\.codex\skills\mas-loop\SKILL.md（运行 mas install）
+       是什么：给 Codex 装的 skill：让 Codex 会用这个闭环工具
+...
+小结：8 项正常，6 项注意，0 项坏了
+结论：闭环能跑，但智能体接不上：skill_codex、skill_claude、skills_sync、mcp_codex、mcp_claude 还没装。
+下一步：运行 mas install，一条命令装上 skill 并注册 MCP 服务。
+```
+
+The three verdicts mean different things: **the loop cannot run** (a
+required part is broken), **the loop runs but no agent can reach it**
+(skills / MCP not installed), or **everything is ready**. The exit code
+is non-zero only in the first case.
+
+`mas install` copies the **agent skills into the Codex / Claude Code skill
+directories** and **registers the MCP server** in `~/.codex/config.toml`
+and `~/.claude.json`. Open a new terminal afterwards and both hosts know
+the workflow.
+
+- Idempotent: running it twice never registers twice and never clobbers
+  your existing configuration.
+- Safe: every configuration file it modifies is backed up as
+  `*.bak-<timestamp>` first.
+- No secrets: the install never writes an API key.
+
+> Add `--json` to see exactly what it did.
+
+### Option 3: download one script (no dependencies - best for beginners)
+
+No clone, no pip, nothing to install yourself - **download one script file**
+and run it:
+
+```powershell
+# Windows: download install.ps1 anywhere, then run it
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+```bash
+# macOS / Linux: download install.sh anywhere, then run it
+bash install.sh
+```
+
+The script fetches the published wheel from the GitHub release, unpacks it
+with the standard library, installs it into `~/.mas/`, registers the MCP
+server and the skills, and finishes with an offline self-check.
+**All it needs is Python 3.10+ - no git, no pip, no compiler.**
+
+Pin a specific release instead of "the latest":
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.83
+```
+
+```bash
+MAS_VERSION=0.7.83 bash install.sh
+```
+
+> The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
+> user's registry key). Pass `-SkipPath` (Windows) or `MAS_SKIP_PATH=1`
+> (shell) to leave `PATH` alone.
+
+### Option 4: install from source (for development)
+
+```bash
+git clone https://github.com/tffgwy/openloop-mas.git
+cd openloop-mas
+
+# Windows
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+# macOS / Linux
+bash install.sh
+
+# No API key needed - watch it close a loop on its own
+mas demo
+```
+
+`mas demo` runs three offline scenarios and prints the real results:
+
+```
+[OK ] closure     期望=closed             实际=closed             迭代=2 票=-
+[OK ] stagnation  期望=escalated          实际=escalated          迭代=4 票=T-20261111-085346-4396
+[OK ] budget      期望=budget_exhausted   实际=budget_exhausted   迭代=1 票=-
+```
+
+> In `mock` mode, pass/fail is decided by the engine's deterministic machine
+> checks - not by a model claiming "I am done". The mock only simulates the
+> worker producing a draft; the verdict always belongs to the checker.
+
+---
+
+
+---
+
+## Why
+
+The most common failure in multi-agent collaboration is not "the model is not
+smart enough" - it is that **the loop never closes**:
+
+- No verifiable acceptance criteria → everyone says "close enough" and nobody can be convinced;
+- No exit condition → rounds keep going until the tokens run out;
+- No process record → failures cannot be reviewed, handed over or audited;
+- No stop-loss → an obviously doomed task retries until it times out.
+
+Loop Engineering addresses exactly this: **turning "is it done?" into a fact a
+machine can decide.**
+
+OpenLoop MAS writes the closure into code constraints instead of hoping a
+prompt will do it:
+
+| Stage | Role | Output | Decided by |
+| --- | --- | --- | --- |
+| Plan | `planner` | steps and risks | — |
+| Work | `worker` | **the deliverable itself** | — |
+| Verify | `verifier` | per-criterion pass/fail plus evidence | engine (machine checks win) |
+| Reflect | `reflector` | why it failed, what to change | — |
+| Close | `lead` | **judges only what nobody judged**: `close` / `revise` / `escalate` | engine (**final veto**) |
+
+The `lead` is an *advisor, not a judge of facts*: a failed machine check
+is a fact, so the lead is not consulted at all in that case, and when it
+is consulted it may only fill a gap. The engine keeps the final word
+over stagnation, budget and deadline, and a lead that cannot decide
+leaves the criterion unjudged and the loop asking.
+
+A loop is closed only when **artifact + per-criterion verdicts + decision +
+ledger entry** all exist. Otherwise the status is one of exactly three:
+`escalated` (handed to a human), `budget_exhausted` (stopped by budget) or
+`error`. **There is no "almost done" state.**
+
+
+---
+
+## Run a real task
+
+```bash
+mas run --goal "Write a v0.1.0 release note" \
+  --criteria '{"id":"c1","desc":"contains the version","check":{"type":"contains","arg":"v0.1.0"}}' \
+  --criteria '{"id":"c2","desc":"at least 200 chars","check":{"type":"min_chars","arg":200}}'
+```
+
+Output:
+
+```
+状态：closed（迭代 2 次，token 2140）
+账本：/home/you/.mas/ledgers/runs.jsonl
+  [PASS] c1 (rule) all required strings present
+  [PASS] c2 (rule) length 418 >= 200
+--- 交付物预览 ---
+...
+```
+
+### Machine check types (decided by the engine, fully reproducible)
+
+| type | meaning | argument |
+| --- | --- | --- |
+| `contains` / `not_contains` | must contain / must not contain | `arg` (string or array) |
+| `min_chars` / `max_chars` | length bounds | `arg` (int) |
+| `regex` | regex match | `arg` (pattern) |
+| `lines_min` | minimum non-empty lines | `arg` (int) |
+| `section` | must contain a `## heading` | `arg` (heading) |
+| `json_keys` | required keys of a JSON object | `arg` (array) |
+
+Exact semantics (verified against the implementation - write criteria against this):
+
+| type | exact verdict | common trap |
+| --- | --- | --- |
+| `contains` | artifact contains the string(s); `arg` may be an array and **every** item must be present | one missing item fails the whole criterion |
+| `not_contains` | artifact contains **none** of the given strings | an array means "not one of them may appear" |
+| `min_chars` / `max_chars` | **character** count of the artifact, whitespace and newlines included | not a word count, not a byte count |
+| `regex` | `re.search`, **DOTALL is always on** (`.` spans lines) | no `(?s)` needed; it matches a substring, not the whole artifact |
+| `lines_min` | count of **non-empty** lines (blank lines do not count) | blank lines between paragraphs do not help |
+| `section` | the artifact contains a line that is exactly `## <arg>` (trailing whitespace allowed) | it must be a **second-level** heading - `#` and `###` do not count; merely mentioning `## conclusion` in a sentence does **not** count, and `## conclusion analysis` does **not** satisfy `## conclusion` |
+| `json_keys` | the artifact must be a JSON **object** holding every given key | invalid JSON fails immediately |
+
+An unknown type is judged `unjudged` (i.e. **not passed**) - it is never silently let through.
+
+**A missing argument invalidates the criterion - it does not pass it.** A check with no
+usable argument cannot decide anything, so the engine refuses to start (exit code 1,
+zero tokens burned) instead of letting it pass by default:
+
+| type | required argument | rejected example |
+| --- | --- | --- |
+| `contains` / `not_contains` | a non-empty string, or a non-empty list of strings | `""`, `[]` |
+| `min_chars` / `max_chars` / `lines_min` | a non-negative integer | missing, `-1`, `"many"` |
+| `regex` | a compilable pattern | `""`, `"([unclosed"` |
+| `section` | the heading text | `""` |
+| `json_keys` | a key name, or a non-empty list of key names | `[]`, missing |
+
+A broken argument in the **shorthand** form fails just as fast. `--criteria 'regex:'`
+and `--criteria 'min_chars:many'` keep their check type and are caught by the table
+above - exit code 1, zero tokens. The same standard written as JSON or as a shorthand
+now behaves identically: a missing argument is a missing argument, never a quiet
+fallback to "the model decides".
+
+**A model's verdict is read, not coerced with ``bool()``.** If the reviewer answers
+`"pass": "false"`, `bool("false")` is `True` - a criterion the reviewer just failed would
+close the loop. The engine reads what the value *means*: `"false"` / `"0"` / `"no"` fail,
+`"true"` / `"1"` / `"yes"` pass, and anything unreadable (`"maybe"`, empty, missing) counts
+as **unjudged** rather than a guess.
+
+A **misspelled type name** is refused too. In the JSON form a type that does
+not exist (`{"check":{"type":"mystery"}}`) stops the run up front and lists the
+known types - a typo that slipped through would degrade into "the model decides",
+and a model that says "looks fine" would close the criterion.
+
+Only in the **shorthand** form does an unknown type name fall back to a plain
+description (`--criteria 'unknown_type:abc'`) - there the intention was never to
+write a machine check, which is different from writing one and getting it wrong.
+
+### Shorthand notation (since v0.4.2)
+
+Machine checks do not have to be written as JSON. The CLI accepts `<type>:<arg>` directly:
+
+```bash
+mas run --goal "write a dedupe function" \
+  --criteria 'regex:def dedupe.*set' \
+  --criteria 'min_chars:200' \
+  --criteria 'contains:key conclusion'
+```
+
+Shorthand and JSON are fully equivalent - the verdict still comes from the engine's
+deterministic checker (recorded as `source: rule` in the ledger). Shorthand is
+resolved in the engine layer, so criteria replayed from MCP, HTTP or the ledger
+are handled identically.
+
+**Several criteria at once** are given as a JSON array - every entry in the array
+keeps its own machine check and is actually verified. The array is never taken
+as one plain description (that would mean no machine check ran at all and the
+closure actually came from a model saying "looks fine"):
+
+```bash
+mas run --goal "write a release note for v0.1.0" \
+  --criteria '[{"id":"c1","desc":"contains the version","check":{"type":"contains","arg":"v0.1.0"}},
+               {"id":"c2","desc":"at least 200 chars","check":{"type":"min_chars","arg":200}}]'
+```
+ An unknown type prefix (e.g. `just write it well`) stays
+a plain description and is never mistaken for a machine check, and a numeric type
+with a non-numeric argument (e.g. `min_chars:many`) falls back to a plain
+description too - a criterion may never claim a check it cannot perform.
+
+Criteria without a machine check fall back to the model verifier - but **if the
+model gives no verdict, the default is fail** (`unjudged`). A criterion marked
+`"required": false` is **recorded but never blocks closure**: if it carries a
+machine check the rule still runs and its real result lands in the report
+(`PASS` or `FAIL`), it just never keeps the loop open; without a machine
+check the reviewer's verdict is recorded the same way.
+
+**The `required` flag is read by meaning, not by truthiness.** Writing
+`"required": "false"` as a *string* really does mean optional - `bool("false")`
+is `True`, and a criterion that travels through JSON, MCP or a shell script
+easily picks up those quotes. The engine reads the meaning of the value:
+`"false"` / `"0"` / `"no"` are optional, `"true"` / `"1"` / `"yes"` are
+required, and anything unreadable (`"maybe"`, missing, `null`) stays
+**required** - an unreadable flag must never silently relax a standard.
+
+---
+
+### The unified resource index and multi-format preview (v0.7.71): one folder is one index
+
+```bash
+mas files                  # index every workspace on this machine
+mas files ./out            # index one folder
+mas preview ./out/report.pdf   # preview one file
+```
+
+```bash
+$ mas files ./out
+
+[./out]  5 files  263.7 KB
+    pdf        1
+    image      2
+    model      1
+      836.0 B  pdf        report.pdf  pages 2, text chars 57
+      327.0 B  image      shot.png  width 12, height 7
+      117.0 B  image      liar.txt  width 4, height 4
+      213.0 B  model      ascii.stl  triangles 2
+      251.0 B  zip        bundle.zip  members 2
+```
+
+**The format comes from the file's own header, not from its name** - the
+`liar.txt` above is really a PNG, so it is reported as `image`. **A file that
+cannot be read is listed with the reason** - that warning line is information,
+not noise: an unreadable file in the middle of a deliverable is exactly what a
+reader needs to see.
+
+`mas preview` pulls a PDF's words out of its *compressed stream* and a Word
+document's words out of its *archive member*; an image with no body says so
+plainly instead of showing a blank screen. A missing file or a folder gives
+**exit code 2**.
+
+See **[docs/resources.md](docs/resources.md)**.
+
+### The draft layer (v0.7.72): the change goes into a draft, a human writes it back
+
+```bash
+mas drafts                              # what is waiting for a decision
+mas drafts show D-1a2b3c4d              # the diff of one draft
+mas drafts approve D-1a2b3c4d           # approve: write it back
+mas drafts reject  D-1a2b3c4d           # reject: nothing changes
+mas drafts token                        # the human token (an agent cannot approve its own draft)
+mas drafts ticket D-1a2b3c4d --token <token>      # sign a ticket: one draft, one use, 15 minutes
+mas drafts conflict                                # which drafts had their file moved on?
+mas drafts approve D-1a2b3c4d --force                # overwrite anyway: you know what you are doing
+```
+
+When a run wants to change a file that **already exists**, it no longer
+overwrites it. The change goes into a draft, **the original keeps every byte**,
+the draft carries a **readable diff**, and only your word - "approve" - writes
+it back. "Reject" changes nothing at all.
+
+```bash
+$ mas drafts
+
+workspace ~/mas/artifacts: 1 draft
+  D-1a2b3c4d  pending  notes.txt  changed
+        reason: the loop proposed a change to an existing file
+```
+
+**A new file is still written right away** - there is nothing there to lose.
+Set `"edit_policy": "overwrite"` in the configuration to get the old behaviour
+back (the default is `"draft"`).
+
+**The machine checks read the drafted bytes**, not the old file on the disk -
+otherwise the loop would be stuck forever: propose a change, read the old
+file, fail, propose again, read the old file. The draft lives in the workspace
+next to the file it changes (`.mas-drafts/`), so a copied folder carries its
+drafts along - a lost draft is a change that can never be reviewed.
+
+See **[docs/drafts.md](docs/drafts.md)**.
+
+### An agent stages a draft over MCP (v0.7.73): proposing and approving are two actions
+
+`mas drafts` is the **human** half. The MCP server carries the **other half,
+for the agent** - and the two halves are **not the same thing**:
+
+```bash
+# the human picks up the token on their own machine (once)
+mas drafts token
+```
+
+| MCP tool | What it does | Can it change a file? |
+|---|---|---|
+| `mas_draft_stage` | **stage** a change (with a diff and a reason) | **No** - the original keeps every byte |
+| `mas_drafts` | list the drafts, read one diff | No |
+| `mas_draft_resolve` | approve or reject | **Only with the human token** |
+| `mas_files` | index the workspace | read only |
+| `mas_preview` | preview one file | read only |
+
+**An agent cannot approve its own proposal.** A wrong token, an empty token
+and a missing token are all refused, and the original file does not move.
+The token is not about secrecy, it is about **separation of duties** - the
+proposer does not confirm what it proposed.
+
+```bash
+# the agent stages a change (the file does not move)
+mas_draft_stage {path: "notes.txt", content: "the new text", reason: "adding a conclusion"}
+
+# the agent tries to approve it itself - refused
+mas_draft_resolve {action: "approve", draft_id: "D-1a2b3c4d"}
+-> {error: "human_token_required"}
+
+# the human approves - now it is written back
+mas_draft_resolve {action: "approve", draft_id: "D-1a2b3c4d", token: "<the human token>"}
+```
+
+## Parallel multi-agent: let candidates compete
+
+One worker produces exactly one kind of solution. v0.2 lets several workers
+produce candidates **in parallel, from different angles**, and lets the engine
+pick the winner by machine-check results:
+
+```bash
+# Raise the effort for a single task without touching the config
+mas run --goal "..." --criteria-file criteria.json \
+  --parallel 3 --perspective thorough \
+  --reviewers 3 --review-mode majority
+
+mas init --wizard    # q7 worker count, q8 reviewer count, q11 fallback chain
+```
+
+| flag | effect |
+| --- | --- |
+| `--parallel N` | number of parallel candidates (N>1 races several angles; the engine picks the winner by machine-check score) |
+| `--perspective` | anchor angle: `direct` / `thorough` / `concise` / `structured` / `example_first` / `risk_first` |
+| `--reviewers N` | number of independent reviewers (N>1 enables adversarial aggregation) |
+| `--review-mode` | aggregation rule: `all` (unanimous) / `majority` / `any` |
+
+Or edit the config directly:
+
+```json
+{
+  "orchestration": {
+    "parallel_workers": 3,
+    "reviewers": 3,
+    "review_mode": "all"
+  }
+}
+```
+
+| setting | behaviour |
+| --- | --- |
+| `parallel_workers` | candidates produced in parallel. Angles cycle through direct / thorough / concise / structured / example_first / risk_first - **not N samples of one prompt**. |
+| `reviewers` | independent verifiers. Personas cycle through strict / skeptic / completeness / reader. |
+| `review_mode` | `all` (unanimous), `majority` or `any`. |
+
+**Selection is deterministic**: machine-check wins first, then artifact length,
+then index. The same config selects the same candidate twice - which is what
+makes replay trustworthy.
+
+**Machine checks always beat model judgement**: a criterion with a `check` is
+decided by the rule. Only criteria without one fall to the reviewer consensus.
+A reviewer saying "pass" can never override a rule saying "fail".
+
+**Defaults reproduce v0.1 exactly**: with `parallel_workers: 1` and
+`reviewers: 1`, the code path is identical to v0.1.
+
+---
+
+## Multi-backend failover
+
+If one endpoint returns 502 and kills the whole loop, that is not a closed
+loop - it is an outage. Configure fallbacks and the primary is tried first:
+
+```json
+{
+  "provider": "openai_compat",
+  "model": "gpt-4o-mini",
+  "base_url": "https://api.openai.com/v1",
+  "fallbacks": [
+    { "provider": "anthropic", "model": "claude-sonnet-4-5", "base_url": "https://api.anthropic.com" },
+    { "provider": "openai_compat", "model": "kimi-k2", "base_url": "https://api.moonshot.cn/v1" }
+  ]
+}
+```
+
+Each response records which backend actually served it (`provider_used` /
+`model_used`). Only when every backend fails does the run error out.
+
+---
+
+## Observability: reports and replay
+
+```bash
+mas report                 # Markdown closure report
+mas report --out r.md      # write to a file
+mas replay                 # replay the run trace from the ledger
+mas export                 # export the raw ledger as a Markdown table
+```
+
+Every number in the report comes from the ledger. **Nothing is invented.**
+
+---
+
+## Remote access: HTTP + SSE
+
+stdio serves local agents. HTTP/SSE lets the runtime be reached by a remote
+client, a browser dashboard or a CI job:
+
+```bash
+mas http --host 127.0.0.1 --port 8765
+```
+
+| route | method | purpose |
+| --- | --- | --- |
+| `/health` | GET | liveness + version |
+| `/tools` | GET | tool catalogue |
+| `/call` | POST | call any tool, JSON in / JSON out |
+| `/events` | GET | SSE stream of ledger growth |
+
+### Authentication (required when exposing it)
+
+`/call` executes tools and reads the ledger; `/events` streams the ledger
+continuously. Since **v0.4.8** the HTTP transport therefore ships with
+built-in authentication:
+
+```bash
+export MAS_HTTP_TOKEN=$(python -c "import secrets;print(secrets.token_urlsafe(32))")
+mas http --host 0.0.0.0 --port 8765
+```
+
+With `MAS_HTTP_TOKEN` set, every route except `/health` requires the token,
+either as `Authorization: Bearer <token>` or as `X-MAS-Token: <token>`.
+
+**Fail-closed**: binding to a non-loopback address (`0.0.0.0`, a LAN IP)
+*without* a token makes the server **refuse to start** (exit code `2`) - a
+typo in an environment variable must never turn into an open, world-reachable
+control plane. With authentication on, CORS is pinned to
+`http://127.0.0.1` instead of `*`, so no arbitrary web page can call it
+cross-site.
+
+
+### Keeping it running (service + TLS reverse proxy)
+
+For long-term access from a phone or another device, run the service bound to loopback and expose only a TLS entry point:
+
+```bash
+# 1. keep the token in a file, not in version control or the start script
+python -c "import secrets,pathlib;pathlib.Path.home().joinpath('.mas/http_token.txt').write_text(secrets.token_urlsafe(32))"
+
+# 2. run the service persistently (systemd / Windows Startup folder / launchd)
+export MAS_HTTP_TOKEN=$(cat ~/.mas/http_token.txt)
+mas http --host 127.0.0.1 --port 8768
+
+# 3. publish only the TLS entry point (tailnet-only by default)
+tailscale serve --bg --https=8768 http://127.0.0.1:8768
+```
+
+Then hit `https://<your-host>:<port>/tools` with an `Authorization: Bearer <token>` header.
+
+Why this shape:
+
+- Binding `127.0.0.1` and terminating TLS at the proxy keeps the service off the LAN, unlike `--host 0.0.0.0`.
+- The token lives **outside** the start script; if the token file is missing the script exits instead of degrading to unauthenticated.
+- `tailscale serve` is **tailnet-only** by default; `funnel` publishes to the public internet, which widens exposure and deserves a separate review.
+- To stop: `tailscale serve --https=8768 off`.
+
+
+---
+
+## Four stop-loss mechanisms
+
+1. **Iteration budget**: `budget.max_iterations` → `budget_exhausted`.
+2. **Wall-clock budget**: `budget.deadline_sec`.
+3. **Token budget**: `budget.max_tokens`.
+4. **Stagnation detection**: the same artifact repeated N times in a row
+   (default 3, `stagnation_limit`) → **escalate to a human ticket** instead of
+   spinning.
+
+An escalated ticket carries the full context (goal, criteria, last artifact,
+failure reasons, iteration history), so a human can pick it up with one command:
+
+```bash
+mas tickets
+mas resume T-20261111-085346-4396 --note "rewrite the conclusion section"
+```
+
+---
+
+## The closure ledger
+
+Every cycle appends one entry to `~/.mas/ledgers/runs.jsonl` (append-only):
+
+```json
+{"seq":3,"ts":"2026-11-11T08:53:46+00:00","run_id":"R-3f1c...","task_id":"R-3f1c...-1",
+ "iteration":2,"role":"closure","provider":"mock","model":"mock-1",
+ "artifact_sha":"9d1f...","verdict":"pass","decision":"close",
+ "scores":[{"id":"c1","pass":true,"note":"all required strings present","source":"rule"}],
+ "closed":true}
+```
+
+The ledger is the **evidence**: reviewable, reproducible, handable over, and
+usable as a CI gate.
+
+---
+
+## Bring your own model
+
+The runtime only uses the standard library and `urllib` for HTTP, so any
+OpenAI-compatible endpoint works:
+
+```bash
+# Kimi / Moonshot
+mas init --provider openai_compat --model kimi-k2 --base-url https://api.moonshot.cn/v1
+export MAS_API_KEY=sk-...
+
+# Claude
+mas init --provider anthropic --model claude-sonnet-4-5
+export MAS_API_KEY=sk-ant-...
+
+# GPT / Grok / DeepSeek / Qwen / self-hosted vLLM - anything OpenAI-compatible
+mas init --provider openai_compat --model gpt-4o-mini --base-url https://api.openai.com/v1
+```
+
+Three built-in tolerances cover most "OpenAI-compatible" gateways:
+
+- `response_format` is dropped and the call retried once when unsupported, with
+  JSON then extracted from the answer body;
+- SSE event streams (many relays and local bridges answer this way) are folded
+  back into the standard chat shape;
+- `<think>` scratchpads emitted before the answer are stripped, so reasoning
+  never reaches the artifact, the verdict or the ledger.
+
+Environment variables work too, with no config file edit:
+
+```bash
+export MAS_PROVIDER=openai_compat MAS_MODEL=your-model MAS_BASE_URL=https://... MAS_API_KEY=...
+```
+
+---
+
+## Plug into MCP (Codex / Claude Code / any MCP client)
+
+The installer writes this into `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.mas_loop]
+command = "python"
+args = ["-m", "mas", "serve"]
+startup_timeout_sec = 30.0
+tool_timeout_sec = 300.0
+```
+
+Tools exposed:
+
+| tool | purpose |
+| --- | --- |
+| `mas_run` | run a closure task; returns status and per-criterion verdicts |
+| `mas_status` | config, ledger size, open tickets |
+| `mas_ledger` | read the closure ledger (filterable by `run_id`) |
+| `mas_tickets` / `mas_ticket_resolve` / `mas_resume` | human intervention |
+| `mas_report` / `mas_replay` / `mas_export` | reporting and replay |
+| `mas_teams` | list team templates |
+| `mas_doctor` | installation self-check |
+| `mas_config` | read / update configuration |
+
+The protocol is a pure-standard-library JSON-RPC 2.0 over stdio -
+**no `pip install mcp` required**.
+
+---
+
+## DeepSeek Harness integration (optional)
+
+The repo ships a **DSH plugin** (`integrations/dsh-openloop-mas`). It does not
+re-implement the loop: it talks to the local runtime over **MCP**, so the
+verdicts and the ledger in a DSH conversation are the *same facts* a Codex or
+Claude Code client sees.
+
+```powershell
+# optional switch, off by default - the main line stays dependency free
+# (pure Python, no Node / DSH / npm needed)
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -InstallDshPlugin
+```
+
+That adds 6 tools to DSH: `mas_run`, `mas_status`, `mas_ledger`, `mas_tickets`,
+`mas_report`, `mas_doctor`.
+
+Details, configuration, measured evidence and the boundaries are in
+**[docs/dsh-integration.md](docs/dsh-integration.md)**.
+
+### Making DSH actually talk: `mas relay`
+
+Installing the plugin is not the same as the model being able to use it. DSH's
+`dsh-llm-pi-ai` adapter **insists on an API key**, while a private endpoint often
+**wants no key at all** (and may even reject a placeholder with `401`). That is a
+protocol-contract vs endpoint-contract collision, not a misconfiguration.
+`mas relay` sits in between: it drops the client's `Authorization` and optionally
+substitutes the upstream's real key.
+
+```powershell
+# generate a working DSH profile (writes config + installs the plugin + prints commands)
+python tools/setup_dsh_bridge.py --profile masbridge --relay-port 8766
+
+# terminal 1
+mas relay --upstream http://127.0.0.1:16024 --port 8766
+
+# terminal 2: pi-ai insists on a key - a placeholder is fine, the relay drops it
+$env:MAS_BRIDGE_API_KEY = "placeholder"
+dsh --profile masbridge headless "run a closure with mas_run: write a release note, acceptance criterion file_exists on out/report.md"
+```
+
+> **`headless` is a profile name, not a subcommand.** The correct shape is
+> `dsh --profile <name> headless "<task>"`.
+
+Two authentication modes, the security boundary and the verified/unverified list
+are in **[docs/relay.md](docs/relay.md)**.
+
+### A sibling plugin in the same host: the MOKI library
+
+[MOKI](https://github.com/JKZeng-cell/moki-library-for-dsh) (`dsh-moki-library`) is
+a **different project** - do not confuse it with OpenMausBot. It adds a **local
+resource manager** to DeepSeek Harness: unified organisation of files and web
+links, multi-format preview, `Alt+D` to summon an AI chat over a selection, and
+**edits land in a draft first** - only written back after the user confirms.
+
+The split is clean: **MOKI organises the material, MAS decides whether the
+deliverable actually passes.**
+
+```bash
+dsh plugin --profile web add "dsh-moki-library@file:<abs>/dsh-moki-library-0.1.73.tgz" --allow-build=sharp
+dsh plugin --profile web add "dsh-openloop-mas@file:<abs>/dsh-openloop-mas-0.7.16.tgz"
+```
+
+> MOKI needs **DSH >= 0.2.2-rc.1**, **Node >= 22.19**, and it is a **web-platform
+> plugin** - in a CLI / headless profile it stays **pending** (wrong host shape,
+> not a broken install).
+
+## Bundled Agent Skills
+
+| Skill | purpose |
+| --- | --- |
+| `mas-loop` | run closure tasks, write acceptance criteria, read ledger and tickets |
+| `mas-review` | multi-perspective adversarial review (worker / verifier / reflector separation) |
+| `mas-scaffold` | set up team templates and CI gates for a new project |
+
+The installer places them in every skill directory it finds (`~/.codex/skills`,
+`~/.claude/skills`, `~/.agents/skills`, `~/.gemini/skills`).
+
+> The **single source of truth is `mas/skills/`**. It ships inside the wheel,
+> so the skill a `pip install` gives you is byte-identical to the one a source
+> checkout gives you - there are no two copies that can drift apart.
+
+To remove it again:
+
+```bash
+mas uninstall       # remove the skills and the MCP registration (keeps ~/.mas)
+pip uninstall openloop-mas
+```
+
+---
+
+## Command cheat sheet
+
+```bash
+mas install       # install skills + register the MCP server
+mas sync          # bring the installed skills back to the packaged version
+mas uninstall     # remove the skills + MCP registration (keeps the ledger)
+mas init          # write/update config
+mas init --wizard # interactive setup
+mas run           # run a closure task
+mas demo          # three offline scenarios
+mas verify        # real closure self-check
+mas bench         # offline benchmark
+mas files         # index the workspace: every file, its format, its facts
+mas preview FILE  # preview one file (PDF / Word / text...)
+mas drafts        # drafts waiting for a human: list / show / approve / reject / token / ticket / conflict
+mas drafts token  # the human token: an agent cannot approve its own draft
+mas drafts ticket D-ID --token <token>  # a ticket: one draft, one use, 15 minutes
+mas status        # local state
+mas ledger        # closure ledger
+mas report        # Markdown closure report
+mas replay        # replay a run trace
+mas export        # export the ledger as Markdown
+mas tickets       # human tickets
+mas resume ID     # continue with a human note
+mas teams         # team templates
+mas doctor        # installation self-check
+mas selftest      # the flaky-bug gate: hammer the paths that used to fail at random (offline)
+mas serve         # run as an MCP stdio server
+mas http          # run as an HTTP + SSE server
+mas relay         # OpenAI-compatible relay for clients that insist on an API key (127.0.0.1:8766)
+```
+
+`mas run` exit codes: `0` = closed, `2` = not closed. Use it directly as a CI
+gate.
+
+---
+
+## Development and tests
+
+```bash
+python -m unittest discover -s tests -v   # 213 offline tests, no network needed
+python -m mas demo                        # three closure scenarios
+python -m mas bench                       # offline benchmark
+python -m mas verify                      # real closure self-check
+python -m mas selftest                     # the flaky-bug gate (offline)
+```
+
+Covered: machine checks, the three termination paths (closure / stagnation /
+budget), rules overriding model verdicts, unjudged criteria never passing, MCP
+handshake and tool calls, config merging and env overrides, SSE folding,
+scratchpad stripping, UTF-8 safety on legacy code pages, parallel candidate
+selection, adversarial review aggregation (all/majority/any), backend failover,
+real HTTP/SSE requests, reports and replay, wizard and self-check.
+
+---
+
+## Docs
+
+| doc | contents |
+| --- | --- |
+| [docs/quickstart.md](docs/quickstart.md) | 5-minute quickstart: install → offline → real model → human in the loop |
+| [docs/architecture.md](docs/architecture.md) | runtime architecture and data flow |
+| [docs/loop-engineering.md](docs/loop-engineering.md) | methodology: why the loop is designed this way |
+| [docs/mcp.md](docs/mcp.md) | MCP integration, handshake, tools, protocol details, troubleshooting |
+| [docs/acceptance-report.md](docs/acceptance-report.md) | installation and acceptance report: measured evidence, CI results, known limits |
+
+---
+
+## Positioning
+
+OpenLoop MAS is **not** a clone of "private AI agent team" products. It
+supplies a different layer:
+
+- those products connect Claude / GPT / Kimi into a chatty agent team that runs
+  locally or in the cloud, with MCP and lots of app integrations;
+- OpenLoop MAS answers "**after the team finishes, how do I know it actually
+  finished, and can I replay, stop and hand over the process?**"
+
+They stack: the former is the execution layer, the latter is the closure layer.
+
+---
+
+## License
+
+MIT © OpenLoop MAS contributors
+
+---
+
+## Gate archaeology
+
+This project now holds **23 gates**, and every one of them grew out of a
+**real incident**. They are listed below newest first - if you just want to
+use the tool, skip this section.
+
+- **The 23rd gate `onboarding_path`** - the first 22 gates all watch the
+  *runtime*: does the engine close, does the ledger keep, does the draft hold.
+  **Not one of them watched the door** - and a newcomer only ever reads two
+  things: the README and the quickstart.
+  The cost was real. By the time the project was 22 gates deep, the README had
+  grown to **2242 lines**, the opening was filled with gate archaeology, and
+  **the quickstart sat at line 1314**. Two install sections were both called
+  "option two". The version the docs pinned was still **0.7.17** while the
+  release was 0.7.82.
+  None of that breaks the engine. All of it stops a beginner - and "a
+  beginner can install this in one command" is one of this project's goals.
+  So the gate holds the door: the onboarding section has to be **within the
+  first 40 lines**, the install options must be **numbered without a
+  duplicate**, every `mas` command the docs mention **has to exist in the
+  parser**, the pinned version **has to be the running version**, and the
+  first path **must not need an API key** (a beginner has no account yet).
+  Found the same way as the rest: the locator for the onboarding section is
+  blinded on purpose and the gate has to notice. Four more mutations - a
+  duplicate option number, a drifting version, a command that does not exist,
+  and a first path that demands a key - are caught as well.
+  This gate watches **the first page a human reads**, not the result the code
+  produces - that is what makes it different from the first 22.
+
 - **The 22nd gate `shadow_guard`** - every check in this project asks a question about
   the **code that is running**. But the person at the keyboard does not run the code
   the installer verified - they run whatever ``mas`` their PATH reaches first.
@@ -1491,10 +2387,6 @@ wrong candidate):
   the fix reverted the test fails immediately (all candidates at zero
   passes) - the test provably catches the defect, it does not merely run.
 
-[![ci](https://github.com/tffgwy/openloop-mas/actions/workflows/ci.yml/badge.svg)](https://github.com/tffgwy/openloop-mas/actions/workflows/ci.yml)
-[![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
-[![deps](https://img.shields.io/badge/dependencies-0-orange.svg)]()
 
 **What v0.7.19 adds** (fixing a defect that destroyed the truth of every verdict):
 
@@ -1693,850 +2585,3 @@ wrong candidate):
 **What v0.2.0 adds**: parallel candidate competition, adversarial cross-review,
 multi-backend failover, HTTP/SSE remote access, closure reports and replay,
 an interactive setup wizard, an offline benchmark and a real closure self-check.
-
----
-
-## Why
-
-The most common failure in multi-agent collaboration is not "the model is not
-smart enough" - it is that **the loop never closes**:
-
-- No verifiable acceptance criteria → everyone says "close enough" and nobody can be convinced;
-- No exit condition → rounds keep going until the tokens run out;
-- No process record → failures cannot be reviewed, handed over or audited;
-- No stop-loss → an obviously doomed task retries until it times out.
-
-Loop Engineering addresses exactly this: **turning "is it done?" into a fact a
-machine can decide.**
-
-OpenLoop MAS writes the closure into code constraints instead of hoping a
-prompt will do it:
-
-| Stage | Role | Output | Decided by |
-| --- | --- | --- | --- |
-| Plan | `planner` | steps and risks | — |
-| Work | `worker` | **the deliverable itself** | — |
-| Verify | `verifier` | per-criterion pass/fail plus evidence | engine (machine checks win) |
-| Reflect | `reflector` | why it failed, what to change | — |
-| Close | `lead` | **judges only what nobody judged**: `close` / `revise` / `escalate` | engine (**final veto**) |
-
-The `lead` is an *advisor, not a judge of facts*: a failed machine check
-is a fact, so the lead is not consulted at all in that case, and when it
-is consulted it may only fill a gap. The engine keeps the final word
-over stagnation, budget and deadline, and a lead that cannot decide
-leaves the criterion unjudged and the loop asking.
-
-A loop is closed only when **artifact + per-criterion verdicts + decision +
-ledger entry** all exist. Otherwise the status is one of exactly three:
-`escalated` (handed to a human), `budget_exhausted` (stopped by budget) or
-`error`. **There is no "almost done" state.**
-
----
-
-## 5-minute quickstart
-
-> The configuration always lives in `~/.mas/config.json` (Windows:
-> `%USERPROFILE%\.mas\config.json`). The run ledger lives under `state_dir`
-> instead - the two are separate, so moving the state directory never loses
-> your setup. In CI, use `MAS_CONFIG_PATH` for the config file and
-> `MAS_STATE_DIR` for the state directory.
-
-### Option 1: one script (cross-platform, no Python setup needed)
-
-```bash
-# macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/tffgwy/openloop-mas/main/install.sh | bash
-
-# Windows (PowerShell)
-irm https://raw.githubusercontent.com/tffgwy/openloop-mas/main/install.ps1 | iex
-```
-
-The script creates the virtual environment, installs the package,
-registers the MCP server and runs a self-check.
-
-### Option 2: pip (needs Python 3.10+)
-
-```bash
-pip install openloop-mas     # see the note below: this name is not on PyPI yet
-mas install        # install skills + register the MCP server
-mas doctor         # self-check (skill drift + runtime version gap)
-mas sync           # bring the installed skills back to the packaged version
-mas runtime        # show which runtime build is installed on disk
-mas upgrade        # replace an outdated installed runtime with this one
-mas demo           # no API key needed - watch it close a loop on its own
-```
-
-> **Upgrading?** Run `mas upgrade` first (it replaces the runtime that is
-> actually serving), then `mas install` (so the MCP registration points at
-> the new build). Doing only the latter refreshes the skills and the
-> registration while **the old code keeps running** - which is exactly
-> what the new `runtime` check in `mas doctor` now points out.
-
-> **About `pip install openloop-mas`**: the name has **not been created on
-> PyPI yet**, so pip answers `No matching distribution found`. Use the
-> install script above for now, or take a wheel from
-> [Releases](https://github.com/tffgwy/openloop-mas/releases/latest).
-> `mas doctor` **looks the name up** on PyPI and tells you the truth -
-> once the name is published, both the note and the check line up.
-
-`mas doctor` talks to a person: every check explains what it *is*, is
-tagged **required / recommended / optional**, and the report ends with
-one conclusion and one next command.
-
-```
-[OK  ] python（必需）
-       3.14.10
-       是什么：Python 版本够不够新（3.10 以上才能跑）
-[注意] skill_codex（可选）
-       未安装: ...\.codex\skills\mas-loop\SKILL.md（运行 mas install）
-       是什么：给 Codex 装的 skill：让 Codex 会用这个闭环工具
-...
-小结：8 项正常，6 项注意，0 项坏了
-结论：闭环能跑，但智能体接不上：skill_codex、skill_claude、skills_sync、mcp_codex、mcp_claude 还没装。
-下一步：运行 mas install，一条命令装上 skill 并注册 MCP 服务。
-```
-
-The three verdicts mean different things: **the loop cannot run** (a
-required part is broken), **the loop runs but no agent can reach it**
-(skills / MCP not installed), or **everything is ready**. The exit code
-is non-zero only in the first case.
-
-`mas install` copies the **agent skills into the Codex / Claude Code skill
-directories** and **registers the MCP server** in `~/.codex/config.toml`
-and `~/.claude.json`. Open a new terminal afterwards and both hosts know
-the workflow.
-
-- Idempotent: running it twice never registers twice and never clobbers
-  your existing configuration.
-- Safe: every configuration file it modifies is backed up as
-  `*.bak-<timestamp>` first.
-- No secrets: the install never writes an API key.
-
-> Add `--json` to see exactly what it did.
-
-### Option 2: download one script (no dependencies - best for beginners)
-
-No clone, no pip, nothing to install yourself - **download one script file**
-and run it:
-
-```powershell
-# Windows: download install.ps1 anywhere, then run it
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
-```
-
-```bash
-# macOS / Linux: download install.sh anywhere, then run it
-bash install.sh
-```
-
-The script fetches the published wheel from the GitHub release, unpacks it
-with the standard library, installs it into `~/.mas/`, registers the MCP
-server and the skills, and finishes with an offline self-check.
-**All it needs is Python 3.10+ - no git, no pip, no compiler.**
-
-Pin a specific release instead of "the latest":
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.17
-```
-
-```bash
-MAS_VERSION=0.7.17 bash install.sh
-```
-
-> The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
-> user's registry key). Pass `-SkipPath` (Windows) or `MAS_SKIP_PATH=1`
-> (shell) to leave `PATH` alone.
-
-### Option 3: install from source (for development)
-
-```bash
-git clone https://github.com/tffgwy/openloop-mas.git
-cd openloop-mas
-
-# Windows
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
-# macOS / Linux
-bash install.sh
-
-# No API key needed - watch it close a loop on its own
-mas demo
-```
-
-`mas demo` runs three offline scenarios and prints the real results:
-
-```
-[OK ] closure     期望=closed             实际=closed             迭代=2 票=-
-[OK ] stagnation  期望=escalated          实际=escalated          迭代=4 票=T-20261111-085346-4396
-[OK ] budget      期望=budget_exhausted   实际=budget_exhausted   迭代=1 票=-
-```
-
-> In `mock` mode, pass/fail is decided by the engine's deterministic machine
-> checks - not by a model claiming "I am done". The mock only simulates the
-> worker producing a draft; the verdict always belongs to the checker.
-
----
-
-## Run a real task
-
-```bash
-mas run --goal "Write a v0.1.0 release note" \
-  --criteria '{"id":"c1","desc":"contains the version","check":{"type":"contains","arg":"v0.1.0"}}' \
-  --criteria '{"id":"c2","desc":"at least 200 chars","check":{"type":"min_chars","arg":200}}'
-```
-
-Output:
-
-```
-状态：closed（迭代 2 次，token 2140）
-账本：/home/you/.mas/ledgers/runs.jsonl
-  [PASS] c1 (rule) all required strings present
-  [PASS] c2 (rule) length 418 >= 200
---- 交付物预览 ---
-...
-```
-
-### Machine check types (decided by the engine, fully reproducible)
-
-| type | meaning | argument |
-| --- | --- | --- |
-| `contains` / `not_contains` | must contain / must not contain | `arg` (string or array) |
-| `min_chars` / `max_chars` | length bounds | `arg` (int) |
-| `regex` | regex match | `arg` (pattern) |
-| `lines_min` | minimum non-empty lines | `arg` (int) |
-| `section` | must contain a `## heading` | `arg` (heading) |
-| `json_keys` | required keys of a JSON object | `arg` (array) |
-
-Exact semantics (verified against the implementation - write criteria against this):
-
-| type | exact verdict | common trap |
-| --- | --- | --- |
-| `contains` | artifact contains the string(s); `arg` may be an array and **every** item must be present | one missing item fails the whole criterion |
-| `not_contains` | artifact contains **none** of the given strings | an array means "not one of them may appear" |
-| `min_chars` / `max_chars` | **character** count of the artifact, whitespace and newlines included | not a word count, not a byte count |
-| `regex` | `re.search`, **DOTALL is always on** (`.` spans lines) | no `(?s)` needed; it matches a substring, not the whole artifact |
-| `lines_min` | count of **non-empty** lines (blank lines do not count) | blank lines between paragraphs do not help |
-| `section` | the artifact contains a line that is exactly `## <arg>` (trailing whitespace allowed) | it must be a **second-level** heading - `#` and `###` do not count; merely mentioning `## conclusion` in a sentence does **not** count, and `## conclusion analysis` does **not** satisfy `## conclusion` |
-| `json_keys` | the artifact must be a JSON **object** holding every given key | invalid JSON fails immediately |
-
-An unknown type is judged `unjudged` (i.e. **not passed**) - it is never silently let through.
-
-**A missing argument invalidates the criterion - it does not pass it.** A check with no
-usable argument cannot decide anything, so the engine refuses to start (exit code 1,
-zero tokens burned) instead of letting it pass by default:
-
-| type | required argument | rejected example |
-| --- | --- | --- |
-| `contains` / `not_contains` | a non-empty string, or a non-empty list of strings | `""`, `[]` |
-| `min_chars` / `max_chars` / `lines_min` | a non-negative integer | missing, `-1`, `"many"` |
-| `regex` | a compilable pattern | `""`, `"([unclosed"` |
-| `section` | the heading text | `""` |
-| `json_keys` | a key name, or a non-empty list of key names | `[]`, missing |
-
-A broken argument in the **shorthand** form fails just as fast. `--criteria 'regex:'`
-and `--criteria 'min_chars:many'` keep their check type and are caught by the table
-above - exit code 1, zero tokens. The same standard written as JSON or as a shorthand
-now behaves identically: a missing argument is a missing argument, never a quiet
-fallback to "the model decides".
-
-**A model's verdict is read, not coerced with ``bool()``.** If the reviewer answers
-`"pass": "false"`, `bool("false")` is `True` - a criterion the reviewer just failed would
-close the loop. The engine reads what the value *means*: `"false"` / `"0"` / `"no"` fail,
-`"true"` / `"1"` / `"yes"` pass, and anything unreadable (`"maybe"`, empty, missing) counts
-as **unjudged** rather than a guess.
-
-A **misspelled type name** is refused too. In the JSON form a type that does
-not exist (`{"check":{"type":"mystery"}}`) stops the run up front and lists the
-known types - a typo that slipped through would degrade into "the model decides",
-and a model that says "looks fine" would close the criterion.
-
-Only in the **shorthand** form does an unknown type name fall back to a plain
-description (`--criteria 'unknown_type:abc'`) - there the intention was never to
-write a machine check, which is different from writing one and getting it wrong.
-
-### Shorthand notation (since v0.4.2)
-
-Machine checks do not have to be written as JSON. The CLI accepts `<type>:<arg>` directly:
-
-```bash
-mas run --goal "write a dedupe function" \
-  --criteria 'regex:def dedupe.*set' \
-  --criteria 'min_chars:200' \
-  --criteria 'contains:key conclusion'
-```
-
-Shorthand and JSON are fully equivalent - the verdict still comes from the engine's
-deterministic checker (recorded as `source: rule` in the ledger). Shorthand is
-resolved in the engine layer, so criteria replayed from MCP, HTTP or the ledger
-are handled identically.
-
-**Several criteria at once** are given as a JSON array - every entry in the array
-keeps its own machine check and is actually verified. The array is never taken
-as one plain description (that would mean no machine check ran at all and the
-closure actually came from a model saying "looks fine"):
-
-```bash
-mas run --goal "write a release note for v0.1.0" \
-  --criteria '[{"id":"c1","desc":"contains the version","check":{"type":"contains","arg":"v0.1.0"}},
-               {"id":"c2","desc":"at least 200 chars","check":{"type":"min_chars","arg":200}}]'
-```
- An unknown type prefix (e.g. `just write it well`) stays
-a plain description and is never mistaken for a machine check, and a numeric type
-with a non-numeric argument (e.g. `min_chars:many`) falls back to a plain
-description too - a criterion may never claim a check it cannot perform.
-
-Criteria without a machine check fall back to the model verifier - but **if the
-model gives no verdict, the default is fail** (`unjudged`). A criterion marked
-`"required": false` is **recorded but never blocks closure**: if it carries a
-machine check the rule still runs and its real result lands in the report
-(`PASS` or `FAIL`), it just never keeps the loop open; without a machine
-check the reviewer's verdict is recorded the same way.
-
-**The `required` flag is read by meaning, not by truthiness.** Writing
-`"required": "false"` as a *string* really does mean optional - `bool("false")`
-is `True`, and a criterion that travels through JSON, MCP or a shell script
-easily picks up those quotes. The engine reads the meaning of the value:
-`"false"` / `"0"` / `"no"` are optional, `"true"` / `"1"` / `"yes"` are
-required, and anything unreadable (`"maybe"`, missing, `null`) stays
-**required** - an unreadable flag must never silently relax a standard.
-
----
-
-### The unified resource index and multi-format preview (v0.7.71): one folder is one index
-
-```bash
-mas files                  # index every workspace on this machine
-mas files ./out            # index one folder
-mas preview ./out/report.pdf   # preview one file
-```
-
-```bash
-$ mas files ./out
-
-[./out]  5 files  263.7 KB
-    pdf        1
-    image      2
-    model      1
-      836.0 B  pdf        report.pdf  pages 2, text chars 57
-      327.0 B  image      shot.png  width 12, height 7
-      117.0 B  image      liar.txt  width 4, height 4
-      213.0 B  model      ascii.stl  triangles 2
-      251.0 B  zip        bundle.zip  members 2
-```
-
-**The format comes from the file's own header, not from its name** - the
-`liar.txt` above is really a PNG, so it is reported as `image`. **A file that
-cannot be read is listed with the reason** - that warning line is information,
-not noise: an unreadable file in the middle of a deliverable is exactly what a
-reader needs to see.
-
-`mas preview` pulls a PDF's words out of its *compressed stream* and a Word
-document's words out of its *archive member*; an image with no body says so
-plainly instead of showing a blank screen. A missing file or a folder gives
-**exit code 2**.
-
-See **[docs/resources.md](docs/resources.md)**.
-
-### The draft layer (v0.7.72): the change goes into a draft, a human writes it back
-
-```bash
-mas drafts                              # what is waiting for a decision
-mas drafts show D-1a2b3c4d              # the diff of one draft
-mas drafts approve D-1a2b3c4d           # approve: write it back
-mas drafts reject  D-1a2b3c4d           # reject: nothing changes
-mas drafts token                        # the human token (an agent cannot approve its own draft)
-mas drafts ticket D-1a2b3c4d --token <token>      # sign a ticket: one draft, one use, 15 minutes
-mas drafts conflict                                # which drafts had their file moved on?
-mas drafts approve D-1a2b3c4d --force                # overwrite anyway: you know what you are doing
-```
-
-When a run wants to change a file that **already exists**, it no longer
-overwrites it. The change goes into a draft, **the original keeps every byte**,
-the draft carries a **readable diff**, and only your word - "approve" - writes
-it back. "Reject" changes nothing at all.
-
-```bash
-$ mas drafts
-
-workspace ~/mas/artifacts: 1 draft
-  D-1a2b3c4d  pending  notes.txt  changed
-        reason: the loop proposed a change to an existing file
-```
-
-**A new file is still written right away** - there is nothing there to lose.
-Set `"edit_policy": "overwrite"` in the configuration to get the old behaviour
-back (the default is `"draft"`).
-
-**The machine checks read the drafted bytes**, not the old file on the disk -
-otherwise the loop would be stuck forever: propose a change, read the old
-file, fail, propose again, read the old file. The draft lives in the workspace
-next to the file it changes (`.mas-drafts/`), so a copied folder carries its
-drafts along - a lost draft is a change that can never be reviewed.
-
-See **[docs/drafts.md](docs/drafts.md)**.
-
-### An agent stages a draft over MCP (v0.7.73): proposing and approving are two actions
-
-`mas drafts` is the **human** half. The MCP server carries the **other half,
-for the agent** - and the two halves are **not the same thing**:
-
-```bash
-# the human picks up the token on their own machine (once)
-mas drafts token
-```
-
-| MCP tool | What it does | Can it change a file? |
-|---|---|---|
-| `mas_draft_stage` | **stage** a change (with a diff and a reason) | **No** - the original keeps every byte |
-| `mas_drafts` | list the drafts, read one diff | No |
-| `mas_draft_resolve` | approve or reject | **Only with the human token** |
-| `mas_files` | index the workspace | read only |
-| `mas_preview` | preview one file | read only |
-
-**An agent cannot approve its own proposal.** A wrong token, an empty token
-and a missing token are all refused, and the original file does not move.
-The token is not about secrecy, it is about **separation of duties** - the
-proposer does not confirm what it proposed.
-
-```bash
-# the agent stages a change (the file does not move)
-mas_draft_stage {path: "notes.txt", content: "the new text", reason: "adding a conclusion"}
-
-# the agent tries to approve it itself - refused
-mas_draft_resolve {action: "approve", draft_id: "D-1a2b3c4d"}
--> {error: "human_token_required"}
-
-# the human approves - now it is written back
-mas_draft_resolve {action: "approve", draft_id: "D-1a2b3c4d", token: "<the human token>"}
-```
-
-## Parallel multi-agent: let candidates compete
-
-One worker produces exactly one kind of solution. v0.2 lets several workers
-produce candidates **in parallel, from different angles**, and lets the engine
-pick the winner by machine-check results:
-
-```bash
-# Raise the effort for a single task without touching the config
-mas run --goal "..." --criteria-file criteria.json \
-  --parallel 3 --perspective thorough \
-  --reviewers 3 --review-mode majority
-
-mas init --wizard    # q7 worker count, q8 reviewer count, q11 fallback chain
-```
-
-| flag | effect |
-| --- | --- |
-| `--parallel N` | number of parallel candidates (N>1 races several angles; the engine picks the winner by machine-check score) |
-| `--perspective` | anchor angle: `direct` / `thorough` / `concise` / `structured` / `example_first` / `risk_first` |
-| `--reviewers N` | number of independent reviewers (N>1 enables adversarial aggregation) |
-| `--review-mode` | aggregation rule: `all` (unanimous) / `majority` / `any` |
-
-Or edit the config directly:
-
-```json
-{
-  "orchestration": {
-    "parallel_workers": 3,
-    "reviewers": 3,
-    "review_mode": "all"
-  }
-}
-```
-
-| setting | behaviour |
-| --- | --- |
-| `parallel_workers` | candidates produced in parallel. Angles cycle through direct / thorough / concise / structured / example_first / risk_first - **not N samples of one prompt**. |
-| `reviewers` | independent verifiers. Personas cycle through strict / skeptic / completeness / reader. |
-| `review_mode` | `all` (unanimous), `majority` or `any`. |
-
-**Selection is deterministic**: machine-check wins first, then artifact length,
-then index. The same config selects the same candidate twice - which is what
-makes replay trustworthy.
-
-**Machine checks always beat model judgement**: a criterion with a `check` is
-decided by the rule. Only criteria without one fall to the reviewer consensus.
-A reviewer saying "pass" can never override a rule saying "fail".
-
-**Defaults reproduce v0.1 exactly**: with `parallel_workers: 1` and
-`reviewers: 1`, the code path is identical to v0.1.
-
----
-
-## Multi-backend failover
-
-If one endpoint returns 502 and kills the whole loop, that is not a closed
-loop - it is an outage. Configure fallbacks and the primary is tried first:
-
-```json
-{
-  "provider": "openai_compat",
-  "model": "gpt-4o-mini",
-  "base_url": "https://api.openai.com/v1",
-  "fallbacks": [
-    { "provider": "anthropic", "model": "claude-sonnet-4-5", "base_url": "https://api.anthropic.com" },
-    { "provider": "openai_compat", "model": "kimi-k2", "base_url": "https://api.moonshot.cn/v1" }
-  ]
-}
-```
-
-Each response records which backend actually served it (`provider_used` /
-`model_used`). Only when every backend fails does the run error out.
-
----
-
-## Observability: reports and replay
-
-```bash
-mas report                 # Markdown closure report
-mas report --out r.md      # write to a file
-mas replay                 # replay the run trace from the ledger
-mas export                 # export the raw ledger as a Markdown table
-```
-
-Every number in the report comes from the ledger. **Nothing is invented.**
-
----
-
-## Remote access: HTTP + SSE
-
-stdio serves local agents. HTTP/SSE lets the runtime be reached by a remote
-client, a browser dashboard or a CI job:
-
-```bash
-mas http --host 127.0.0.1 --port 8765
-```
-
-| route | method | purpose |
-| --- | --- | --- |
-| `/health` | GET | liveness + version |
-| `/tools` | GET | tool catalogue |
-| `/call` | POST | call any tool, JSON in / JSON out |
-| `/events` | GET | SSE stream of ledger growth |
-
-### Authentication (required when exposing it)
-
-`/call` executes tools and reads the ledger; `/events` streams the ledger
-continuously. Since **v0.4.8** the HTTP transport therefore ships with
-built-in authentication:
-
-```bash
-export MAS_HTTP_TOKEN=$(python -c "import secrets;print(secrets.token_urlsafe(32))")
-mas http --host 0.0.0.0 --port 8765
-```
-
-With `MAS_HTTP_TOKEN` set, every route except `/health` requires the token,
-either as `Authorization: Bearer <token>` or as `X-MAS-Token: <token>`.
-
-**Fail-closed**: binding to a non-loopback address (`0.0.0.0`, a LAN IP)
-*without* a token makes the server **refuse to start** (exit code `2`) - a
-typo in an environment variable must never turn into an open, world-reachable
-control plane. With authentication on, CORS is pinned to
-`http://127.0.0.1` instead of `*`, so no arbitrary web page can call it
-cross-site.
-
-
-### Keeping it running (service + TLS reverse proxy)
-
-For long-term access from a phone or another device, run the service bound to loopback and expose only a TLS entry point:
-
-```bash
-# 1. keep the token in a file, not in version control or the start script
-python -c "import secrets,pathlib;pathlib.Path.home().joinpath('.mas/http_token.txt').write_text(secrets.token_urlsafe(32))"
-
-# 2. run the service persistently (systemd / Windows Startup folder / launchd)
-export MAS_HTTP_TOKEN=$(cat ~/.mas/http_token.txt)
-mas http --host 127.0.0.1 --port 8768
-
-# 3. publish only the TLS entry point (tailnet-only by default)
-tailscale serve --bg --https=8768 http://127.0.0.1:8768
-```
-
-Then hit `https://<your-host>:<port>/tools` with an `Authorization: Bearer <token>` header.
-
-Why this shape:
-
-- Binding `127.0.0.1` and terminating TLS at the proxy keeps the service off the LAN, unlike `--host 0.0.0.0`.
-- The token lives **outside** the start script; if the token file is missing the script exits instead of degrading to unauthenticated.
-- `tailscale serve` is **tailnet-only** by default; `funnel` publishes to the public internet, which widens exposure and deserves a separate review.
-- To stop: `tailscale serve --https=8768 off`.
-
-
----
-
-## Four stop-loss mechanisms
-
-1. **Iteration budget**: `budget.max_iterations` → `budget_exhausted`.
-2. **Wall-clock budget**: `budget.deadline_sec`.
-3. **Token budget**: `budget.max_tokens`.
-4. **Stagnation detection**: the same artifact repeated N times in a row
-   (default 3, `stagnation_limit`) → **escalate to a human ticket** instead of
-   spinning.
-
-An escalated ticket carries the full context (goal, criteria, last artifact,
-failure reasons, iteration history), so a human can pick it up with one command:
-
-```bash
-mas tickets
-mas resume T-20261111-085346-4396 --note "rewrite the conclusion section"
-```
-
----
-
-## The closure ledger
-
-Every cycle appends one entry to `~/.mas/ledgers/runs.jsonl` (append-only):
-
-```json
-{"seq":3,"ts":"2026-11-11T08:53:46+00:00","run_id":"R-3f1c...","task_id":"R-3f1c...-1",
- "iteration":2,"role":"closure","provider":"mock","model":"mock-1",
- "artifact_sha":"9d1f...","verdict":"pass","decision":"close",
- "scores":[{"id":"c1","pass":true,"note":"all required strings present","source":"rule"}],
- "closed":true}
-```
-
-The ledger is the **evidence**: reviewable, reproducible, handable over, and
-usable as a CI gate.
-
----
-
-## Bring your own model
-
-The runtime only uses the standard library and `urllib` for HTTP, so any
-OpenAI-compatible endpoint works:
-
-```bash
-# Kimi / Moonshot
-mas init --provider openai_compat --model kimi-k2 --base-url https://api.moonshot.cn/v1
-export MAS_API_KEY=sk-...
-
-# Claude
-mas init --provider anthropic --model claude-sonnet-4-5
-export MAS_API_KEY=sk-ant-...
-
-# GPT / Grok / DeepSeek / Qwen / self-hosted vLLM - anything OpenAI-compatible
-mas init --provider openai_compat --model gpt-4o-mini --base-url https://api.openai.com/v1
-```
-
-Three built-in tolerances cover most "OpenAI-compatible" gateways:
-
-- `response_format` is dropped and the call retried once when unsupported, with
-  JSON then extracted from the answer body;
-- SSE event streams (many relays and local bridges answer this way) are folded
-  back into the standard chat shape;
-- `<think>` scratchpads emitted before the answer are stripped, so reasoning
-  never reaches the artifact, the verdict or the ledger.
-
-Environment variables work too, with no config file edit:
-
-```bash
-export MAS_PROVIDER=openai_compat MAS_MODEL=your-model MAS_BASE_URL=https://... MAS_API_KEY=...
-```
-
----
-
-## Plug into MCP (Codex / Claude Code / any MCP client)
-
-The installer writes this into `~/.codex/config.toml`:
-
-```toml
-[mcp_servers.mas_loop]
-command = "python"
-args = ["-m", "mas", "serve"]
-startup_timeout_sec = 30.0
-tool_timeout_sec = 300.0
-```
-
-Tools exposed:
-
-| tool | purpose |
-| --- | --- |
-| `mas_run` | run a closure task; returns status and per-criterion verdicts |
-| `mas_status` | config, ledger size, open tickets |
-| `mas_ledger` | read the closure ledger (filterable by `run_id`) |
-| `mas_tickets` / `mas_ticket_resolve` / `mas_resume` | human intervention |
-| `mas_report` / `mas_replay` / `mas_export` | reporting and replay |
-| `mas_teams` | list team templates |
-| `mas_doctor` | installation self-check |
-| `mas_config` | read / update configuration |
-
-The protocol is a pure-standard-library JSON-RPC 2.0 over stdio -
-**no `pip install mcp` required**.
-
----
-
-## DeepSeek Harness integration (optional)
-
-The repo ships a **DSH plugin** (`integrations/dsh-openloop-mas`). It does not
-re-implement the loop: it talks to the local runtime over **MCP**, so the
-verdicts and the ledger in a DSH conversation are the *same facts* a Codex or
-Claude Code client sees.
-
-```powershell
-# optional switch, off by default - the main line stays dependency free
-# (pure Python, no Node / DSH / npm needed)
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -InstallDshPlugin
-```
-
-That adds 6 tools to DSH: `mas_run`, `mas_status`, `mas_ledger`, `mas_tickets`,
-`mas_report`, `mas_doctor`.
-
-Details, configuration, measured evidence and the boundaries are in
-**[docs/dsh-integration.md](docs/dsh-integration.md)**.
-
-### Making DSH actually talk: `mas relay`
-
-Installing the plugin is not the same as the model being able to use it. DSH's
-`dsh-llm-pi-ai` adapter **insists on an API key**, while a private endpoint often
-**wants no key at all** (and may even reject a placeholder with `401`). That is a
-protocol-contract vs endpoint-contract collision, not a misconfiguration.
-`mas relay` sits in between: it drops the client's `Authorization` and optionally
-substitutes the upstream's real key.
-
-```powershell
-# generate a working DSH profile (writes config + installs the plugin + prints commands)
-python tools/setup_dsh_bridge.py --profile masbridge --relay-port 8766
-
-# terminal 1
-mas relay --upstream http://127.0.0.1:16024 --port 8766
-
-# terminal 2: pi-ai insists on a key - a placeholder is fine, the relay drops it
-$env:MAS_BRIDGE_API_KEY = "placeholder"
-dsh --profile masbridge headless "run a closure with mas_run: write a release note, acceptance criterion file_exists on out/report.md"
-```
-
-> **`headless` is a profile name, not a subcommand.** The correct shape is
-> `dsh --profile <name> headless "<task>"`.
-
-Two authentication modes, the security boundary and the verified/unverified list
-are in **[docs/relay.md](docs/relay.md)**.
-
-### A sibling plugin in the same host: the MOKI library
-
-[MOKI](https://github.com/JKZeng-cell/moki-library-for-dsh) (`dsh-moki-library`) is
-a **different project** - do not confuse it with OpenMausBot. It adds a **local
-resource manager** to DeepSeek Harness: unified organisation of files and web
-links, multi-format preview, `Alt+D` to summon an AI chat over a selection, and
-**edits land in a draft first** - only written back after the user confirms.
-
-The split is clean: **MOKI organises the material, MAS decides whether the
-deliverable actually passes.**
-
-```bash
-dsh plugin --profile web add "dsh-moki-library@file:<abs>/dsh-moki-library-0.1.73.tgz" --allow-build=sharp
-dsh plugin --profile web add "dsh-openloop-mas@file:<abs>/dsh-openloop-mas-0.7.16.tgz"
-```
-
-> MOKI needs **DSH >= 0.2.2-rc.1**, **Node >= 22.19**, and it is a **web-platform
-> plugin** - in a CLI / headless profile it stays **pending** (wrong host shape,
-> not a broken install).
-
-## Bundled Agent Skills
-
-| Skill | purpose |
-| --- | --- |
-| `mas-loop` | run closure tasks, write acceptance criteria, read ledger and tickets |
-| `mas-review` | multi-perspective adversarial review (worker / verifier / reflector separation) |
-| `mas-scaffold` | set up team templates and CI gates for a new project |
-
-The installer places them in every skill directory it finds (`~/.codex/skills`,
-`~/.claude/skills`, `~/.agents/skills`, `~/.gemini/skills`).
-
-> The **single source of truth is `mas/skills/`**. It ships inside the wheel,
-> so the skill a `pip install` gives you is byte-identical to the one a source
-> checkout gives you - there are no two copies that can drift apart.
-
-To remove it again:
-
-```bash
-mas uninstall       # remove the skills and the MCP registration (keeps ~/.mas)
-pip uninstall openloop-mas
-```
-
----
-
-## Command cheat sheet
-
-```bash
-mas install       # install skills + register the MCP server
-mas sync          # bring the installed skills back to the packaged version
-mas uninstall     # remove the skills + MCP registration (keeps the ledger)
-mas init          # write/update config
-mas init --wizard # interactive setup
-mas run           # run a closure task
-mas demo          # three offline scenarios
-mas verify        # real closure self-check
-mas bench         # offline benchmark
-mas files         # index the workspace: every file, its format, its facts
-mas preview FILE  # preview one file (PDF / Word / text...)
-mas drafts        # drafts waiting for a human: list / show / approve / reject / token / ticket / conflict
-mas drafts token  # the human token: an agent cannot approve its own draft
-mas drafts ticket D-ID --token <token>  # a ticket: one draft, one use, 15 minutes
-mas status        # local state
-mas ledger        # closure ledger
-mas report        # Markdown closure report
-mas replay        # replay a run trace
-mas export        # export the ledger as Markdown
-mas tickets       # human tickets
-mas resume ID     # continue with a human note
-mas teams         # team templates
-mas doctor        # installation self-check
-mas selftest      # the flaky-bug gate: hammer the paths that used to fail at random (offline)
-mas serve         # run as an MCP stdio server
-mas http          # run as an HTTP + SSE server
-mas relay         # OpenAI-compatible relay for clients that insist on an API key (127.0.0.1:8766)
-```
-
-`mas run` exit codes: `0` = closed, `2` = not closed. Use it directly as a CI
-gate.
-
----
-
-## Development and tests
-
-```bash
-python -m unittest discover -s tests -v   # 213 offline tests, no network needed
-python -m mas demo                        # three closure scenarios
-python -m mas bench                       # offline benchmark
-python -m mas verify                      # real closure self-check
-python -m mas selftest                     # the flaky-bug gate (offline)
-```
-
-Covered: machine checks, the three termination paths (closure / stagnation /
-budget), rules overriding model verdicts, unjudged criteria never passing, MCP
-handshake and tool calls, config merging and env overrides, SSE folding,
-scratchpad stripping, UTF-8 safety on legacy code pages, parallel candidate
-selection, adversarial review aggregation (all/majority/any), backend failover,
-real HTTP/SSE requests, reports and replay, wizard and self-check.
-
----
-
-## Docs
-
-| doc | contents |
-| --- | --- |
-| [docs/quickstart.md](docs/quickstart.md) | 5-minute quickstart: install → offline → real model → human in the loop |
-| [docs/architecture.md](docs/architecture.md) | runtime architecture and data flow |
-| [docs/loop-engineering.md](docs/loop-engineering.md) | methodology: why the loop is designed this way |
-| [docs/mcp.md](docs/mcp.md) | MCP integration, handshake, tools, protocol details, troubleshooting |
-| [docs/acceptance-report.md](docs/acceptance-report.md) | installation and acceptance report: measured evidence, CI results, known limits |
-
----
-
-## Positioning
-
-OpenLoop MAS is **not** a clone of "private AI agent team" products. It
-supplies a different layer:
-
-- those products connect Claude / GPT / Kimi into a chatty agent team that runs
-  locally or in the cloud, with MCP and lots of app integrations;
-- OpenLoop MAS answers "**after the team finishes, how do I know it actually
-  finished, and can I replay, stop and hand over the process?**"
-
-They stack: the former is the execution layer, the latter is the closure layer.
-
----
-
-## License
-
-MIT © OpenLoop MAS contributors

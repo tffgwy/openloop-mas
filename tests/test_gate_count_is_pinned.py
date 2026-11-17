@@ -49,6 +49,7 @@ EXPECTED_GATE_NAMES = (
     "undo_guard",
     "audit_chain",
     "shadow_guard",
+    "onboarding_path",
 )
 
 

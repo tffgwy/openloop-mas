@@ -3,6 +3,1010 @@
 > 一个 **零依赖、纯标准库** 的多智能体闭环运行时：把「规划 → 执行 → 验证 → 复盘」写成**有验收标准、有退出条件、有过程账本**的工程循环。
 > **下载一个脚本就能装**，初学者也能跑起来。
 
+
+[![ci](https://github.com/tffgwy/openloop-mas/actions/workflows/ci.yml/badge.svg)](https://github.com/tffgwy/openloop-mas/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![deps](https://img.shields.io/badge/dependencies-0-orange.svg)]()
+
+**第一次来？** 直接看 [5 分钟上手](#5-分钟上手) —— 一条脚本装好，
+不用 API Key 就能跑通一个闭环。
+
+**想知道它凭什么敢叫「会闭合」？** 看 [为什么做这个](#为什么做这个)。
+
+**想看它踩过的坑？** 最后一节 [门禁考古](#门禁考古) 记着每一道门禁的来历。
+
+---
+
+## 5 分钟上手
+
+### 方式一：一条脚本（跨平台，不需要 Python 环境准备）
+
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/tffgwy/openloop-mas/main/install.sh | bash
+
+# Windows（PowerShell）
+irm https://raw.githubusercontent.com/tffgwy/openloop-mas/main/install.ps1 | iex
+```
+
+脚本会自己建好虚拟环境、装好包、注册 MCP 服务、跑一遍自检。
+
+### 方式二：pip 安装（需要 Python 3.10+）
+
+```bash
+pip install openloop-mas     # 见下方说明：这个包名目前还没上 PyPI
+mas install        # 装 skills + 注册 MCP 服务器
+mas demo           # 不需要任何 API Key，先看它自己跑通闭环
+mas doctor         # 自检（包含 skills 漂移、运行时版本落后）
+mas sync           # 把已安装的 skills 同步回包内版本
+mas runtime        # 看本机装的是哪一版运行时
+mas upgrade        # 把落后的旧版运行时换成当前这版
+```
+
+> **升级过、想换新版本？** 先 `mas upgrade`（换掉真正在跑的那份运行时），
+> 再 `mas install`（让 MCP 注册指向新版本）。
+> 只做后者的话，skills 和注册都刷新了，**但真正在跑的还是旧代码**——
+> 这正是 `mas doctor` 的 `runtime` 检查现在会指出来的事。
+
+> **关于 `pip install openloop-mas`**：这个包名**目前还没有在 PyPI 上建立**，
+> 直接 pip 会得到 `No matching distribution found`。现在请用上面的**安装脚本**，
+> 或从 [Releases](https://github.com/tffgwy/openloop-mas/releases/latest) 下载 wheel。
+> `mas doctor` 会**实测**这个包名在 PyPI 上的状态并如实告诉你——
+> 包名一旦发布，这段说明和 doctor 的检查都会自动对上。
+
+`mas doctor` 说的是人话：每一项都解释「这是什么」，标清楚是**必需 / 建议 / 可选**，
+最后给一句**结论**和一条**下一步命令**：
+
+```
+[OK  ] python（必需）
+       3.14.10
+       是什么：Python 版本够不够新（3.10 以上才能跑）
+[注意] skill_codex（可选）
+       未安装: ...\.codex\skills\mas-loop\SKILL.md（运行 mas install）
+       是什么：给 Codex 装的 skill：让 Codex 会用这个闭环工具
+...
+小结：8 项正常，6 项注意，0 项坏了
+结论：闭环能跑，但智能体接不上：skill_codex、skill_claude、skills_sync、mcp_codex、mcp_claude 还没装。
+下一步：运行 mas install，一条命令装上 skill 并注册 MCP 服务。
+```
+
+三种结论的区别很重要：**闭环跑不起来**（必需项坏了）、**闭环能跑但智能体接不上**
+（skill / MCP 没装）、**一切就绪**。退出码只在第一种情况下非零。
+
+`mas install` 做的是**装 agent skills 到 Codex / Claude Code 的 skill 目录**、
+**把 MCP 服务器注册进 `~/.codex/config.toml` 和 `~/.claude.json`**，
+然后你可以直接开一个新终端，Codex 和 Claude Code 就认识这套闭环工作流了。
+
+- 幂等：重复跑不会重复注册，也不会覆盖你已有的配置。
+- 安全：任何被修改的配置文件都会先备份成 `*.bak-<时间戳>`。
+- 不含密钥：安装过程不写入任何 API Key。
+
+> 想看它装了什么，加 `--json`。
+
+### 方式三：只下载一个脚本（零依赖，最适合初学者）
+
+不用 clone、不用 pip、不用自己装任何东西——**下载一个脚本文件**，双击/执行它就行：
+
+```powershell
+# Windows：下载 install.ps1 到任意目录，然后执行
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+```bash
+# macOS / Linux：下载 install.sh 到任意目录，然后执行
+bash install.sh
+```
+
+脚本会自己从 GitHub Release 拉取已发布的 wheel、用标准库解开、装到
+`~/.mas/`，然后注册 MCP 服务器和 skills，最后跑一遍离线自检。
+**只需要机器上有 Python 3.10+，不需要 git，不需要 pip，不需要编译工具。**
+
+想装固定版本（而不是"最新版"）：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.83
+```
+
+```bash
+MAS_VERSION=0.7.83 bash install.sh
+```
+
+> 脚本默认会往 `PATH` 里加一条 `~/.mas/bin`（Windows 写当前用户的注册表）。
+> 不想动 `PATH` 就加 `-SkipPath`（Windows）或 `MAS_SKIP_PATH=1`（shell）。
+
+### 方式四：从源码安装（适合开发）
+
+```bash
+git clone https://github.com/tffgwy/openloop-mas.git
+cd openloop-mas
+
+# Windows
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
+# macOS / Linux
+bash install.sh
+
+# 不需要任何 API Key，先看它自己跑通闭环
+mas demo
+```
+
+> `install.ps1` / `install.sh` 与 `mas install` 做的是同一件事，
+> 前者适合从源码装（含开发环境）或「只下一个脚本」，
+> 后者适合 pip 安装后的机器。
+
+> 配置文件固定在 `~/.mas/config.json`（Windows：`%USERPROFILE%\.mas\config.json`）。
+> 运行账本另存在 `state_dir` 下，两者分开——换状态目录不会把配置弄丢。
+> CI 里想隔离，用环境变量 `MAS_CONFIG_PATH` 指定配置文件、`MAS_STATE_DIR` 指定状态目录。
+
+`mas demo` 会离线跑三个场景，并把真实结果打出来：
+
+```
+[OK ] closure     期望=closed             实际=closed             迭代=2 票=-
+[OK ] stagnation  期望=escalated          实际=escalated          迭代=4 票=T-20261111-085346-4396
+[OK ] budget      期望=budget_exhausted   实际=budget_exhausted   迭代=1 票=-
+```
+
+> 注意：`mock` 模式里，**通过与否由引擎的机检规则判定**，不是模型自己说「我完成了」。
+> mock 只是模拟执行者产出草稿，验证权始终在确定性检查器手里。
+
+---
+
+
+---
+
+## 为什么做这个
+
+多智能体协作最常见的失败不是「模型不够聪明」，而是**循环不闭合**：
+
+- 没有可核验的验收标准 → 大家互相说「差不多了」，谁也说服不了谁；
+- 没有退出条件 → 一轮轮往下聊，token 烧完还没有结论；
+- 没有过程记录 → 出问题无法复盘，无法交接，无法追责；
+- 没有止损 → 一个明显走不通的任务会一直重试到超时。
+
+Loop Engineering 要解决的就是这件事：**让「做完没有」变成一个可以被机器判定的事实。**
+
+OpenLoop MAS 的做法是把闭环写成代码约束，而不是寄望于提示词：
+
+| 环节 | 角色 | 产出 | 谁来判定 |
+| --- | --- | --- | --- |
+| 计划 | `planner` | 步骤与风险 | — |
+| 执行 | `worker` | **交付物本身** | — |
+| 验证 | `verifier` | 逐条验收标准的通过/不通过 + 证据 | 引擎（机检优先） |
+| 复盘 | `reflector` | 失败原因与下一轮改法 | — |
+| 闭合 | `lead` | **只判没人判的标准**：`close` / `revise` / `escalate` | 引擎（**最终否决权**） |
+
+一个循环只有同时满足 **产物 + 逐条判定 + 决策 + 账本条目** 才算闭合；否则状态只有三种：`escalated`（升级人工）、`budget_exhausted`（预算止损）、`error`。**没有「差不多完成」这个状态。**
+
+`lead` 是**顾问，不是法官**：**机检失败是事实**，这种情况**不咨询 lead**；
+咨询了它也**只能填空**（机检已定的标准原样保留）。
+**停滞、预算、死线**由引擎**最终否决**，lead 关不掉一个超预算的运行；
+**lead 自己判不了**（`met` 读不出布尔值）就**保持未判定、继续追问**。
+
+
+---
+
+## 跑一个真实任务
+
+```bash
+mas run --goal "写一份 v0.1.0 的发布说明" \
+  --criteria '{"id":"c1","desc":"包含版本号","check":{"type":"contains","arg":"v0.1.0"}}' \
+  --criteria '{"id":"c2","desc":"不少于 200 字","check":{"type":"min_chars","arg":200}}'
+```
+
+输出：
+
+```
+状态：closed（迭代 2 次，token 2140）
+账本：/home/you/.mas/ledgers/runs.jsonl
+  [PASS] c1 (rule) all required strings present
+  [PASS] c2 (rule) length 418 >= 200
+--- 交付物预览 ---
+...
+```
+
+### 支持的机检规则（由引擎判定，可复现）
+
+| type | 含义 | 参数 |
+| --- | --- | --- |
+| `contains` / `not_contains` | 必须包含 / 禁止包含 | `arg`（字符串或数组） |
+| `min_chars` / `max_chars` | 长度上下限 | `arg`（整数） |
+| `regex` | 正则命中 | `arg`（模式） |
+| `lines_min` | 非空行数下限 | `arg`（整数） |
+| `section` | 必须包含某个 `## 标题` | `arg`（标题名） |
+| `json_keys` | JSON 对象必须包含的键 | `arg`（键数组） |
+
+判定口径（实测确认，写标准时按这个来）：
+
+| 类型 | 精确判定 | 容易踩的坑 |
+| --- | --- | --- |
+| `contains` | 产物含给定字符串；`arg` 可为数组，**全部命中**才算通过 | 数组漏一项整条失败 |
+| `not_contains` | 产物**不含**任何给定字符串 | 数组是「一个都不能出现」 |
+| `min_chars` / `max_chars` | 产物的**字符数**（含空白与换行） | 不是字数也不是字节数 |
+| `regex` | `re.search` 匹配，**自动带 DOTALL**（`.` 能跨行） | 想跨行不必加 `(?s)`；命中的是子串不是全串 |
+| `lines_min` | **非空行**数（空行不计） | 段落间空行不影响计数 |
+| `section` | 产物里**整行**恰好是 `## <arg>`（允许行尾空白） | **必须是二级标题 `##`**，`#`/`###` 都不算；正文里提到 `## 结论` 也**不算**；`## 结论分析` **不满足** `## 结论` |
+| `json_keys` | 产物须是 JSON **对象**且含全部给定键 | 产物不是合法 JSON 直接判不通过 |
+
+未知类型会被判为 `unjudged`（**不通过**），不会静默放过。
+
+### 文件级机检（v0.7.15 起）：判定跟的是磁盘，不是文案
+
+上面所有规则搜的都是**产物文本**。下面这十个搜的是**真实文件系统**——
+「模型说写了」和「文件真的在」从此是两回事：
+
+| type | 含义 | 参数 |
+| --- | --- | --- |
+| `file_exists` | 文件存在且是普通文件 | `path` |
+| `file_missing` | 文件不存在（清理类验收） | `path` |
+| `file_contains` | 文件含给定字符串 | `path` + `value` |
+| `file_not_contains` | 文件不含给定字符串 | `path` + `value` |
+| `file_regex` | 文件内容命中正则 | `path` + `value` |
+| `file_lines_min` | 非空行数下限 | `path` + `value` |
+| `file_min_bytes` / `file_max_bytes` | 字节数上下限 | `path` + `value` |
+| `file_sha256` | sha256 等于给定摘要 | `path` + `value` |
+| `file_mtime_newer` | 修改时间晚于给定 ISO 时间戳 | `path` + `value` |
+
+### 内容级机检（v0.7.70 起）：读的是文件**里面**，不是它的字节
+
+上面十个搜的是**字节**。对**正文不是明文的格式**它们是瞎的：
+PDF 的文字在**压缩流**里，`.docx` 本身是 **zip 包**，图片里没有文字。
+下面六个**先把内容取出来再判**（只用标准库，不执行文件里的任何东西）：
+
+| type | 含义 | 参数 |
+| --- | --- | --- |
+| `content_contains` | 文件**内容**含给定字符串 | `path` + `value` |
+| `content_not_contains` | 文件**内容**不含给定字符串 | `path` + `value` |
+| `content_regex` | 文件**内容**命中正则 | `path` + `value` |
+| `content_lines_min` | 内容**非空行**数下限 | `path` + `value` |
+| `content_min_chars` | 内容**字符数**下限 | `path` + `value` |
+| `content_format_is` | 文件**格式**等于给定格式 | `path` + `value` |
+
+```bash
+mas run --workspace ./my-project --goal "出一份 PDF 报告" \
+  --criteria 'content_format_is:out/report.pdf::pdf' \
+  --criteria 'content_contains:out/report.pdf::结论'
+```
+
+**格式按 magic bytes 判定**，扩展名只做兜底 —— 扩展名会撒谎，
+`.txt` 里装的是 PDF，那它就是 PDF。支持的格式：`pdf` / `docx` / `xlsx` /
+`pptx` / `zip` / `png` / `jpeg` / `gif` / `bmp` / `tiff` / `webp` /
+`wav` / 文本类。
+
+**读不出内容 = 不通过**（不是「无法判定」）。这是这一版最要紧的一条：
+判「无法判定」的话，这条标准会**回到模型手里**，而模型说一句
+「looks fine」就把它关上了 —— **没人查过的标准被关上，比不闭合更糟**。
+
+### 统一资源索引与多格式预览（v0.7.71 起）：一个文件夹就是一份索引
+
+```bash
+mas files                  # 索引这台机器上所有工作区
+mas files ./out            # 索引一个文件夹
+mas preview ./out/report.pdf   # 预览一个文件
+```
+
+```bash
+$ mas files ./out
+
+[./out]  5 个文件  263.7 KB
+    pdf        1 个
+    image      2 个
+    model      1 个
+      836.0 B  pdf        report.pdf  pages 2、text chars 57
+      327.0 B  image      shot.png  width 12、height 7
+      117.0 B  image      liar.txt  width 4、height 4
+      213.0 B  model      ascii.stl  triangles 2
+      251.0 B  zip        bundle.zip  members 2
+```
+
+**格式按文件自己的头判定，不看名字** —— 上面的 `liar.txt` 其实是一张 PNG，
+所以它报 `image`。**读不开的文件会列出来并写明原因**（那一行 ⚠ 是信息，
+不是噪声：交付物中间有一个读不开的文件，恰恰是读者最该看见的东西）。
+
+`mas preview` 把 PDF 的字从**压缩流**里取出来、把 Word 的字从 **zip 成员**里
+剥掉标记取出来；图片没有正文时**明确说「没有可预览的正文」**，而不是给你一个空白屏幕。
+文件不存在或传了目录 → **退出码 2**。
+
+详见 **[docs/resources.md](docs/resources.md)**（含与
+[MOKI 资料库](https://github.com/JKZeng-cell/moki-library-for-dsh) 的分工对照）。
+
+### 草稿层（v0.7.72 起）：改动先进草稿，人确认后才写回原文件
+
+```bash
+mas drafts                              # 看有哪些草稿在等
+mas drafts show D-1a2b3c4d              # 看这一份的 diff
+mas drafts approve D-1a2b3c4d           # 批准：写回原文件
+mas drafts reject  D-1a2b3c4d           # 驳回：原样不动
+mas drafts token                        # 拿人类令牌（agent 批不了自己的草稿）
+mas drafts ticket D-1a2b3c4d --token <人类令牌>   # 签一张只管这一个草稿、用一次就作废的票据
+mas drafts conflict                           # 查哪些草稿的文件在等待期间被改过
+mas drafts approve D-1a2b3c4d --force           # 明知文件被改过，仍要写回
+```
+
+一次运行想改一个**已经存在**的文件时，它**不再直接覆盖**：
+改动先进草稿，**原文件一个字节都不动**，草稿带一份**可读的 diff**，
+你说「批准」才写回，你说「驳回」就**一个字都不改**。
+
+```bash
+$ mas drafts
+
+工作区 ~/mas/artifacts：1 个草稿
+  D-1a2b3c4d  pending  notes.txt  有改动
+        理由：the loop proposed a change to an existing file
+```
+
+**新建文件照常直接写** —— 一个还不存在的文件，没有东西可以毁掉。
+想回到旧行为，把配置里的 `edit_policy` 改成 `"overwrite"`（默认 `"draft"`）。
+
+**机检读的是草稿里的新字节**，不是磁盘上的旧文件 —— 否则循环会陷入
+「提改动 → 读旧文件 → 判不通过 → 再提改动」的死结，**永远闭不上**。
+草稿和它改的文件**住在同一个工作区**（`.mas-drafts/`），文件夹被复制时
+草稿跟着走 —— 丢掉的草稿，是一份**永远没法被人审阅**的改动。
+
+### agent 经 MCP 提草稿（v0.7.73 起）：提议和批准分成两个动作
+
+`mas drafts` 是**人**的那一半。MCP 上还有**一半给 agent**，
+但两半**不是同一件事**：
+
+```bash
+# 人在自己的机器上拿令牌（一次就够）
+mas drafts token
+```
+
+agent 侧的 MCP 工具：
+
+| 工具 | 做什么 | 能不能改文件 |
+|---|---|---|
+| `mas_draft_stage` | **提**一份改动（带 diff 和理由） | **不能** —— 原文件一个字节都不动 |
+| `mas_drafts` | 看有哪些草稿、看某一份的 diff | 不能 |
+| `mas_draft_resolve` | 批准或驳回 | **要人类令牌** |
+| `mas_files` | 索引工作区 | 只读 |
+| `mas_preview` | 预览一个文件 | 只读 |
+
+**agent 提的草稿，agent 自己批不了。** 令牌不对、空令牌、没令牌，
+一律拒绝，而且**原文件不动**。
+令牌的作用**不是保密，是分权** —— 提议的人不确认自己提的东西。
+
+```bash
+# agent 提了一个改动（文件没变）
+mas_draft_stage {path: "notes.txt", content: "改过的正文", reason: "补一句结论"}
+
+# agent 想自己批 —— 被拒
+mas_draft_resolve {action: "approve", draft_id: "D-1a2b3c4d"}
+-> {error: "human_token_required"}
+
+# 人批 —— 才写回
+mas_draft_resolve {action: "approve", draft_id: "D-1a2b3c4d", token: "<人类令牌>"}
+```
+
+详见 **[docs/drafts.md](docs/drafts.md)**（含与
+[MOKI 资料库](https://github.com/JKZeng-cell/moki-library-for-dsh) 的分工对照：
+MOKI 管**交互层**（`Alt+D`），本项目管**引擎层**（循环跑出来的东西），
+**规则是同一条**）。
+
+### 写二进制交付物（v0.7.70 起）：worker 怎么产出那个 PDF
+
+内容级机检要读得进 PDF，**前提是有一个 PDF 存在**。写文件协议
+（v0.7.15）原本只能带**文字**，所以交付物是 PDF 的任务**没法产出 PDF**。
+
+现在写块可以带 **`encoding`** 属性：
+
+```
+<<<MAS:FILE path="out/report.pdf" encoding="base64">>>
+JVBERi0xLjQK...
+<<<MAS:END FILE>>>
+```
+
+引擎把块里的内容**解码成真正的二进制**再落盘，之后内容级机检就能读它。
+
+| 情况 | 结果 |
+| --- | --- |
+| `encoding="base64"` | **解码成二进制**再写 |
+| 不写 `encoding` | **按 UTF-8 文本写**（旧行为不变） |
+| `encoding="rot13"` 等**不认识**的编码 | **拒绝**，并说明原因 |
+| base64 **解不出来** | **拒绝**，并说明原因（不留半截文件） |
+
+**base64 严格解码。** 宽松解码会把**不在字母表里的字符全丢掉**，
+于是一段纯胡话被解成**一个空文件**、一声不吭 —— worker 要一份 PDF，
+工作区里躺着一个**零字节的 PDF**。宁可拒绝。
+
+**模板块不是请求。** 二进制模板里写着 `out/report.pdf`，看着像个真路径；
+靠**路径**认不出模板（任务真可能就要写这个文件），所以改用**正文**认。
+
+```bash
+mas run --workspace ./my-project --goal "写一份调研报告" \
+  --criteria 'file_exists:out/report.md' \
+  --criteria 'file_contains:out/report.md::结论'
+```
+
+判定口径：**文件缺失 = 不通过**（不是「无法判定」）；路径越界 = 开跑前拒绝；
+参数写漏 = 开跑前拒绝；路径合法但读不出结论 = `unjudged`。
+单文件读取上限 8 MiB。**内容级机检读不出内容时判「不通过」**，理由同上。worker 用**写文件协议**（`<<<MAS:FILE path="...">>>` 围栏块）
+把内容真的写进工作区，写入进账本可查。完整说明见 [`docs/file-checks.md`](docs/file-checks.md)。
+
+
+
+**参数写漏了 = 标准作废，不是标准通过。** 规则缺参数时不可能判出任何结论，
+所以引擎会在**开跑前**直接报错（退出码 1，不消耗任何 token），而不是让它恒真通过：
+
+| 类型 | 必须提供 | 非法示例 |
+| --- | --- | --- |
+| `contains` / `not_contains` | 非空字符串，或非空字符串数组 | `""`、`[]` |
+| `min_chars` / `max_chars` / `lines_min` | 非负整数 | 缺失、`-1`、`"很多"` |
+| `regex` | 能编译的正则 | `""`、`"([未闭合"` |
+| `section` | 标题文本 | `""` |
+| `json_keys` | 键名或非空键数组 | `[]`、缺失 |
+
+**简写形式的坏参数同样快速失败。** `--criteria 'regex:'`、`--criteria 'min_chars:many'`
+不会退回成纯描述——它们保留机检类型，然后被上面那张表拦下，退出码 1、零 token。
+同一份标准，JSON 形式和简写形式待遇一致：写漏了就是写漏了，不会偷偷变成"交给模型判"。
+
+**评审的判定要"读"出来，不是靠真值转换。** 模型如果回 `"pass": "false"`，
+`bool("false")` 是 `True`——一条刚被判定为不通过的标准会被当成通过。引擎读的是
+这个值的**含义**：`"false"` / `"0"` / `"no"` 是不通过，`"true"` / `"1"` / `"yes"` 是通过，
+读不懂（`"maybe"`、空、缺失）就算**未判定**，绝不猜。
+
+**类型名写错也不放过。** JSON 形式里写了一个不存在的类型（如
+`{"check":{"type":"mystery"}}`），引擎同样在开跑前拒绝，并列出所有已知类型——
+一个写错的类型名，如果放行，就会退化成"交给模型判"，模型说"看起来没问题"就闭合了。
+
+只有**简写形式**里类型名本身不存在（`--criteria 'unknown_type:abc'`）才退回成纯描述——
+那是压根没打算写机检，区别于"想写机检但写错了"。
+
+### 简写写法（v0.4.2 起）
+
+机检规则不必每次都写成 JSON。命令行可以直接用 `<类型>:<参数>`：
+
+```bash
+mas run --goal "写一个去重函数" \
+  --criteria 'regex:(?s)def dedupe.*set' \
+  --criteria 'min_chars:200' \
+  --criteria 'contains:关键结论'
+```
+
+**一次写多条标准**，直接给 JSON 数组——数组里的每一条都带上自己的机检规则跑，
+不会被当成一条纯文本描述（那样机检就一次都没跑过，闭合其实来自模型的"看起来没问题"）：
+
+```bash
+mas run --goal "写一份 v0.1.0 的发布说明" \
+  --criteria '[{"id":"c1","desc":"包含版本号","check":{"type":"contains","arg":"v0.1.0"}},
+               {"id":"c2","desc":"不少于 200 字","check":{"type":"min_chars","arg":200}}]'
+```
+
+简写与 JSON 形式完全等价，判定同样来自引擎的确定性检查器（账本里记为 `source: rule`）。
+简写解析在引擎层生效，所以从 MCP、HTTP 或账本重放进来的标准也会被同样处理。
+未知的类型前缀（例如 `写清楚就好`）仍然按普通描述处理，不会被误当成机检规则。
+参数不是整数的数字类前缀（例如 `min_chars:很多`）同样退回普通描述——标准宁可没有机检，也不能声称自己能检查却做不到。
+
+没有机检规则的标准会交给模型验证者判定；但**如果模型没给出判定，默认判不通过**（`unjudged`），不会因为一句「看起来可以」就放行。
+`"required": false` 的标准**只记录、不阻塞闭合**：它有机检规则时照常跑机检，结果原样写进报告（过了是 `PASS`，没过是 `FAIL`），但不会让循环一直不闭合；它没有机检规则时由模型判定，判定结果同样只作记录。
+
+**`required` 标志读的是含义，不是真值。** 写 `"required": "false"`（字符串）**确实**表示可选——
+`bool("false")` 是 `True`，而这条标准一旦通过 JSON、MCP 或 shell 传进来，很容易就带上引号；
+引擎读的是这个值的含义：`"false"` / `"0"` / `"no"` 是可选，`"true"` / `"1"` / `"yes"` 是必选，
+读不懂（`"maybe"`、缺失、`null`）一律按**必选**处理——读不懂的标志绝不能悄悄把标准放宽。
+
+> v0.4.2 起，验证者漏判某条标准时，引擎会在**同一轮内**就缺失的标准追问一次，
+> 而不是重新生成整份交付物、白白消耗一整轮迭代。追问仍无答案才按 `unjudged` 记为不通过。
+
+---
+
+## 并行多智能体：让候选互相竞争
+
+一个 worker 只会产出**一种**解法。v0.2 让多个 worker 带着**不同视角**并行产出候选，由引擎按机检结果选优：
+
+```bash
+# 单次任务临时加力，不改配置
+mas run --goal "..." --criteria-file criteria.json \
+  --parallel 3 --perspective thorough \
+  --reviewers 3 --review-mode majority
+
+mas init --wizard    # 交互式配置，第 7 题设并行数、第 8 题设评审数、第 11 题设回退链
+```
+
+| 旗标 | 作用 |
+| --- | --- |
+| `--parallel N` | 并行候选数（N>1 时并发产出多个视角，引擎按机检通过数选优） |
+| `--perspective` | 候选视角锚点：`direct` / `thorough` / `concise` / `structured` / `example_first` / `risk_first` |
+| `--reviewers N` | 独立评审者数量（N>1 时启用对抗评审聚合） |
+| `--review-mode` | 多评审聚合规则：`all`（全票通过）/ `majority`（过半）/ `any`（任一） |
+
+或者直接改配置：
+
+```json
+{
+  "orchestration": {
+    "parallel_workers": 3,
+    "reviewers": 3,
+    "review_mode": "all"
+  }
+}
+```
+
+| 配置 | 行为 |
+| --- | --- |
+| `parallel_workers` | 并行产出的候选数。视角依次为 direct / thorough / concise / structured / example_first / risk_first，**不是同一段提示词的 N 次采样**。 |
+| `reviewers` | 独立验证者数量。视角依次为 strict / skeptic / completeness / reader。 |
+| `review_mode` | `all` 一票否决（全通过才算通过）/ `majority` 多数通过 / `any` 任一通过。 |
+
+**选优规则是确定性的**：先看机检通过项数，再看产物体积，最后按下标定序。同一份配置跑两次，选中的一定是同一个候选 —— 这让回放可信。
+
+**机检永远压过模型判断**：有 `check` 的标准由规则决定，只有没有机检的标准才交给评审共识。评审说「通过」不能覆盖规则说「不通过」。
+
+**默认就是 v0.1 的行为**：`parallel_workers: 1`、`reviewers: 1` 时，路径与 v0.1 完全一致。
+
+---
+
+## 多后端故障转移
+
+一个端点返回 502 就让整条循环死掉，那不叫闭环，叫宕机。配置多个后备端点，主端点失败自动切换：
+
+```json
+{
+  "provider": "openai_compat",
+  "model": "gpt-4o-mini",
+  "base_url": "https://api.openai.com/v1",
+  "fallbacks": [
+    { "provider": "anthropic", "model": "claude-sonnet-4-5", "base_url": "https://api.anthropic.com" },
+    { "provider": "openai_compat", "model": "kimi-k2", "base_url": "https://api.moonshot.cn/v1" }
+  ]
+}
+```
+
+每个后备端点都会记录自己实际接了哪一次调用（`provider_used` / `model_used`）。全部失败才会报错。
+
+---
+
+## 观测：复盘报告与回放
+
+```bash
+mas report                 # 生成 Markdown 复盘报告（逐条判定、规划、候选、评审）
+mas report --out r.md      # 写入文件
+mas replay                 # 回放账本里的运行轨迹
+mas export                 # 把原始账本导出成 Markdown 表格
+```
+
+`mas report` 的输出长这样：
+
+```
+# OpenLoop MAS 闭环复盘报告
+
+运行总数：12　已闭环：10　未闭环：2　闭环率：83%
+
+## 运行 `R-912928b0af`
+
+- 规划：拆解目标：输出一份结论
+- 并行候选（3 个）：
+  - ★ `thorough` - 机检通过 3 项
+  -   `concise` - 机检通过 1 项
+- 对抗评审：模式 all，可用评审 3，跳过 0
+- 验收判定：
+  - [PASS] `c1` all required strings present
+```
+
+报告里的每个数字都来自账本，**没有任何一处是编出来的**。
+
+---
+
+## 远程接入：HTTP + SSE
+
+stdio 传输给本地 Agent 用；HTTP/SSE 传输让运行时能被远程客户端、浏览器面板或 CI 任务访问：
+
+```bash
+mas http --host 127.0.0.1 --port 8765
+```
+
+| 路由 | 方法 | 用途 |
+| --- | --- | --- |
+| `/health` | GET | 存活检查 + 版本 |
+| `/tools` | GET | 工具清单 |
+| `/call` | POST | 调用任一工具，JSON 进 JSON 出 |
+| `/events` | GET | SSE 事件流，实时推送账本增长 |
+
+```bash
+# 免鉴权（仅限本机访问）
+curl http://127.0.0.1:8765/health
+curl -X POST http://127.0.0.1:8765/call \
+  -H 'Content-Type: application/json' \
+  -d '{"tool":"mas_run","arguments":{"goal":"写一份发布说明","criteria":[]}}'
+curl -N http://127.0.0.1:8765/events
+```
+
+### 鉴权（对外暴露时必做）
+
+`/call` 能执行任务、读账本，`/events` 能持续推送账本内容 —— 所以从 **v0.4.8** 起，HTTP 传输**内置鉴权**：
+
+```bash
+export MAS_HTTP_TOKEN=$(python -c "import secrets;print(secrets.token_urlsafe(32))")
+mas http --host 0.0.0.0 --port 8765
+```
+
+设了 `MAS_HTTP_TOKEN` 之后，除 `/health` 外的所有路由都需要令牌：
+
+```bash
+curl -H "Authorization: Bearer $MAS_HTTP_TOKEN" http://127.0.0.1:8765/tools
+curl -X POST http://127.0.0.1:8765/call \
+  -H "Authorization: Bearer $MAS_HTTP_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"tool":"mas_status","arguments":{}}'
+```
+
+也可以用 `X-MAS-Token: <token>` 请求头代替 `Authorization`。
+
+**fail-closed**：绑定到非本机地址（`0.0.0.0` / 局域网 IP）却**没有**令牌时，服务器**拒绝启动**（退出码 `2`）—— 环境变量写错不应该变成公网裸奔。开启鉴权后 CORS 也不再回 `*`，而是钉到 `http://127.0.0.1`，避免任意网页跨站调用。
+
+
+### 常驻部署实战（服务 + TLS 反代）
+
+真正要长期给手机 / 其它设备用，推荐这个组合 —— **服务只绑本机，对外只暴露 TLS 入口**：
+
+```bash
+# 1. 令牌落在文件里，不进版本库、不进启动脚本
+python -c "import secrets,pathlib;pathlib.Path.home().joinpath('.mas/http_token.txt').write_text(secrets.token_urlsafe(32))"
+
+# 2. 服务常驻（示例：Linux systemd / Windows 启动文件夹 / macOS launchd 均可）
+export MAS_HTTP_TOKEN=$(cat ~/.mas/http_token.txt)
+mas http --host 127.0.0.1 --port 8768
+
+# 3. 只把 TLS 入口反代出去（tailnet 内；--https 需要 tailscale serve 权限）
+tailscale serve --bg --https=8768 http://127.0.0.1:8768
+```
+
+手机 / 其它设备访问 `https://<your-host>:<port>/tools`，带上 `Authorization: Bearer <令牌>`。
+
+要点：
+
+- 服务绑 `127.0.0.1` + TLS 反代，比直接 `--host 0.0.0.0` 安全得多（不暴露在局域网，也由反代统一处理 TLS）。
+- 令牌与启动脚本**分离**：脚本里不写明文，令牌文件缺失就报错退出，绝不退化成无鉴权启动。
+- `tailscale serve` 默认是 **tailnet only**；`funnel` 会暴露到公网，属于扩大暴露范围，请自行评估后再开。
+- 停用：`tailscale serve --https=8768 off`。
+
+
+---
+
+## 四道止损机制
+
+1. **迭代预算**：`budget.max_iterations`，超出即 `budget_exhausted`。
+2. **墙钟预算**：`budget.deadline_sec`。
+3. **token 预算**：`budget.max_tokens`。
+4. **停滞检测**：连续多轮产出**完全相同**的产物（默认 3 次，`stagnation_limit`）→ 判定卡死，**升级人工工单**，不再空转。
+
+升级出来的工单带齐上下文（目标、验收标准、最后一版产物、失败原因、迭代历史），人工一句话就能接着跑：
+
+```bash
+mas tickets
+mas resume T-20261111-085346-4396 --note "按用户口径重写结论段"
+```
+
+---
+
+## 闭环账本
+
+每一次循环都会向 `~/.mas/ledgers/runs.jsonl` 追加条目（append-only）：
+
+```json
+{"seq":3,"ts":"2026-11-11T08:53:46+00:00","run_id":"R-3f1c...","task_id":"R-3f1c...-1",
+ "iteration":2,"role":"closure","provider":"mock","model":"mock-1",
+ "artifact_sha":"9d1f...","verdict":"pass","decision":"close",
+ "scores":[{"id":"c1","pass":true,"note":"all required strings present","source":"rule"}],
+ "closed":true}
+```
+
+账本是闭环的**证据**：能回看、能复现、能交接、能写进 CI 门禁。
+
+---
+
+## 接入你自己的模型
+
+运行时只用标准库，HTTP 走 `urllib`，所以任何 OpenAI 兼容端点都能接。
+
+```bash
+# Kimi / Moonshot
+mas init --provider openai_compat --model kimi-k2 --base-url https://api.moonshot.cn/v1
+export MAS_API_KEY=sk-...
+
+# Claude
+mas init --provider anthropic --model claude-sonnet-4-5
+export MAS_API_KEY=sk-ant-...
+
+# GPT / Grok / DeepSeek / Qwen / 本地 vLLM 等，OpenAI 兼容即可
+mas init --provider openai_compat --model gpt-4o-mini --base-url https://api.openai.com/v1
+```
+
+适配器自带三种容错，兼容绝大多数「OpenAI 兼容」网关：
+
+- 网关不支持 `response_format` 时自动降级重试一次，并从回答正文里抽取 JSON；
+- 网关用 SSE 事件流回答（很多中转站和本地桥接都是这样）时自动折叠成标准 chat 结构；
+- 网关用 Responses 事件流回答（Codex 桥接、OpenMausBot 这类运行时）时同样折叠；
+- 网关只认 `input` 不认 `messages` 时也能工作 —— 请求同时带两份，二选一被读取；
+- 回答是内容块数组而不是字符串时，自动拼成纯文本；
+- usage 字段名在 `prompt_tokens` / `input_tokens` 两套之间自动归一，缺 `total_tokens` 时回填；
+- 模型在正文前吐 `<think>` 思维链时自动剥离，思维链不会进入交付物、判定和账本。
+
+装完之后跑一次握手，看你的端点到底说哪种方言：
+
+```bash
+mas doctor
+# [OK  ] endpoint       端点可用，协议方言 = openai-responses-events
+```
+
+也可以完全用环境变量，不改配置文件：
+
+```bash
+export MAS_PROVIDER=openai_compat MAS_MODEL=your-model MAS_BASE_URL=https://... MAS_API_KEY=...
+```
+
+---
+
+## 接进 MCP（Codex / Claude Code / 任何 MCP 客户端）
+
+安装器会自动把下面这段写进 `~/.codex/config.toml`：
+
+```toml
+[mcp_servers.mas_loop]
+command = "python"
+args = ["-m", "mas", "serve"]
+startup_timeout_sec = 30.0
+tool_timeout_sec = 300.0
+```
+
+暴露的工具：
+
+| 工具 | 用途 |
+| --- | --- |
+| `mas_run` | 跑一个闭环任务，返回闭合状态与逐条判定 |
+| `mas_status` | 当前配置、账本规模、未处理工单 |
+| `mas_ledger` | 读闭环账本（可按 `run_id` 过滤） |
+| `mas_tickets` / `mas_ticket_resolve` / `mas_resume` | 人工介入闭环 |
+| `mas_report` | 生成闭环复盘报告 |
+| `mas_replay` | 回放运行轨迹 |
+| `mas_export` | 导出账本为 Markdown |
+| `mas_teams` | 列出团队模板 |
+| `mas_doctor` | 安装自检 |
+| `mas_config` | 读取 / 更新配置 |
+
+协议实现是纯标准库的 JSON-RPC 2.0 over stdio —— **不需要 `pip install mcp`**。
+
+### 接进 OpenMausBot（开源 Grok Bot 平替）
+
+[OpenMausBot](https://github.com/milind-soni/OpenMausBot) 是开源的 Grok Bot 平替：聊天界面里
+每个联系人都是一个真的智能体（Claude Code / Codex 在本地跑）。它提供**入口**，本项目提供**判定**。
+
+```sh
+npm install -g openmausbot && openmausbot     # Node 24+
+python tools/install_openmausbot_mcp.py         # 把 MAS 注册成它的 MCP server
+```
+
+注册后 OpenMausBot 会挂载上表的 12 个工具，bot 在聊天里就能直接调用 `mas_run`
+拿回一个 `closed / escalated / budget_exhausted` 的确定结论。
+
+完整说明（含权限模型、开机自启、给 bot 的任务模板）：[docs/openmausbot-integration.md](docs/openmausbot-integration.md)。
+
+---
+
+## 接入 DeepSeek Harness（可选）
+
+仓库里带了一个 **DSH 插件**（`integrations/dsh-openloop-mas`）：它不重写闭环逻辑，
+而是通过 **MCP** 调用本地运行时，因此 DSH 对话里的判定与账本，和 Codex / Claude Code
+客户端看到的是**同一份事实**。
+
+```powershell
+# 可选开关：默认关闭，主线安装仍然零依赖（纯 Python，不需要 Node / DSH / npm）
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -InstallDshPlugin
+```
+
+装好后 DSH 里多出 6 个工具：`mas_run`、`mas_status`、`mas_ledger`、`mas_tickets`、
+`mas_report`、`mas_doctor`。
+
+细节、配置项、实测证据与边界见 **[docs/dsh-integration.md](docs/dsh-integration.md)**。
+
+### 让 DSH 真的能说话：`mas relay`
+
+装上插件不等于模型能用。DSH 的 `dsh-llm-pi-ai` 适配器**坚持要一个 API key**，
+而私有端点常常**不要 key**（甚至会因为占位 key 直接 `401`）——这是协议契约和
+端点契约打架。`mas relay` 插在中间：丢弃客户端的 `Authorization`，按需换成上游真 key。
+
+```powershell
+# 一键生成能跑的 DSH profile（写配置 + 装插件 + 打印命令）
+python tools/setup_dsh_bridge.py --profile masbridge --relay-port 8766
+
+# 终端 1
+mas relay --upstream http://127.0.0.1:16024 --port 8766
+
+# 终端 2：pi-ai 坚持要 key，给个占位值即可（relay 会丢弃它）
+$env:MAS_BRIDGE_API_KEY = "placeholder"
+dsh --profile masbridge headless "用 mas_run 跑一个闭环：目标是写一份发布说明，验收标准用 file_exists 要求 out/report.md 存在"
+```
+
+> **`headless` 是 profile 名，不是子命令。** 正确形态是 `dsh --profile <name> headless "<task>"`。
+
+中继的两种鉴权模式、安全边界、已验证/未验证清单见 **[docs/relay.md](docs/relay.md)**。
+
+### 同宿主并列插件：MOKI 资料库
+
+[MOKI](https://github.com/JKZeng-cell/moki-library-for-dsh)（`dsh-moki-library`）是
+**另一个项目**，别和 OpenMausBot 混：它给 DeepSeek Harness 加一个**本地资源管理器**——
+文件/网页链接统一整理、多格式预览、选区 `Alt+D` 唤起 AI 对话、**修改先进草稿、
+用户确认后才写回原文件**。
+
+分工很清楚：**MOKI 负责把资料整理成可交付的产物，MAS 负责判定这份产物到底过不过。**
+
+```bash
+dsh plugin --profile web add "dsh-moki-library@file:<绝对路径>/dsh-moki-library-0.1.73.tgz" --allow-build=sharp
+dsh plugin --profile web add "dsh-openloop-mas@file:<绝对路径>/dsh-openloop-mas-0.7.16.tgz"
+```
+
+> MOKI 需要 **DSH >= 0.2.2-rc.1**、**Node >= 22.19**，且是 **web-platform 插件**——
+> 在 CLI / headless profile 里会一直 pending（宿主形态不对，不是装坏了）。
+
+## 随包附带的 Agent Skill
+
+| Skill | 作用 |
+| --- | --- |
+| `mas-loop` | 跑闭环任务、写验收标准、读账本与工单 |
+| `mas-review` | 多视角对抗式审查（执行者 / 验证者 / 复盘者分离） |
+| `mas-scaffold` | 给新项目搭团队模板与 CI 门禁 |
+
+安装器会把它们装进本机能找到的所有 skill 目录（`~/.codex/skills`、`~/.claude/skills`、`~/.agents/skills`、`~/.gemini/skills`）。
+
+> Skill 的**唯一真源是 `mas/skills/`**——它随 wheel 一起分发，所以 `pip install` 装出来的 skill
+> 和从源码装出来的 skill 逐字节相同，不存在两份副本各自漂移的问题。
+
+卸载：
+
+```bash
+mas uninstall       # 移除 skills 与 MCP 注册（保留 ~/.mas 里的账本与配置）
+pip uninstall openloop-mas
+```
+
+---
+
+## 目录结构
+
+```
+openloop-mas/
+├─ mas/                 运行时（纯标准库）
+│  ├─ engine.py         闭环引擎：预算、停滞判定、闭合/升级
+│  ├─ orchestration.py  并行候选、对抗评审聚合、后端故障转移
+│  ├─ providers.py      mock / OpenAI 兼容 / Anthropic 适配
+│  ├─ ledger.py         append-only 账本
+│  ├─ tickets.py        人工升级工单
+│  ├─ mcp_server.py     MCP stdio 服务
+│  ├─ http_server.py    MCP over HTTP + SSE（远程接入）
+│  ├─ report.py         复盘报告、回放轨迹、账本导出
+│  ├─ setup.py          交互式向导 + 真实闭环自检
+│  ├─ bench.py          离线基准测试
+│  ├─ cli.py            命令行
+│  ├─ drafts.py         草稿层：改动先进草稿，人确认后才写回
+│  ├─ doctor.py         安装自检
+│  ├─ demo.py           三个离线场景
+│  └─ teams/            团队模板（default / review / content）
+│  └─ skills/           Agent Skill 包（唯一真源，随 wheel 一起分发）
+├─ integrations/        DSH 插件（DeepSeek Harness 集成）
+├─ tests/               离线测试
+├─ install.ps1          Windows 一键安装
+├─ install.sh           macOS / Linux 一键安装
+└─ docs/                架构、方法论、MCP、定位说明
+```
+
+## 命令速查
+
+```bash
+mas install       # 装 skills + 注册 MCP 服务器
+mas sync          # 把已安装的 skills 同步回包内版本（修复漂移）
+mas uninstall     # 移除 skills + MCP 注册（保留账本）
+mas init          # 生成/更新配置
+mas init --wizard # 交互式向导，一步步配好
+mas run           # 跑一个闭环任务
+mas demo          # 离线演示三个闭环场景
+mas verify        # 跑一次真实闭环自检
+mas bench         # 离线基准测试
+mas status        # 本机状态
+mas ledger        # 闭环账本
+mas report        # 闭环复盘报告（Markdown）
+mas replay        # 回放运行轨迹
+mas export        # 导出账本为 Markdown 表格
+mas tickets       # 人工工单
+mas resume ID     # 带人工意见继续
+mas teams         # 团队模板
+mas doctor        # 安装自检
+mas selftest      # 隔失门禁：重复打磈易偶发的路径（离线）
+mas files        # 索引工作区：每个文件是什么格式、能读出什么
+mas preview FILE # 预览一个文件（PDF / Word / 文本…）
+mas drafts       # 待确认的草稿：list / show / approve / reject / token / ticket / conflict
+mas drafts token # 拿人类令牌：agent 提的草稿，agent 自己批不了
+mas drafts ticket D-ID --token <令牌>  # 签一张只管一个草稿、用一次就作废、15 分钟过期的票据
+mas serve         # 以 MCP stdio 服务运行
+mas http          # 以 HTTP + SSE 运行（远程接入；对外部署请设 MAS_HTTP_TOKEN）
+mas relay         # OpenAI 兼容中继：给「非要 API Key」的客户端用（默认 127.0.0.1:8766）
+```
+
+`mas run` 退出码：`0` = 闭合，`2` = 未闭合（升级或预算耗尽）。CI 里可以直接当门禁用。
+
+---
+
+## 开发与测试
+
+```bash
+python -m unittest discover -s tests -v   # 213 个离线测试，不需要网络
+python -m mas demo                        # 三个闭环场景
+python -m mas bench                       # 离线基准测试
+python -m mas verify                      # 真实闭环自检
+python -m mas selftest --iterations 120     # 隔失门禁（会拒绝绝经不可能的路径）
+```
+
+测试覆盖：机检规则、闭合/停滞/预算三条终止路径、规则判定压过模型判定、未判定标准不得通过、MCP 握手与工具调用、配置合并与环境变量覆盖、SSE 流折叠、思维链清洗、遗留代码页下的 UTF-8 输出安全、并行候选选优、对抗评审聚合（all/majority/any）、后端故障转移、HTTP/SSE 真实请求、复盘报告与回放、向导与自检。
+
+---
+
+## 延伸阅读
+
+- [文件级机检与写文件协议](docs/file-checks.md) —— 闭环为什么必须跟磁盘
+| [DSH 集成与 relay](docs/dsh-integration.md) —— 让模型在宿主里真的能跑闭环
+
+| 文档 | 内容 |
+| --- | --- |
+| [docs/quickstart.md](docs/quickstart.md) | 5 分钟上手：安装 → 离线跑通 → 接真实模型 → 人机协同 |
+| [docs/architecture.md](docs/architecture.md) | 运行时架构与数据流 |
+| [docs/loop-engineering.md](docs/loop-engineering.md) | 方法论：闭环为什么这样设计 |
+| [docs/mcp.md](docs/mcp.md) | MCP 接入、握手、18 个工具、协议细节与排障 |
+| [docs/dsh-integration.md](docs/dsh-integration.md) | DeepSeek Harness 集成：DSH 插件、relay 一键流程、MOKI 分工 |
+| [docs/relay.md](docs/relay.md) | `mas relay`：给「非要 API Key」的客户端用的私有端点中继 |
+| [docs/drafts.md](docs/drafts.md) | 草稿层：改动先进草稿，人确认后才写回原文件；与 MOKI 的分工 |
+| [docs/resources.md](docs/resources.md) | 统一资源索引与多格式预览；与 MOKI 的分工 |
+| [docs/positioning.md](docs/positioning.md) | 定位说明：与「私有化代理团队」类项目的关系与传播口径 |
+| [docs/acceptance-report.md](docs/acceptance-report.md) | 安装与验收报告：本机实测证据、CI 结果、已知限制 |
+| [README.en.md](README.en.md) | English version of this README |
+
+---
+
+## 定位说明（与 OpenMausBot 等项目的关系）
+
+OpenLoop MAS **不是**「私有化 AI 代理团队」那一类产品的复刻，它补的是**另一层**：
+
+- 那一类产品解决的是「把 Claude / GPT / Kimi 接进一个能聊天的代理团队，跑在本地或云端，能挂 MCP 和一堆应用」；
+- OpenLoop MAS 解决的是「**这个团队跑完之后，怎么知道它真的做完了，而且过程可回放、可止损、可交接**」。
+
+两者可以叠加：前者当执行层，后者当闭环层。
+传播口径上可以把本项目讲成「让多智能体**真的会结束**的那一层」，而不是又一个聊天壳。
+
+实测接法（见 [docs/openmausbot-integration.md](docs/openmausbot-integration.md)）：
+把本项目注册成 OpenMausBot 的自定义 MCP server，bot 在聊天里就能调用 `mas_run`，
+拿回 `closed / escalated / budget_exhausted` 的确定结论。
+
+> 视频/介绍里如果需要引用同类项目（如 OpenMausBot 这类主打私有化代理团队、支持 MCP 与大量应用打通的方案），请以其官方仓库的说明为准：能力边界、安全模型、更新频率都应以官方文档为准，不要替别人的项目做安全承诺。
+
+---
+
+## License
+
+MIT © OpenLoop MAS contributors
+
+---
+
+## 门禁考古
+
+这个项目至今有 **23 道门禁**，每一道都是从一个**真实事故**里长出来的。
+下面按门禁编号倒序记录它们各自的来历 —— 如果你只想用，直接跳过这一节就好。
+
+- **第 23 项门禁 `onboarding_path`** —— 前面 22 道门禁全在管**运行时**：
+  引擎闭不闭合、账本留不留、草稿挡不挡得住。**没有一道管「门」**——
+  而新来的人只看两样东西：README 和 quickstart。
+  代价是真实的：这个项目长到 22 道门禁时，README 已经涨到 **2242 行**，
+  首屏塞满门禁考古，**「5 分钟上手」压在第 1314 行**；
+  两种安装方式**都叫「方式二」**；文档里钉死的版本还停在 **0.7.17**，
+  而发布版已经是 0.7.82。
+  这些**一条都不影响引擎**，但**全都挡住初学者**——
+  而「让初学者一键装上」本来就是这个项目的目标之一。
+  现在门禁守着这扇门：上手章节必须在**首屏 40 行内**、
+  安装方式编号**不能重复**、文档里出现的每个 `mas` 命令
+  **必须真的在解析器里**、文档钉住的版本**必须就是当前版本**、
+  第一条路径**不许要 API Key**（新手还没有账号）。
+  同样用**反证**查出来：故意把上手章节的定位器打瞎，
+  门禁必须报红（另外四个变异分别打在重复编号、版本漂移、
+  幽灵命令、首路径要密钥上，也都被捕获）。
+  这道门禁盯的是**人读到的第一页**，而不是**代码跑出来的结果**——
+  这是它和前 22 道门禁最不一样的地方。
+
 - **第 22 项门禁 `shadow_guard`** —— 这个项目里每一条检查问的都是**正在跑的这份代码**。
   但坐在键盘前的人敲的 `mas`，跑的是 **PATH 先摸到的那一份**。
   真实机器上就是这样：
@@ -1274,968 +2278,3 @@
 - 回退端点可独立配置超时与重试 —— 故障转移真的能回退；
 - 环境变量不再被冻结进配置文件，API key 不落盘，测试不再读你的真实配置。
 
-[![ci](https://github.com/tffgwy/openloop-mas/actions/workflows/ci.yml/badge.svg)](https://github.com/tffgwy/openloop-mas/actions/workflows/ci.yml)
-[![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
-[![deps](https://img.shields.io/badge/dependencies-0-orange.svg)]()
-
----
-
-## 为什么做这个
-
-多智能体协作最常见的失败不是「模型不够聪明」，而是**循环不闭合**：
-
-- 没有可核验的验收标准 → 大家互相说「差不多了」，谁也说服不了谁；
-- 没有退出条件 → 一轮轮往下聊，token 烧完还没有结论；
-- 没有过程记录 → 出问题无法复盘，无法交接，无法追责；
-- 没有止损 → 一个明显走不通的任务会一直重试到超时。
-
-Loop Engineering 要解决的就是这件事：**让「做完没有」变成一个可以被机器判定的事实。**
-
-OpenLoop MAS 的做法是把闭环写成代码约束，而不是寄望于提示词：
-
-| 环节 | 角色 | 产出 | 谁来判定 |
-| --- | --- | --- | --- |
-| 计划 | `planner` | 步骤与风险 | — |
-| 执行 | `worker` | **交付物本身** | — |
-| 验证 | `verifier` | 逐条验收标准的通过/不通过 + 证据 | 引擎（机检优先） |
-| 复盘 | `reflector` | 失败原因与下一轮改法 | — |
-| 闭合 | `lead` | **只判没人判的标准**：`close` / `revise` / `escalate` | 引擎（**最终否决权**） |
-
-一个循环只有同时满足 **产物 + 逐条判定 + 决策 + 账本条目** 才算闭合；否则状态只有三种：`escalated`（升级人工）、`budget_exhausted`（预算止损）、`error`。**没有「差不多完成」这个状态。**
-
-`lead` 是**顾问，不是法官**：**机检失败是事实**，这种情况**不咨询 lead**；
-咨询了它也**只能填空**（机检已定的标准原样保留）。
-**停滞、预算、死线**由引擎**最终否决**，lead 关不掉一个超预算的运行；
-**lead 自己判不了**（`met` 读不出布尔值）就**保持未判定、继续追问**。
-
----
-
-## 5 分钟上手
-
-### 方式一：一条脚本（跨平台，不需要 Python 环境准备）
-
-```bash
-# macOS / Linux
-curl -fsSL https://raw.githubusercontent.com/tffgwy/openloop-mas/main/install.sh | bash
-
-# Windows（PowerShell）
-irm https://raw.githubusercontent.com/tffgwy/openloop-mas/main/install.ps1 | iex
-```
-
-脚本会自己建好虚拟环境、装好包、注册 MCP 服务、跑一遍自检。
-
-### 方式二：pip（需要 Python 3.10+）
-
-```bash
-pip install openloop-mas     # 见下方说明：这个包名目前还没上 PyPI
-mas install        # 装 skills + 注册 MCP 服务器
-mas demo           # 不需要任何 API Key，先看它自己跑通闭环
-mas doctor         # 自检（包含 skills 漂移、运行时版本落后）
-mas sync           # 把已安装的 skills 同步回包内版本
-mas runtime        # 看本机装的是哪一版运行时
-mas upgrade        # 把落后的旧版运行时换成当前这版
-```
-
-> **升级过、想换新版本？** 先 `mas upgrade`（换掉真正在跑的那份运行时），
-> 再 `mas install`（让 MCP 注册指向新版本）。
-> 只做后者的话，skills 和注册都刷新了，**但真正在跑的还是旧代码**——
-> 这正是 `mas doctor` 的 `runtime` 检查现在会指出来的事。
-
-> **关于 `pip install openloop-mas`**：这个包名**目前还没有在 PyPI 上建立**，
-> 直接 pip 会得到 `No matching distribution found`。现在请用上面的**安装脚本**，
-> 或从 [Releases](https://github.com/tffgwy/openloop-mas/releases/latest) 下载 wheel。
-> `mas doctor` 会**实测**这个包名在 PyPI 上的状态并如实告诉你——
-> 包名一旦发布，这段说明和 doctor 的检查都会自动对上。
-
-`mas doctor` 说的是人话：每一项都解释「这是什么」，标清楚是**必需 / 建议 / 可选**，
-最后给一句**结论**和一条**下一步命令**：
-
-```
-[OK  ] python（必需）
-       3.14.10
-       是什么：Python 版本够不够新（3.10 以上才能跑）
-[注意] skill_codex（可选）
-       未安装: ...\.codex\skills\mas-loop\SKILL.md（运行 mas install）
-       是什么：给 Codex 装的 skill：让 Codex 会用这个闭环工具
-...
-小结：8 项正常，6 项注意，0 项坏了
-结论：闭环能跑，但智能体接不上：skill_codex、skill_claude、skills_sync、mcp_codex、mcp_claude 还没装。
-下一步：运行 mas install，一条命令装上 skill 并注册 MCP 服务。
-```
-
-三种结论的区别很重要：**闭环跑不起来**（必需项坏了）、**闭环能跑但智能体接不上**
-（skill / MCP 没装）、**一切就绪**。退出码只在第一种情况下非零。
-
-`mas install` 做的是**装 agent skills 到 Codex / Claude Code 的 skill 目录**、
-**把 MCP 服务器注册进 `~/.codex/config.toml` 和 `~/.claude.json`**，
-然后你可以直接开一个新终端，Codex 和 Claude Code 就认识这套闭环工作流了。
-
-- 幂等：重复跑不会重复注册，也不会覆盖你已有的配置。
-- 安全：任何被修改的配置文件都会先备份成 `*.bak-<时间戳>`。
-- 不含密钥：安装过程不写入任何 API Key。
-
-> 想看它装了什么，加 `--json`。
-
-### 方式二：只下载一个脚本（零依赖，最适合初学者）
-
-不用 clone、不用 pip、不用自己装任何东西——**下载一个脚本文件**，双击/执行它就行：
-
-```powershell
-# Windows：下载 install.ps1 到任意目录，然后执行
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
-```
-
-```bash
-# macOS / Linux：下载 install.sh 到任意目录，然后执行
-bash install.sh
-```
-
-脚本会自己从 GitHub Release 拉取已发布的 wheel、用标准库解开、装到
-`~/.mas/`，然后注册 MCP 服务器和 skills，最后跑一遍离线自检。
-**只需要机器上有 Python 3.10+，不需要 git，不需要 pip，不需要编译工具。**
-
-想装固定版本（而不是"最新版"）：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.17
-```
-
-```bash
-MAS_VERSION=0.7.17 bash install.sh
-```
-
-> 脚本默认会往 `PATH` 里加一条 `~/.mas/bin`（Windows 写当前用户的注册表）。
-> 不想动 `PATH` 就加 `-SkipPath`（Windows）或 `MAS_SKIP_PATH=1`（shell）。
-
-### 方式三：从源码安装（适合开发）
-
-```bash
-git clone https://github.com/tffgwy/openloop-mas.git
-cd openloop-mas
-
-# Windows
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1
-# macOS / Linux
-bash install.sh
-
-# 不需要任何 API Key，先看它自己跑通闭环
-mas demo
-```
-
-> `install.ps1` / `install.sh` 与 `mas install` 做的是同一件事，
-> 前者适合从源码装（含开发环境）或「只下一个脚本」，
-> 后者适合 pip 安装后的机器。
-
-> 配置文件固定在 `~/.mas/config.json`（Windows：`%USERPROFILE%\.mas\config.json`）。
-> 运行账本另存在 `state_dir` 下，两者分开——换状态目录不会把配置弄丢。
-> CI 里想隔离，用环境变量 `MAS_CONFIG_PATH` 指定配置文件、`MAS_STATE_DIR` 指定状态目录。
-
-`mas demo` 会离线跑三个场景，并把真实结果打出来：
-
-```
-[OK ] closure     期望=closed             实际=closed             迭代=2 票=-
-[OK ] stagnation  期望=escalated          实际=escalated          迭代=4 票=T-20261111-085346-4396
-[OK ] budget      期望=budget_exhausted   实际=budget_exhausted   迭代=1 票=-
-```
-
-> 注意：`mock` 模式里，**通过与否由引擎的机检规则判定**，不是模型自己说「我完成了」。
-> mock 只是模拟执行者产出草稿，验证权始终在确定性检查器手里。
-
----
-
-## 跑一个真实任务
-
-```bash
-mas run --goal "写一份 v0.1.0 的发布说明" \
-  --criteria '{"id":"c1","desc":"包含版本号","check":{"type":"contains","arg":"v0.1.0"}}' \
-  --criteria '{"id":"c2","desc":"不少于 200 字","check":{"type":"min_chars","arg":200}}'
-```
-
-输出：
-
-```
-状态：closed（迭代 2 次，token 2140）
-账本：/home/you/.mas/ledgers/runs.jsonl
-  [PASS] c1 (rule) all required strings present
-  [PASS] c2 (rule) length 418 >= 200
---- 交付物预览 ---
-...
-```
-
-### 支持的机检规则（由引擎判定，可复现）
-
-| type | 含义 | 参数 |
-| --- | --- | --- |
-| `contains` / `not_contains` | 必须包含 / 禁止包含 | `arg`（字符串或数组） |
-| `min_chars` / `max_chars` | 长度上下限 | `arg`（整数） |
-| `regex` | 正则命中 | `arg`（模式） |
-| `lines_min` | 非空行数下限 | `arg`（整数） |
-| `section` | 必须包含某个 `## 标题` | `arg`（标题名） |
-| `json_keys` | JSON 对象必须包含的键 | `arg`（键数组） |
-
-判定口径（实测确认，写标准时按这个来）：
-
-| 类型 | 精确判定 | 容易踩的坑 |
-| --- | --- | --- |
-| `contains` | 产物含给定字符串；`arg` 可为数组，**全部命中**才算通过 | 数组漏一项整条失败 |
-| `not_contains` | 产物**不含**任何给定字符串 | 数组是「一个都不能出现」 |
-| `min_chars` / `max_chars` | 产物的**字符数**（含空白与换行） | 不是字数也不是字节数 |
-| `regex` | `re.search` 匹配，**自动带 DOTALL**（`.` 能跨行） | 想跨行不必加 `(?s)`；命中的是子串不是全串 |
-| `lines_min` | **非空行**数（空行不计） | 段落间空行不影响计数 |
-| `section` | 产物里**整行**恰好是 `## <arg>`（允许行尾空白） | **必须是二级标题 `##`**，`#`/`###` 都不算；正文里提到 `## 结论` 也**不算**；`## 结论分析` **不满足** `## 结论` |
-| `json_keys` | 产物须是 JSON **对象**且含全部给定键 | 产物不是合法 JSON 直接判不通过 |
-
-未知类型会被判为 `unjudged`（**不通过**），不会静默放过。
-
-### 文件级机检（v0.7.15 起）：判定跟的是磁盘，不是文案
-
-上面所有规则搜的都是**产物文本**。下面这十个搜的是**真实文件系统**——
-「模型说写了」和「文件真的在」从此是两回事：
-
-| type | 含义 | 参数 |
-| --- | --- | --- |
-| `file_exists` | 文件存在且是普通文件 | `path` |
-| `file_missing` | 文件不存在（清理类验收） | `path` |
-| `file_contains` | 文件含给定字符串 | `path` + `value` |
-| `file_not_contains` | 文件不含给定字符串 | `path` + `value` |
-| `file_regex` | 文件内容命中正则 | `path` + `value` |
-| `file_lines_min` | 非空行数下限 | `path` + `value` |
-| `file_min_bytes` / `file_max_bytes` | 字节数上下限 | `path` + `value` |
-| `file_sha256` | sha256 等于给定摘要 | `path` + `value` |
-| `file_mtime_newer` | 修改时间晚于给定 ISO 时间戳 | `path` + `value` |
-
-### 内容级机检（v0.7.70 起）：读的是文件**里面**，不是它的字节
-
-上面十个搜的是**字节**。对**正文不是明文的格式**它们是瞎的：
-PDF 的文字在**压缩流**里，`.docx` 本身是 **zip 包**，图片里没有文字。
-下面六个**先把内容取出来再判**（只用标准库，不执行文件里的任何东西）：
-
-| type | 含义 | 参数 |
-| --- | --- | --- |
-| `content_contains` | 文件**内容**含给定字符串 | `path` + `value` |
-| `content_not_contains` | 文件**内容**不含给定字符串 | `path` + `value` |
-| `content_regex` | 文件**内容**命中正则 | `path` + `value` |
-| `content_lines_min` | 内容**非空行**数下限 | `path` + `value` |
-| `content_min_chars` | 内容**字符数**下限 | `path` + `value` |
-| `content_format_is` | 文件**格式**等于给定格式 | `path` + `value` |
-
-```bash
-mas run --workspace ./my-project --goal "出一份 PDF 报告" \
-  --criteria 'content_format_is:out/report.pdf::pdf' \
-  --criteria 'content_contains:out/report.pdf::结论'
-```
-
-**格式按 magic bytes 判定**，扩展名只做兜底 —— 扩展名会撒谎，
-`.txt` 里装的是 PDF，那它就是 PDF。支持的格式：`pdf` / `docx` / `xlsx` /
-`pptx` / `zip` / `png` / `jpeg` / `gif` / `bmp` / `tiff` / `webp` /
-`wav` / 文本类。
-
-**读不出内容 = 不通过**（不是「无法判定」）。这是这一版最要紧的一条：
-判「无法判定」的话，这条标准会**回到模型手里**，而模型说一句
-「looks fine」就把它关上了 —— **没人查过的标准被关上，比不闭合更糟**。
-
-### 统一资源索引与多格式预览（v0.7.71 起）：一个文件夹就是一份索引
-
-```bash
-mas files                  # 索引这台机器上所有工作区
-mas files ./out            # 索引一个文件夹
-mas preview ./out/report.pdf   # 预览一个文件
-```
-
-```bash
-$ mas files ./out
-
-[./out]  5 个文件  263.7 KB
-    pdf        1 个
-    image      2 个
-    model      1 个
-      836.0 B  pdf        report.pdf  pages 2、text chars 57
-      327.0 B  image      shot.png  width 12、height 7
-      117.0 B  image      liar.txt  width 4、height 4
-      213.0 B  model      ascii.stl  triangles 2
-      251.0 B  zip        bundle.zip  members 2
-```
-
-**格式按文件自己的头判定，不看名字** —— 上面的 `liar.txt` 其实是一张 PNG，
-所以它报 `image`。**读不开的文件会列出来并写明原因**（那一行 ⚠ 是信息，
-不是噪声：交付物中间有一个读不开的文件，恰恰是读者最该看见的东西）。
-
-`mas preview` 把 PDF 的字从**压缩流**里取出来、把 Word 的字从 **zip 成员**里
-剥掉标记取出来；图片没有正文时**明确说「没有可预览的正文」**，而不是给你一个空白屏幕。
-文件不存在或传了目录 → **退出码 2**。
-
-详见 **[docs/resources.md](docs/resources.md)**（含与
-[MOKI 资料库](https://github.com/JKZeng-cell/moki-library-for-dsh) 的分工对照）。
-
-### 草稿层（v0.7.72 起）：改动先进草稿，人确认后才写回原文件
-
-```bash
-mas drafts                              # 看有哪些草稿在等
-mas drafts show D-1a2b3c4d              # 看这一份的 diff
-mas drafts approve D-1a2b3c4d           # 批准：写回原文件
-mas drafts reject  D-1a2b3c4d           # 驳回：原样不动
-mas drafts token                        # 拿人类令牌（agent 批不了自己的草稿）
-mas drafts ticket D-1a2b3c4d --token <人类令牌>   # 签一张只管这一个草稿、用一次就作废的票据
-mas drafts conflict                           # 查哪些草稿的文件在等待期间被改过
-mas drafts approve D-1a2b3c4d --force           # 明知文件被改过，仍要写回
-```
-
-一次运行想改一个**已经存在**的文件时，它**不再直接覆盖**：
-改动先进草稿，**原文件一个字节都不动**，草稿带一份**可读的 diff**，
-你说「批准」才写回，你说「驳回」就**一个字都不改**。
-
-```bash
-$ mas drafts
-
-工作区 ~/mas/artifacts：1 个草稿
-  D-1a2b3c4d  pending  notes.txt  有改动
-        理由：the loop proposed a change to an existing file
-```
-
-**新建文件照常直接写** —— 一个还不存在的文件，没有东西可以毁掉。
-想回到旧行为，把配置里的 `edit_policy` 改成 `"overwrite"`（默认 `"draft"`）。
-
-**机检读的是草稿里的新字节**，不是磁盘上的旧文件 —— 否则循环会陷入
-「提改动 → 读旧文件 → 判不通过 → 再提改动」的死结，**永远闭不上**。
-草稿和它改的文件**住在同一个工作区**（`.mas-drafts/`），文件夹被复制时
-草稿跟着走 —— 丢掉的草稿，是一份**永远没法被人审阅**的改动。
-
-### agent 经 MCP 提草稿（v0.7.73 起）：提议和批准分成两个动作
-
-`mas drafts` 是**人**的那一半。MCP 上还有**一半给 agent**，
-但两半**不是同一件事**：
-
-```bash
-# 人在自己的机器上拿令牌（一次就够）
-mas drafts token
-```
-
-agent 侧的 MCP 工具：
-
-| 工具 | 做什么 | 能不能改文件 |
-|---|---|---|
-| `mas_draft_stage` | **提**一份改动（带 diff 和理由） | **不能** —— 原文件一个字节都不动 |
-| `mas_drafts` | 看有哪些草稿、看某一份的 diff | 不能 |
-| `mas_draft_resolve` | 批准或驳回 | **要人类令牌** |
-| `mas_files` | 索引工作区 | 只读 |
-| `mas_preview` | 预览一个文件 | 只读 |
-
-**agent 提的草稿，agent 自己批不了。** 令牌不对、空令牌、没令牌，
-一律拒绝，而且**原文件不动**。
-令牌的作用**不是保密，是分权** —— 提议的人不确认自己提的东西。
-
-```bash
-# agent 提了一个改动（文件没变）
-mas_draft_stage {path: "notes.txt", content: "改过的正文", reason: "补一句结论"}
-
-# agent 想自己批 —— 被拒
-mas_draft_resolve {action: "approve", draft_id: "D-1a2b3c4d"}
--> {error: "human_token_required"}
-
-# 人批 —— 才写回
-mas_draft_resolve {action: "approve", draft_id: "D-1a2b3c4d", token: "<人类令牌>"}
-```
-
-详见 **[docs/drafts.md](docs/drafts.md)**（含与
-[MOKI 资料库](https://github.com/JKZeng-cell/moki-library-for-dsh) 的分工对照：
-MOKI 管**交互层**（`Alt+D`），本项目管**引擎层**（循环跑出来的东西），
-**规则是同一条**）。
-
-### 写二进制交付物（v0.7.70 起）：worker 怎么产出那个 PDF
-
-内容级机检要读得进 PDF，**前提是有一个 PDF 存在**。写文件协议
-（v0.7.15）原本只能带**文字**，所以交付物是 PDF 的任务**没法产出 PDF**。
-
-现在写块可以带 **`encoding`** 属性：
-
-```
-<<<MAS:FILE path="out/report.pdf" encoding="base64">>>
-JVBERi0xLjQK...
-<<<MAS:END FILE>>>
-```
-
-引擎把块里的内容**解码成真正的二进制**再落盘，之后内容级机检就能读它。
-
-| 情况 | 结果 |
-| --- | --- |
-| `encoding="base64"` | **解码成二进制**再写 |
-| 不写 `encoding` | **按 UTF-8 文本写**（旧行为不变） |
-| `encoding="rot13"` 等**不认识**的编码 | **拒绝**，并说明原因 |
-| base64 **解不出来** | **拒绝**，并说明原因（不留半截文件） |
-
-**base64 严格解码。** 宽松解码会把**不在字母表里的字符全丢掉**，
-于是一段纯胡话被解成**一个空文件**、一声不吭 —— worker 要一份 PDF，
-工作区里躺着一个**零字节的 PDF**。宁可拒绝。
-
-**模板块不是请求。** 二进制模板里写着 `out/report.pdf`，看着像个真路径；
-靠**路径**认不出模板（任务真可能就要写这个文件），所以改用**正文**认。
-
-```bash
-mas run --workspace ./my-project --goal "写一份调研报告" \
-  --criteria 'file_exists:out/report.md' \
-  --criteria 'file_contains:out/report.md::结论'
-```
-
-判定口径：**文件缺失 = 不通过**（不是「无法判定」）；路径越界 = 开跑前拒绝；
-参数写漏 = 开跑前拒绝；路径合法但读不出结论 = `unjudged`。
-单文件读取上限 8 MiB。**内容级机检读不出内容时判「不通过」**，理由同上。worker 用**写文件协议**（`<<<MAS:FILE path="...">>>` 围栏块）
-把内容真的写进工作区，写入进账本可查。完整说明见 [`docs/file-checks.md`](docs/file-checks.md)。
-
-
-
-**参数写漏了 = 标准作废，不是标准通过。** 规则缺参数时不可能判出任何结论，
-所以引擎会在**开跑前**直接报错（退出码 1，不消耗任何 token），而不是让它恒真通过：
-
-| 类型 | 必须提供 | 非法示例 |
-| --- | --- | --- |
-| `contains` / `not_contains` | 非空字符串，或非空字符串数组 | `""`、`[]` |
-| `min_chars` / `max_chars` / `lines_min` | 非负整数 | 缺失、`-1`、`"很多"` |
-| `regex` | 能编译的正则 | `""`、`"([未闭合"` |
-| `section` | 标题文本 | `""` |
-| `json_keys` | 键名或非空键数组 | `[]`、缺失 |
-
-**简写形式的坏参数同样快速失败。** `--criteria 'regex:'`、`--criteria 'min_chars:many'`
-不会退回成纯描述——它们保留机检类型，然后被上面那张表拦下，退出码 1、零 token。
-同一份标准，JSON 形式和简写形式待遇一致：写漏了就是写漏了，不会偷偷变成"交给模型判"。
-
-**评审的判定要"读"出来，不是靠真值转换。** 模型如果回 `"pass": "false"`，
-`bool("false")` 是 `True`——一条刚被判定为不通过的标准会被当成通过。引擎读的是
-这个值的**含义**：`"false"` / `"0"` / `"no"` 是不通过，`"true"` / `"1"` / `"yes"` 是通过，
-读不懂（`"maybe"`、空、缺失）就算**未判定**，绝不猜。
-
-**类型名写错也不放过。** JSON 形式里写了一个不存在的类型（如
-`{"check":{"type":"mystery"}}`），引擎同样在开跑前拒绝，并列出所有已知类型——
-一个写错的类型名，如果放行，就会退化成"交给模型判"，模型说"看起来没问题"就闭合了。
-
-只有**简写形式**里类型名本身不存在（`--criteria 'unknown_type:abc'`）才退回成纯描述——
-那是压根没打算写机检，区别于"想写机检但写错了"。
-
-### 简写写法（v0.4.2 起）
-
-机检规则不必每次都写成 JSON。命令行可以直接用 `<类型>:<参数>`：
-
-```bash
-mas run --goal "写一个去重函数" \
-  --criteria 'regex:(?s)def dedupe.*set' \
-  --criteria 'min_chars:200' \
-  --criteria 'contains:关键结论'
-```
-
-**一次写多条标准**，直接给 JSON 数组——数组里的每一条都带上自己的机检规则跑，
-不会被当成一条纯文本描述（那样机检就一次都没跑过，闭合其实来自模型的"看起来没问题"）：
-
-```bash
-mas run --goal "写一份 v0.1.0 的发布说明" \
-  --criteria '[{"id":"c1","desc":"包含版本号","check":{"type":"contains","arg":"v0.1.0"}},
-               {"id":"c2","desc":"不少于 200 字","check":{"type":"min_chars","arg":200}}]'
-```
-
-简写与 JSON 形式完全等价，判定同样来自引擎的确定性检查器（账本里记为 `source: rule`）。
-简写解析在引擎层生效，所以从 MCP、HTTP 或账本重放进来的标准也会被同样处理。
-未知的类型前缀（例如 `写清楚就好`）仍然按普通描述处理，不会被误当成机检规则。
-参数不是整数的数字类前缀（例如 `min_chars:很多`）同样退回普通描述——标准宁可没有机检，也不能声称自己能检查却做不到。
-
-没有机检规则的标准会交给模型验证者判定；但**如果模型没给出判定，默认判不通过**（`unjudged`），不会因为一句「看起来可以」就放行。
-`"required": false` 的标准**只记录、不阻塞闭合**：它有机检规则时照常跑机检，结果原样写进报告（过了是 `PASS`，没过是 `FAIL`），但不会让循环一直不闭合；它没有机检规则时由模型判定，判定结果同样只作记录。
-
-**`required` 标志读的是含义，不是真值。** 写 `"required": "false"`（字符串）**确实**表示可选——
-`bool("false")` 是 `True`，而这条标准一旦通过 JSON、MCP 或 shell 传进来，很容易就带上引号；
-引擎读的是这个值的含义：`"false"` / `"0"` / `"no"` 是可选，`"true"` / `"1"` / `"yes"` 是必选，
-读不懂（`"maybe"`、缺失、`null`）一律按**必选**处理——读不懂的标志绝不能悄悄把标准放宽。
-
-> v0.4.2 起，验证者漏判某条标准时，引擎会在**同一轮内**就缺失的标准追问一次，
-> 而不是重新生成整份交付物、白白消耗一整轮迭代。追问仍无答案才按 `unjudged` 记为不通过。
-
----
-
-## 并行多智能体：让候选互相竞争
-
-一个 worker 只会产出**一种**解法。v0.2 让多个 worker 带着**不同视角**并行产出候选，由引擎按机检结果选优：
-
-```bash
-# 单次任务临时加力，不改配置
-mas run --goal "..." --criteria-file criteria.json \
-  --parallel 3 --perspective thorough \
-  --reviewers 3 --review-mode majority
-
-mas init --wizard    # 交互式配置，第 7 题设并行数、第 8 题设评审数、第 11 题设回退链
-```
-
-| 旗标 | 作用 |
-| --- | --- |
-| `--parallel N` | 并行候选数（N>1 时并发产出多个视角，引擎按机检通过数选优） |
-| `--perspective` | 候选视角锚点：`direct` / `thorough` / `concise` / `structured` / `example_first` / `risk_first` |
-| `--reviewers N` | 独立评审者数量（N>1 时启用对抗评审聚合） |
-| `--review-mode` | 多评审聚合规则：`all`（全票通过）/ `majority`（过半）/ `any`（任一） |
-
-或者直接改配置：
-
-```json
-{
-  "orchestration": {
-    "parallel_workers": 3,
-    "reviewers": 3,
-    "review_mode": "all"
-  }
-}
-```
-
-| 配置 | 行为 |
-| --- | --- |
-| `parallel_workers` | 并行产出的候选数。视角依次为 direct / thorough / concise / structured / example_first / risk_first，**不是同一段提示词的 N 次采样**。 |
-| `reviewers` | 独立验证者数量。视角依次为 strict / skeptic / completeness / reader。 |
-| `review_mode` | `all` 一票否决（全通过才算通过）/ `majority` 多数通过 / `any` 任一通过。 |
-
-**选优规则是确定性的**：先看机检通过项数，再看产物体积，最后按下标定序。同一份配置跑两次，选中的一定是同一个候选 —— 这让回放可信。
-
-**机检永远压过模型判断**：有 `check` 的标准由规则决定，只有没有机检的标准才交给评审共识。评审说「通过」不能覆盖规则说「不通过」。
-
-**默认就是 v0.1 的行为**：`parallel_workers: 1`、`reviewers: 1` 时，路径与 v0.1 完全一致。
-
----
-
-## 多后端故障转移
-
-一个端点返回 502 就让整条循环死掉，那不叫闭环，叫宕机。配置多个后备端点，主端点失败自动切换：
-
-```json
-{
-  "provider": "openai_compat",
-  "model": "gpt-4o-mini",
-  "base_url": "https://api.openai.com/v1",
-  "fallbacks": [
-    { "provider": "anthropic", "model": "claude-sonnet-4-5", "base_url": "https://api.anthropic.com" },
-    { "provider": "openai_compat", "model": "kimi-k2", "base_url": "https://api.moonshot.cn/v1" }
-  ]
-}
-```
-
-每个后备端点都会记录自己实际接了哪一次调用（`provider_used` / `model_used`）。全部失败才会报错。
-
----
-
-## 观测：复盘报告与回放
-
-```bash
-mas report                 # 生成 Markdown 复盘报告（逐条判定、规划、候选、评审）
-mas report --out r.md      # 写入文件
-mas replay                 # 回放账本里的运行轨迹
-mas export                 # 把原始账本导出成 Markdown 表格
-```
-
-`mas report` 的输出长这样：
-
-```
-# OpenLoop MAS 闭环复盘报告
-
-运行总数：12　已闭环：10　未闭环：2　闭环率：83%
-
-## 运行 `R-912928b0af`
-
-- 规划：拆解目标：输出一份结论
-- 并行候选（3 个）：
-  - ★ `thorough` - 机检通过 3 项
-  -   `concise` - 机检通过 1 项
-- 对抗评审：模式 all，可用评审 3，跳过 0
-- 验收判定：
-  - [PASS] `c1` all required strings present
-```
-
-报告里的每个数字都来自账本，**没有任何一处是编出来的**。
-
----
-
-## 远程接入：HTTP + SSE
-
-stdio 传输给本地 Agent 用；HTTP/SSE 传输让运行时能被远程客户端、浏览器面板或 CI 任务访问：
-
-```bash
-mas http --host 127.0.0.1 --port 8765
-```
-
-| 路由 | 方法 | 用途 |
-| --- | --- | --- |
-| `/health` | GET | 存活检查 + 版本 |
-| `/tools` | GET | 工具清单 |
-| `/call` | POST | 调用任一工具，JSON 进 JSON 出 |
-| `/events` | GET | SSE 事件流，实时推送账本增长 |
-
-```bash
-# 免鉴权（仅限本机访问）
-curl http://127.0.0.1:8765/health
-curl -X POST http://127.0.0.1:8765/call \
-  -H 'Content-Type: application/json' \
-  -d '{"tool":"mas_run","arguments":{"goal":"写一份发布说明","criteria":[]}}'
-curl -N http://127.0.0.1:8765/events
-```
-
-### 鉴权（对外暴露时必做）
-
-`/call` 能执行任务、读账本，`/events` 能持续推送账本内容 —— 所以从 **v0.4.8** 起，HTTP 传输**内置鉴权**：
-
-```bash
-export MAS_HTTP_TOKEN=$(python -c "import secrets;print(secrets.token_urlsafe(32))")
-mas http --host 0.0.0.0 --port 8765
-```
-
-设了 `MAS_HTTP_TOKEN` 之后，除 `/health` 外的所有路由都需要令牌：
-
-```bash
-curl -H "Authorization: Bearer $MAS_HTTP_TOKEN" http://127.0.0.1:8765/tools
-curl -X POST http://127.0.0.1:8765/call \
-  -H "Authorization: Bearer $MAS_HTTP_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"tool":"mas_status","arguments":{}}'
-```
-
-也可以用 `X-MAS-Token: <token>` 请求头代替 `Authorization`。
-
-**fail-closed**：绑定到非本机地址（`0.0.0.0` / 局域网 IP）却**没有**令牌时，服务器**拒绝启动**（退出码 `2`）—— 环境变量写错不应该变成公网裸奔。开启鉴权后 CORS 也不再回 `*`，而是钉到 `http://127.0.0.1`，避免任意网页跨站调用。
-
-
-### 常驻部署实战（服务 + TLS 反代）
-
-真正要长期给手机 / 其它设备用，推荐这个组合 —— **服务只绑本机，对外只暴露 TLS 入口**：
-
-```bash
-# 1. 令牌落在文件里，不进版本库、不进启动脚本
-python -c "import secrets,pathlib;pathlib.Path.home().joinpath('.mas/http_token.txt').write_text(secrets.token_urlsafe(32))"
-
-# 2. 服务常驻（示例：Linux systemd / Windows 启动文件夹 / macOS launchd 均可）
-export MAS_HTTP_TOKEN=$(cat ~/.mas/http_token.txt)
-mas http --host 127.0.0.1 --port 8768
-
-# 3. 只把 TLS 入口反代出去（tailnet 内；--https 需要 tailscale serve 权限）
-tailscale serve --bg --https=8768 http://127.0.0.1:8768
-```
-
-手机 / 其它设备访问 `https://<your-host>:<port>/tools`，带上 `Authorization: Bearer <令牌>`。
-
-要点：
-
-- 服务绑 `127.0.0.1` + TLS 反代，比直接 `--host 0.0.0.0` 安全得多（不暴露在局域网，也由反代统一处理 TLS）。
-- 令牌与启动脚本**分离**：脚本里不写明文，令牌文件缺失就报错退出，绝不退化成无鉴权启动。
-- `tailscale serve` 默认是 **tailnet only**；`funnel` 会暴露到公网，属于扩大暴露范围，请自行评估后再开。
-- 停用：`tailscale serve --https=8768 off`。
-
-
----
-
-## 四道止损机制
-
-1. **迭代预算**：`budget.max_iterations`，超出即 `budget_exhausted`。
-2. **墙钟预算**：`budget.deadline_sec`。
-3. **token 预算**：`budget.max_tokens`。
-4. **停滞检测**：连续多轮产出**完全相同**的产物（默认 3 次，`stagnation_limit`）→ 判定卡死，**升级人工工单**，不再空转。
-
-升级出来的工单带齐上下文（目标、验收标准、最后一版产物、失败原因、迭代历史），人工一句话就能接着跑：
-
-```bash
-mas tickets
-mas resume T-20261111-085346-4396 --note "按用户口径重写结论段"
-```
-
----
-
-## 闭环账本
-
-每一次循环都会向 `~/.mas/ledgers/runs.jsonl` 追加条目（append-only）：
-
-```json
-{"seq":3,"ts":"2026-11-11T08:53:46+00:00","run_id":"R-3f1c...","task_id":"R-3f1c...-1",
- "iteration":2,"role":"closure","provider":"mock","model":"mock-1",
- "artifact_sha":"9d1f...","verdict":"pass","decision":"close",
- "scores":[{"id":"c1","pass":true,"note":"all required strings present","source":"rule"}],
- "closed":true}
-```
-
-账本是闭环的**证据**：能回看、能复现、能交接、能写进 CI 门禁。
-
----
-
-## 接入你自己的模型
-
-运行时只用标准库，HTTP 走 `urllib`，所以任何 OpenAI 兼容端点都能接。
-
-```bash
-# Kimi / Moonshot
-mas init --provider openai_compat --model kimi-k2 --base-url https://api.moonshot.cn/v1
-export MAS_API_KEY=sk-...
-
-# Claude
-mas init --provider anthropic --model claude-sonnet-4-5
-export MAS_API_KEY=sk-ant-...
-
-# GPT / Grok / DeepSeek / Qwen / 本地 vLLM 等，OpenAI 兼容即可
-mas init --provider openai_compat --model gpt-4o-mini --base-url https://api.openai.com/v1
-```
-
-适配器自带三种容错，兼容绝大多数「OpenAI 兼容」网关：
-
-- 网关不支持 `response_format` 时自动降级重试一次，并从回答正文里抽取 JSON；
-- 网关用 SSE 事件流回答（很多中转站和本地桥接都是这样）时自动折叠成标准 chat 结构；
-- 网关用 Responses 事件流回答（Codex 桥接、OpenMausBot 这类运行时）时同样折叠；
-- 网关只认 `input` 不认 `messages` 时也能工作 —— 请求同时带两份，二选一被读取；
-- 回答是内容块数组而不是字符串时，自动拼成纯文本；
-- usage 字段名在 `prompt_tokens` / `input_tokens` 两套之间自动归一，缺 `total_tokens` 时回填；
-- 模型在正文前吐 `<think>` 思维链时自动剥离，思维链不会进入交付物、判定和账本。
-
-装完之后跑一次握手，看你的端点到底说哪种方言：
-
-```bash
-mas doctor
-# [OK  ] endpoint       端点可用，协议方言 = openai-responses-events
-```
-
-也可以完全用环境变量，不改配置文件：
-
-```bash
-export MAS_PROVIDER=openai_compat MAS_MODEL=your-model MAS_BASE_URL=https://... MAS_API_KEY=...
-```
-
----
-
-## 接进 MCP（Codex / Claude Code / 任何 MCP 客户端）
-
-安装器会自动把下面这段写进 `~/.codex/config.toml`：
-
-```toml
-[mcp_servers.mas_loop]
-command = "python"
-args = ["-m", "mas", "serve"]
-startup_timeout_sec = 30.0
-tool_timeout_sec = 300.0
-```
-
-暴露的工具：
-
-| 工具 | 用途 |
-| --- | --- |
-| `mas_run` | 跑一个闭环任务，返回闭合状态与逐条判定 |
-| `mas_status` | 当前配置、账本规模、未处理工单 |
-| `mas_ledger` | 读闭环账本（可按 `run_id` 过滤） |
-| `mas_tickets` / `mas_ticket_resolve` / `mas_resume` | 人工介入闭环 |
-| `mas_report` | 生成闭环复盘报告 |
-| `mas_replay` | 回放运行轨迹 |
-| `mas_export` | 导出账本为 Markdown |
-| `mas_teams` | 列出团队模板 |
-| `mas_doctor` | 安装自检 |
-| `mas_config` | 读取 / 更新配置 |
-
-协议实现是纯标准库的 JSON-RPC 2.0 over stdio —— **不需要 `pip install mcp`**。
-
-### 接进 OpenMausBot（开源 Grok Bot 平替）
-
-[OpenMausBot](https://github.com/milind-soni/OpenMausBot) 是开源的 Grok Bot 平替：聊天界面里
-每个联系人都是一个真的智能体（Claude Code / Codex 在本地跑）。它提供**入口**，本项目提供**判定**。
-
-```sh
-npm install -g openmausbot && openmausbot     # Node 24+
-python tools/install_openmausbot_mcp.py         # 把 MAS 注册成它的 MCP server
-```
-
-注册后 OpenMausBot 会挂载上表的 12 个工具，bot 在聊天里就能直接调用 `mas_run`
-拿回一个 `closed / escalated / budget_exhausted` 的确定结论。
-
-完整说明（含权限模型、开机自启、给 bot 的任务模板）：[docs/openmausbot-integration.md](docs/openmausbot-integration.md)。
-
----
-
-## 接入 DeepSeek Harness（可选）
-
-仓库里带了一个 **DSH 插件**（`integrations/dsh-openloop-mas`）：它不重写闭环逻辑，
-而是通过 **MCP** 调用本地运行时，因此 DSH 对话里的判定与账本，和 Codex / Claude Code
-客户端看到的是**同一份事实**。
-
-```powershell
-# 可选开关：默认关闭，主线安装仍然零依赖（纯 Python，不需要 Node / DSH / npm）
-powershell -ExecutionPolicy Bypass -File .\install.ps1 -InstallDshPlugin
-```
-
-装好后 DSH 里多出 6 个工具：`mas_run`、`mas_status`、`mas_ledger`、`mas_tickets`、
-`mas_report`、`mas_doctor`。
-
-细节、配置项、实测证据与边界见 **[docs/dsh-integration.md](docs/dsh-integration.md)**。
-
-### 让 DSH 真的能说话：`mas relay`
-
-装上插件不等于模型能用。DSH 的 `dsh-llm-pi-ai` 适配器**坚持要一个 API key**，
-而私有端点常常**不要 key**（甚至会因为占位 key 直接 `401`）——这是协议契约和
-端点契约打架。`mas relay` 插在中间：丢弃客户端的 `Authorization`，按需换成上游真 key。
-
-```powershell
-# 一键生成能跑的 DSH profile（写配置 + 装插件 + 打印命令）
-python tools/setup_dsh_bridge.py --profile masbridge --relay-port 8766
-
-# 终端 1
-mas relay --upstream http://127.0.0.1:16024 --port 8766
-
-# 终端 2：pi-ai 坚持要 key，给个占位值即可（relay 会丢弃它）
-$env:MAS_BRIDGE_API_KEY = "placeholder"
-dsh --profile masbridge headless "用 mas_run 跑一个闭环：目标是写一份发布说明，验收标准用 file_exists 要求 out/report.md 存在"
-```
-
-> **`headless` 是 profile 名，不是子命令。** 正确形态是 `dsh --profile <name> headless "<task>"`。
-
-中继的两种鉴权模式、安全边界、已验证/未验证清单见 **[docs/relay.md](docs/relay.md)**。
-
-### 同宿主并列插件：MOKI 资料库
-
-[MOKI](https://github.com/JKZeng-cell/moki-library-for-dsh)（`dsh-moki-library`）是
-**另一个项目**，别和 OpenMausBot 混：它给 DeepSeek Harness 加一个**本地资源管理器**——
-文件/网页链接统一整理、多格式预览、选区 `Alt+D` 唤起 AI 对话、**修改先进草稿、
-用户确认后才写回原文件**。
-
-分工很清楚：**MOKI 负责把资料整理成可交付的产物，MAS 负责判定这份产物到底过不过。**
-
-```bash
-dsh plugin --profile web add "dsh-moki-library@file:<绝对路径>/dsh-moki-library-0.1.73.tgz" --allow-build=sharp
-dsh plugin --profile web add "dsh-openloop-mas@file:<绝对路径>/dsh-openloop-mas-0.7.16.tgz"
-```
-
-> MOKI 需要 **DSH >= 0.2.2-rc.1**、**Node >= 22.19**，且是 **web-platform 插件**——
-> 在 CLI / headless profile 里会一直 pending（宿主形态不对，不是装坏了）。
-
-## 随包附带的 Agent Skill
-
-| Skill | 作用 |
-| --- | --- |
-| `mas-loop` | 跑闭环任务、写验收标准、读账本与工单 |
-| `mas-review` | 多视角对抗式审查（执行者 / 验证者 / 复盘者分离） |
-| `mas-scaffold` | 给新项目搭团队模板与 CI 门禁 |
-
-安装器会把它们装进本机能找到的所有 skill 目录（`~/.codex/skills`、`~/.claude/skills`、`~/.agents/skills`、`~/.gemini/skills`）。
-
-> Skill 的**唯一真源是 `mas/skills/`**——它随 wheel 一起分发，所以 `pip install` 装出来的 skill
-> 和从源码装出来的 skill 逐字节相同，不存在两份副本各自漂移的问题。
-
-卸载：
-
-```bash
-mas uninstall       # 移除 skills 与 MCP 注册（保留 ~/.mas 里的账本与配置）
-pip uninstall openloop-mas
-```
-
----
-
-## 目录结构
-
-```
-openloop-mas/
-├─ mas/                 运行时（纯标准库）
-│  ├─ engine.py         闭环引擎：预算、停滞判定、闭合/升级
-│  ├─ orchestration.py  并行候选、对抗评审聚合、后端故障转移
-│  ├─ providers.py      mock / OpenAI 兼容 / Anthropic 适配
-│  ├─ ledger.py         append-only 账本
-│  ├─ tickets.py        人工升级工单
-│  ├─ mcp_server.py     MCP stdio 服务
-│  ├─ http_server.py    MCP over HTTP + SSE（远程接入）
-│  ├─ report.py         复盘报告、回放轨迹、账本导出
-│  ├─ setup.py          交互式向导 + 真实闭环自检
-│  ├─ bench.py          离线基准测试
-│  ├─ cli.py            命令行
-│  ├─ drafts.py         草稿层：改动先进草稿，人确认后才写回
-│  ├─ doctor.py         安装自检
-│  ├─ demo.py           三个离线场景
-│  └─ teams/            团队模板（default / review / content）
-│  └─ skills/           Agent Skill 包（唯一真源，随 wheel 一起分发）
-├─ integrations/        DSH 插件（DeepSeek Harness 集成）
-├─ tests/               离线测试
-├─ install.ps1          Windows 一键安装
-├─ install.sh           macOS / Linux 一键安装
-└─ docs/                架构、方法论、MCP、定位说明
-```
-
-## 命令速查
-
-```bash
-mas install       # 装 skills + 注册 MCP 服务器
-mas sync          # 把已安装的 skills 同步回包内版本（修复漂移）
-mas uninstall     # 移除 skills + MCP 注册（保留账本）
-mas init          # 生成/更新配置
-mas init --wizard # 交互式向导，一步步配好
-mas run           # 跑一个闭环任务
-mas demo          # 离线演示三个闭环场景
-mas verify        # 跑一次真实闭环自检
-mas bench         # 离线基准测试
-mas status        # 本机状态
-mas ledger        # 闭环账本
-mas report        # 闭环复盘报告（Markdown）
-mas replay        # 回放运行轨迹
-mas export        # 导出账本为 Markdown 表格
-mas tickets       # 人工工单
-mas resume ID     # 带人工意见继续
-mas teams         # 团队模板
-mas doctor        # 安装自检
-mas selftest      # 隔失门禁：重复打磈易偶发的路径（离线）
-mas files        # 索引工作区：每个文件是什么格式、能读出什么
-mas preview FILE # 预览一个文件（PDF / Word / 文本…）
-mas drafts       # 待确认的草稿：list / show / approve / reject / token / ticket / conflict
-mas drafts token # 拿人类令牌：agent 提的草稿，agent 自己批不了
-mas drafts ticket D-ID --token <令牌>  # 签一张只管一个草稿、用一次就作废、15 分钟过期的票据
-mas serve         # 以 MCP stdio 服务运行
-mas http          # 以 HTTP + SSE 运行（远程接入；对外部署请设 MAS_HTTP_TOKEN）
-mas relay         # OpenAI 兼容中继：给「非要 API Key」的客户端用（默认 127.0.0.1:8766）
-```
-
-`mas run` 退出码：`0` = 闭合，`2` = 未闭合（升级或预算耗尽）。CI 里可以直接当门禁用。
-
----
-
-## 开发与测试
-
-```bash
-python -m unittest discover -s tests -v   # 213 个离线测试，不需要网络
-python -m mas demo                        # 三个闭环场景
-python -m mas bench                       # 离线基准测试
-python -m mas verify                      # 真实闭环自检
-python -m mas selftest --iterations 120     # 隔失门禁（会拒绝绝经不可能的路径）
-```
-
-测试覆盖：机检规则、闭合/停滞/预算三条终止路径、规则判定压过模型判定、未判定标准不得通过、MCP 握手与工具调用、配置合并与环境变量覆盖、SSE 流折叠、思维链清洗、遗留代码页下的 UTF-8 输出安全、并行候选选优、对抗评审聚合（all/majority/any）、后端故障转移、HTTP/SSE 真实请求、复盘报告与回放、向导与自检。
-
----
-
-## 延伸阅读
-
-- [文件级机检与写文件协议](docs/file-checks.md) —— 闭环为什么必须跟磁盘
-| [DSH 集成与 relay](docs/dsh-integration.md) —— 让模型在宿主里真的能跑闭环
-
-| 文档 | 内容 |
-| --- | --- |
-| [docs/quickstart.md](docs/quickstart.md) | 5 分钟上手：安装 → 离线跑通 → 接真实模型 → 人机协同 |
-| [docs/architecture.md](docs/architecture.md) | 运行时架构与数据流 |
-| [docs/loop-engineering.md](docs/loop-engineering.md) | 方法论：闭环为什么这样设计 |
-| [docs/mcp.md](docs/mcp.md) | MCP 接入、握手、18 个工具、协议细节与排障 |
-| [docs/dsh-integration.md](docs/dsh-integration.md) | DeepSeek Harness 集成：DSH 插件、relay 一键流程、MOKI 分工 |
-| [docs/relay.md](docs/relay.md) | `mas relay`：给「非要 API Key」的客户端用的私有端点中继 |
-| [docs/drafts.md](docs/drafts.md) | 草稿层：改动先进草稿，人确认后才写回原文件；与 MOKI 的分工 |
-| [docs/resources.md](docs/resources.md) | 统一资源索引与多格式预览；与 MOKI 的分工 |
-| [docs/positioning.md](docs/positioning.md) | 定位说明：与「私有化代理团队」类项目的关系与传播口径 |
-| [docs/acceptance-report.md](docs/acceptance-report.md) | 安装与验收报告：本机实测证据、CI 结果、已知限制 |
-| [README.en.md](README.en.md) | English version of this README |
-
----
-
-## 定位说明（与 OpenMausBot 等项目的关系）
-
-OpenLoop MAS **不是**「私有化 AI 代理团队」那一类产品的复刻，它补的是**另一层**：
-
-- 那一类产品解决的是「把 Claude / GPT / Kimi 接进一个能聊天的代理团队，跑在本地或云端，能挂 MCP 和一堆应用」；
-- OpenLoop MAS 解决的是「**这个团队跑完之后，怎么知道它真的做完了，而且过程可回放、可止损、可交接**」。
-
-两者可以叠加：前者当执行层，后者当闭环层。
-传播口径上可以把本项目讲成「让多智能体**真的会结束**的那一层」，而不是又一个聊天壳。
-
-实测接法（见 [docs/openmausbot-integration.md](docs/openmausbot-integration.md)）：
-把本项目注册成 OpenMausBot 的自定义 MCP server，bot 在聊天里就能调用 `mas_run`，
-拿回 `closed / escalated / budget_exhausted` 的确定结论。
-
-> 视频/介绍里如果需要引用同类项目（如 OpenMausBot 这类主打私有化代理团队、支持 MCP 与大量应用打通的方案），请以其官方仓库的说明为准：能力边界、安全模型、更新频率都应以官方文档为准，不要替别人的项目做安全承诺。
-
----
-
-## License
-
-MIT © OpenLoop MAS contributors
