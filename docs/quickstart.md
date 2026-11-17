@@ -98,6 +98,40 @@ mas doctor      # 安装自检：运行时 / 配置 / 账本 / skills / MCP / �
 mas demo        # 离线跑三个闭环场景
 ```
 
+### 1.4 以后想换新版本：先升级运行时，再刷新注册
+
+**这两个命令干的事不一样，顺序不能反。**
+
+| 命令 | 动的是什么 | 不动什么 |
+| --- | --- | --- |
+| `mas upgrade` | 机器上装的那份**运行时本体** | skills、MCP 注册 |
+| `mas install` | skills 和 **MCP 注册** | **运行时本体** |
+
+也就是说：如果你只跑了 `mas install`，真正在跑的那份代码**还是旧的**——
+自检会显示「skills installed」「MCP registration refreshed」，一切正常，
+但 agent 调到的行为是旧版本。`mas doctor` 现在有一项专门的检查会告诉你这件事：
+
+```
+[注意] runtime（可选）
+       本机装的运行时比你现在跑的这版旧：C:\Users\...\app\mas（0.7.79）；运行 mas upgrade 升级
+```
+
+换新版的完整顺序：
+
+```bash
+mas upgrade     # 把旧的运行时换成你现在这版（旧的备份在 <state_dir>/backup/runtime/）
+mas install     # 让 skills 和 MCP 注册指向新版本
+mas doctor      # 复查
+```
+
+只想看看差多少版本：
+
+```bash
+mas runtime     # 只读：机器上装的是哪一版，和当前跑的差多少
+```
+
+`mas upgrade` 升级后会**当场核对磁盘上的版本号**，对不上就报失败，不报成功。
+
 ---
 
 ## 2. 先看它自己跑通（不需要 Key）
