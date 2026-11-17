@@ -4,6 +4,32 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.79] - 2026-11-17
+
+### `mas doctor` 现在会说清楚：这个包名到底能不能用
+
+面向初学者的闭环里有个缺口：所有人都被告知「`pip install openloop-mas`」，
+但**这个名字在 PyPI 上还不存在**——照着做只会撞上
+`No matching distribution found`。
+
+`mas doctor` 现在**实测**这件事，并区分三种情况：
+
+| 情况 | 报出来的话 |
+| --- | --- |
+| 名字已发布 | 「openloop-mas 已发布（最新 0.7.78）：pip install openloop-mas」 |
+| 名字还不存在 | 「PyPI 上还没有 openloop-mas 这个名字，pip install 现在还用不了；可从 GitHub Releases 下载：<链接>」 |
+| **查不到** | 「查询 PyPI 失败: …」——**不是**「还没发布」 |
+
+第三种最要紧：网络失败**什么都没说**，把它报成「还没发布」就是一个
+语气笃定的谎。所以查不到就只说查不到。
+
+README 的安装章节同步改成**实话**：安装脚本（真正的一键）排在前面，
+pip 作为方式二并附上「这个包名还没上 PyPI」的说明，
+并指向 [Releases](https://github.com/tffgwy/openloop-mas/releases/latest)。
+包名一旦在 PyPI 上建立，doctor 的检查和这段说明会**自动对上**。
+
+补 4 条测试：已发布、还不存在、查询失败、`--no-network` 跳过。
+
 ## [0.7.78] - 2026-11-17
 
 ### 「一次批准是错的」这件事，现在在审计里留痕
