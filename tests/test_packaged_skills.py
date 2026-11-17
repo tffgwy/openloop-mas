@@ -83,6 +83,57 @@ class PackagedSkillsTest(unittest.TestCase):
         self.assertIn("skills/*/SKILL.md", pp)
 
 
+class CiWorkflowTest(unittest.TestCase):
+    """A platform-capacity event must not be able to redden the build.
+
+    GitHub cancels macOS runners *while they are still queued* when macOS
+    capacity runs out. Such a job reports "cancelled" with zero steps
+    executed - it never ran a single line of the project's code. When
+    macOS shared the matrix with Linux and Windows, that cancellation
+    reddened the whole run and told a reader "the project is broken" when
+    nothing had been tested at all.
+
+    Linux and Windows stay the hard gate; macOS is reported separately
+    and cannot fail the build.
+    """
+
+    def setUp(self):
+        self.text = (_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+            encoding="utf-8"
+        )
+
+    def test_the_hard_gate_matrix_covers_linux_and_windows(self):
+        self.assertIn("os: [ubuntu-latest, windows-latest]", self.text)
+
+    def test_macos_is_not_in_the_hard_gate_matrix(self):
+        self.assertNotIn(
+            "os: [ubuntu-latest, windows-latest, macos-latest]",
+            self.text,
+        )
+
+    def test_macos_runs_in_its_own_job(self):
+        self.assertIn("test-macos:", self.text)
+        self.assertIn("runs-on: macos-latest", self.text)
+
+    def test_the_macos_job_cannot_fail_the_build(self):
+        # continue-on-error on the job itself is what keeps a cancelled
+        # macOS runner from reddening the run.
+        macos = self.text.split("test-macos:", 1)[1]
+        self.assertIn("continue-on-error: true", macos.split("lint:", 1)[0])
+
+    def test_the_macos_job_runs_the_same_checks(self):
+        macos = self.text.split("test-macos:", 1)[1].split("lint:", 1)[0]
+        for step in (
+            "python -m unittest discover -s tests -v",
+            "python -m mas demo",
+            "python -m mas bench --repeats 1",
+            "python -m mas verify",
+            "python -m mas selftest --iterations 120",
+            "python -m mas doctor",
+        ):
+            self.assertIn(step, macos, step)
+
+
 class ReleaseWorkflowTest(unittest.TestCase):
     """The release workflow must be able to publish without a stored token.
 
