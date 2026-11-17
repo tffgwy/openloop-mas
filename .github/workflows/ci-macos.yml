@@ -29,7 +29,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
+        # One representative version on macOS, not four. The GitHub-hosted
+        # macOS pool is the smallest of the three, and when it runs out
+        # GitHub cancels the queued runners - a cancelled job is not a
+        # failed job, but it still makes *this* workflow red. Asking for
+        # four runners is asking to be cancelled three times.
+        #
+        # The version matrix is fully covered by the Linux and Windows legs
+        # in ci.yml, which run all four and are the hard gate. macOS adds
+        # the one thing they cannot: proof that the installer and the
+        # suite also work on a POSIX system with a macOS toolchain.
+        python-version: ["3.12"]
     env:
       # The CLI prints Chinese; keep every runner on UTF-8 regardless of
       # the host code page.

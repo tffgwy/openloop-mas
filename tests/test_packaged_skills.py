@@ -134,9 +134,14 @@ class CiWorkflowTest(unittest.TestCase):
         ):
             self.assertIn(step, self.macos, step)
 
-    def test_the_macos_workflow_covers_every_supported_python(self):
-        for version in ("3.10", "3.11", "3.12", "3.13"):
-            self.assertIn(version, self.macos)
+    def test_the_macos_workflow_asks_for_one_runner(self):
+        # The GitHub-hosted macOS pool is the smallest of the three, and
+        # GitHub cancels queued runners when it runs out. Asking for four
+        # runners is asking to be cancelled three times. The full version
+        # matrix is covered by the Linux and Windows legs.
+        self.assertIn('python-version: ["3.12"]', self.macos)
+        for version in ("3.10", "3.11", "3.13"):
+            self.assertNotIn('"%s"' % version, self.macos, version)
 
     def test_the_install_workflow_keeps_macos_out_of_the_hard_gate(self):
         install = (_ROOT / ".github" / "workflows" / "install.yml").read_text(
