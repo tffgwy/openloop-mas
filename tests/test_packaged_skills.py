@@ -101,28 +101,29 @@ class CiWorkflowTest(unittest.TestCase):
         self.text = (_ROOT / ".github" / "workflows" / "ci.yml").read_text(
             encoding="utf-8"
         )
+        self.macos = (_ROOT / ".github" / "workflows" / "ci-macos.yml").read_text(
+            encoding="utf-8"
+        )
 
     def test_the_hard_gate_matrix_covers_linux_and_windows(self):
         self.assertIn("os: [ubuntu-latest, windows-latest]", self.text)
 
-    def test_macos_is_not_in_the_hard_gate_matrix(self):
+    def test_macos_is_not_in_the_hard_gate_workflow(self):
         self.assertNotIn(
             "os: [ubuntu-latest, windows-latest, macos-latest]",
             self.text,
         )
+        self.assertNotIn("runs-on: macos-latest", self.text)
 
-    def test_macos_runs_in_its_own_job(self):
-        self.assertIn("test-macos:", self.text)
-        self.assertIn("runs-on: macos-latest", self.text)
+    def test_macos_lives_in_its_own_workflow_file(self):
+        # A separate workflow file is the only thing that actually works:
+        # a job that GitHub *cancels* is not a job that *fails*, and
+        # continue-on-error does not cover the cancelled case. A separate
+        # file cannot affect the other workflow's conclusion at all.
+        self.assertIn("runs-on: macos-latest", self.macos)
+        self.assertIn("name: ci-macos", self.macos)
 
-    def test_the_macos_job_cannot_fail_the_build(self):
-        # continue-on-error on the job itself is what keeps a cancelled
-        # macOS runner from reddening the run.
-        macos = self.text.split("test-macos:", 1)[1]
-        self.assertIn("continue-on-error: true", macos.split("lint:", 1)[0])
-
-    def test_the_macos_job_runs_the_same_checks(self):
-        macos = self.text.split("test-macos:", 1)[1].split("lint:", 1)[0]
+    def test_the_macos_workflow_runs_the_same_checks(self):
         for step in (
             "python -m unittest discover -s tests -v",
             "python -m mas demo",
@@ -131,7 +132,37 @@ class CiWorkflowTest(unittest.TestCase):
             "python -m mas selftest --iterations 120",
             "python -m mas doctor",
         ):
-            self.assertIn(step, macos, step)
+            self.assertIn(step, self.macos, step)
+
+    def test_the_macos_workflow_covers_every_supported_python(self):
+        for version in ("3.10", "3.11", "3.12", "3.13"):
+            self.assertIn(version, self.macos)
+
+    def test_the_install_workflow_keeps_macos_out_of_the_hard_gate(self):
+        install = (_ROOT / ".github" / "workflows" / "install.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("os: [ubuntu-latest, windows-latest, macos-latest]", install)
+        self.assertNotIn("runs-on: macos-latest", install)
+
+    def test_the_macos_install_lives_in_its_own_workflow_file(self):
+        install_macos = (
+            _ROOT / ".github" / "workflows" / "install-macos.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("name: install-macos", install_macos)
+        self.assertIn("runs-on: macos-latest", install_macos)
+        self.assertIn("bash ./install.sh", install_macos)
+        self.assertIn("tools/verify_install.py", install_macos)
+
+    def test_no_workflow_guards_macos_with_continue_on_error(self):
+        # A cancelled job is not a failed job, so continue-on-error does
+        # not protect the build. Leaving it behind would look like the
+        # problem is handled when it is not.
+        for name in ("ci.yml", "install.yml"):
+            text = (_ROOT / ".github" / "workflows" / name).read_text(
+                encoding="utf-8"
+            )
+            self.assertNotIn("macos-latest' }}", text, name)
 
 
 class ReleaseWorkflowTest(unittest.TestCase):

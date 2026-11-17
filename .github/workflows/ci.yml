@@ -6,12 +6,17 @@ on:
   pull_request:
 
 jobs:
-  # The Linux and Windows legs are the hard gate. They are separated from
-  # macOS on purpose: GitHub cancels macOS runners *while they are still
-  # queued* when macOS capacity runs out, and such a job reports
-  # "cancelled" with zero steps executed. That is a platform-capacity
-  # event, not a defect of the code - but it must not be able to redden
-  # the build either, so macOS lives in its own job below.
+  # The Linux and Windows legs are the hard gate. macOS lives in its own
+  # workflow file (ci-macos.yml) on purpose: GitHub cancels macOS runners
+  # *while they are still queued* when macOS capacity runs out, and such a
+  # job reports "cancelled" with zero steps executed. That is a
+  # platform-capacity event, not a defect of the code - but it must not be
+  # able to redden the build either.
+  #
+  # Splitting it into a separate workflow is stronger than
+  # ``continue-on-error``: a job that GitHub *cancels* is not a job that
+  # *failed*, and ``continue-on-error`` does not cover the cancelled case.
+  # A separate workflow file cannot affect this run's conclusion at all.
   test:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -41,37 +46,6 @@ jobs:
         # The two historical bugs of this project only showed up once in
         # a while. This step hammers the paths that used to fail at
         # random, so a regression is caught by CI instead of by a user.
-        run: python -m mas selftest --iterations 120
-      - name: Self-check
-        run: python -m mas doctor
-
-  # The same suite on macOS. Reported, but not fatal - a runner that
-  # never started cannot say anything about the code.
-  test-macos:
-    runs-on: macos-latest
-    continue-on-error: true
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
-    env:
-      PYTHONUTF8: "1"
-      PYTHONIOENCODING: "utf-8"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-      - name: Run offline tests
-        run: python -m unittest discover -s tests -v
-      - name: Run offline demo
-        run: python -m mas demo
-      - name: Run offline benchmark
-        run: python -m mas bench --repeats 1
-      - name: Run closure self-check
-        run: python -m mas verify
-      - name: Run the flaky-bug gate
         run: python -m mas selftest --iterations 120
       - name: Self-check
         run: python -m mas doctor

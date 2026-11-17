@@ -1,0 +1,57 @@
+name: ci-macos
+
+# The macOS leg of the test matrix, kept in its own workflow file.
+#
+# GitHub cancels macOS runners *while they are still queued* when macOS
+# capacity runs out. Such a job reports "cancelled" with zero steps
+# executed - nothing was tested at all. When macOS shared a matrix with
+# Linux and Windows, that cancellation reddened the whole run and told a
+# reader "the project is broken" when no line of the project's code had
+# been executed.
+#
+# ``continue-on-error`` is not enough: a job that GitHub *cancels* is not
+# a job that *fails*, and ``continue-on-error`` does not cover the
+# cancelled case. A separate workflow file cannot affect another
+# workflow's conclusion at all, so this file is the actual fix.
+#
+# Linux and Windows remain the hard gate in ci.yml.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    env:
+      # The CLI prints Chinese; keep every runner on UTF-8 regardless of
+      # the host code page.
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run offline tests
+        run: python -m unittest discover -s tests -v
+      - name: Run offline demo
+        run: python -m mas demo
+      - name: Run offline benchmark
+        run: python -m mas bench --repeats 1
+      - name: Run closure self-check
+        run: python -m mas verify
+      - name: Run the flaky-bug gate
+        # The two historical bugs of this project only showed up once in
+        # a while. This step hammers the paths that used to fail at
+        # random, so a regression is caught by CI instead of by a user.
+        run: python -m mas selftest --iterations 120
+      - name: Self-check
+        run: python -m mas doctor

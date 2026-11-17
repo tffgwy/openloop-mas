@@ -1,0 +1,46 @@
+name: install-macos
+
+# The macOS leg of the one-click-install promise, kept in its own
+# workflow file.
+#
+# GitHub can *cancel* a macOS runner while it is still queued when macOS
+# capacity runs out. Such a job reports "cancelled" with zero steps
+# executed - the installer never ran. ``continue-on-error`` does not
+# cover the cancelled case (a cancelled job is not a failed job), so the
+# only thing that reliably keeps a capacity event from reddening the
+# build is putting the macOS job in a workflow file of its own.
+#
+# Linux and Windows remain the hard gate in install.yml.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  install:
+    name: install (macos-latest)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install on a pristine machine (macOS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOME="${{ runner.temp }}/fresh-home"
+          mkdir -p "$HOME"
+          export MAS_HOME="$HOME/.mas"
+          bash ./install.sh
+
+      - name: Assert the fresh install is complete and working
+        shell: bash
+        run: python tools/verify_install.py "${{ runner.temp }}/fresh-home"
