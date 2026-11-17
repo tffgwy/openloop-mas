@@ -65,6 +65,32 @@ DRAFT_APPROVED = "approved"
 DRAFT_REJECTED = "rejected"
 
 
+class DraftConflict(ValueError):
+    """The file moved under the draft while the draft was waiting.
+
+    Approving would throw the newer work away, so the approval is
+    refused. The exception carries the facts - which file, which hash
+    was expected, which hash is there now - so a caller can tell a
+    human exactly what happened.
+    """
+
+    def __init__(self, clash: Dict[str, Any], draft: Dict[str, Any]) -> None:
+        self.clash = dict(clash or {})
+        self.draft = dict(draft or {})
+        self.draft_id = str(self.draft.get("id") or "")
+        self.path = str(self.draft.get("path") or "")
+        super().__init__(
+            "the file %s changed since this draft was made "
+            "(expected %s, found %s) - approving now would throw the "
+            "newer work away; re-stage the draft or approve with --force"
+            % (
+                self.path,
+                str(self.clash.get("expected_sha256") or "")[:12],
+                str(self.clash.get("current_sha256") or "")[:12],
+            )
+        )
+
+
 def drafts_dir(workspace: Any) -> pathlib.Path:
     """The folder that holds the drafts of one workspace."""
     return pathlib.Path(workspace) / DRAFTS_DIRNAME
@@ -210,16 +236,69 @@ def _draft_bytes(workspace: Any, draft_id: str) -> bytes:
     return path.read_bytes()
 
 
+def file_digest(path: Any) -> str:
+    """The hash of what a file holds right now.
+
+    A missing file hashes to an empty string, so a file that vanished
+    reads as "nothing" rather than as a crash.
+    """
+    target = pathlib.Path(path)
+    try:
+        if not target.exists() or not target.is_file():
+            return ""
+        return hashlib.sha256(target.read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def draft_conflict(workspace: Any, draft: Dict[str, Any]) -> Dict[str, Any]:
+    """Whether the file moved under the draft while it waited.
+
+    A draft records the hash of the file it was made against. If the
+    file changed since then, approving the draft would silently throw
+    the newer work away - the classic *lost update* of two agents
+    editing the same file.
+
+    The check is *optimistic*: it locks nothing, it only notices. The
+    caller decides what to do about it.
+    """
+    absolute = str(draft.get("absolute") or "")
+    if not absolute:
+        return {"conflict": False, "reason": "no_file"}
+    expected = str(draft.get("before_sha256") or "")
+    current = file_digest(absolute)
+    if not expected:
+        # An old draft without a recorded hash: nothing to compare
+        # against, so nothing to claim about a conflict.
+        return {"conflict": False, "reason": "no_recorded_hash"}
+    if current == expected:
+        return {"conflict": False, "reason": "unchanged"}
+    return {
+        "conflict": True,
+        "reason": "file_changed",
+        "path": str(draft.get("path") or ""),
+        "expected_sha256": expected,
+        "current_sha256": current,
+    }
+
+
 def approve_draft(
     workspace: Any,
     draft_id: str,
     note: str = "",
+    force: bool = False,
 ) -> Dict[str, Any]:
     """Write a draft back to the file it changes - and only then.
 
     This is the *only* place where a draft becomes a real change to the
     original file. Until this is called, the file is byte-identical to
     what it was.
+
+    The write is **conditional**: the file has to still be the file the
+    draft was made against. If the human edited it while the draft
+    waited, approving would throw their newer work away - so the
+    approval is refused and the conflict is reported. ``force`` says
+    "I know, write it anyway".
     """
     draft = get_draft(workspace, draft_id)
     if draft is None:
@@ -235,6 +314,10 @@ def approve_draft(
         target.resolve().relative_to(base.resolve())
     except (ValueError, OSError) as exc:
         raise ValueError("refusing to write outside the workspace: %s" % draft.get("path")) from exc
+    if not force:
+        clash = draft_conflict(workspace, draft)
+        if clash.get("conflict"):
+            raise DraftConflict(clash, draft)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(data)
     draft["state"] = DRAFT_APPROVED
@@ -480,16 +563,20 @@ def issue_ticket(
     return {"id": ticket_id, "secret": secret, "draft_id": target, "action": action}
 
 
-def redeem_ticket(
+def _find_ticket(
     state_dir: Any,
     draft_id: str,
     ticket: Any,
     action: str = TICKET_ACTION_APPROVE,
 ) -> Dict[str, Any]:
-    """Use a ticket once, for the draft it was signed for.
+    """Look a ticket up without spending it.
 
-    Returns a record describing what happened. `ok` is `False`
-    with a `reason` when the ticket does not open the door.
+    This is the *read* half of :func:`redeem_ticket`: it answers "does
+    this ticket open this door?" and leaves the ticket untouched. The
+    two are kept apart on purpose - a caller has to be able to ask
+    the question before it commits anything, so that a check which
+    fails for some other reason does not burn the one decision the
+    human handed over.
     """
     given = str(ticket or "").strip()
     action = str(action or TICKET_ACTION_APPROVE).strip().lower()
@@ -514,12 +601,58 @@ def redeem_ticket(
             return {"ok": False, "reason": "ticket_bound_to_another_draft", "ticket_id": ticket_id}
         if str(record.get("action") or "") != action:
             return {"ok": False, "reason": "ticket_action_mismatch", "ticket_id": ticket_id}
-        record["used"] = True
-        record["used_at"] = now_iso()
-        tickets[ticket_id] = record
-        _save_tickets(state_dir, tickets)
         return {"ok": True, "ticket_id": ticket_id, "draft_id": target, "action": action}
     return {"ok": False, "reason": "unknown_ticket"}
+
+
+def peek_ticket(
+    state_dir: Any,
+    draft_id: str,
+    ticket: Any,
+    action: str = TICKET_ACTION_APPROVE,
+) -> Dict[str, Any]:
+    """Whether a ticket would open this door - without spending it.
+
+    A ticket is one-shot, so asking "would this work?" must not cost
+    the ticket. The caller can check the ticket first, check whatever
+    else it needs to check, and only then spend the ticket on the
+    decision it was signed for.
+    """
+    return _find_ticket(state_dir, draft_id, ticket, action=action)
+
+
+def redeem_ticket(
+    state_dir: Any,
+    draft_id: str,
+    ticket: Any,
+    action: str = TICKET_ACTION_APPROVE,
+) -> Dict[str, Any]:
+    """Use a ticket once, for the draft it was signed for.
+
+    Returns a record describing what happened. `ok` is `False`
+    with a `reason` when the ticket does not open the door.
+    """
+    given = str(ticket or "").strip()
+    action = str(action or TICKET_ACTION_APPROVE).strip().lower()
+    target = str(draft_id or "").strip()
+    if not given:
+        return {"ok": False, "reason": "no_ticket"}
+    if not target:
+        return {"ok": False, "reason": "no_draft"}
+
+    found = _find_ticket(state_dir, draft_id, ticket, action=action)
+    if not found.get("ok"):
+        return found
+    ticket_id = str(found.get("ticket_id") or "")
+    tickets = _load_tickets(state_dir)
+    record = tickets.get(ticket_id)
+    if not isinstance(record, dict):
+        return {"ok": False, "reason": "unknown_ticket"}
+    record["used"] = True
+    record["used_at"] = now_iso()
+    tickets[ticket_id] = record
+    _save_tickets(state_dir, tickets)
+    return {"ok": True, "ticket_id": ticket_id, "draft_id": target, "action": action}
 
 
 def verify_human_token(state_dir: Any, token: Any) -> bool:

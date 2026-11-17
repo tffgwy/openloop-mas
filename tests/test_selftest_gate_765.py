@@ -26,7 +26,7 @@ class HandoverTicketGateTest(unittest.TestCase):
 
         names = {getattr(c, "CHECK_NAME", c.__name__) for c in CHECKS}
         self.assertIn("handover_ticket", names)
-        self.assertEqual(len(CHECKS), 17)
+        self.assertEqual(len(CHECKS), 18)
 
     def test_the_check_passes_offline(self):
         from mas.selftest import (
@@ -68,7 +68,7 @@ class HandoverTicketGateTest(unittest.TestCase):
 
         result = run_selftest(iterations=2)
         self.assertTrue(result["ok"], result)
-        self.assertEqual(len(result["checks"]), 17)
+        self.assertEqual(len(result["checks"]), 18)
 
 
 class TicketPayloadTest(unittest.TestCase):
@@ -157,11 +157,11 @@ class CliTest(unittest.TestCase):
             cwd=str(REPO), env=env, capture_output=True, text=True, encoding="utf-8",
         )
 
-    def test_the_json_form_lists_seventeen_checks(self):
+    def test_the_json_form_lists_eighteen_checks(self):
         proc = self._run("selftest", "--iterations", "1", "--json")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         payload = json.loads(proc.stdout)
-        self.assertEqual(len(payload["checks"]), 17)
+        self.assertEqual(len(payload["checks"]), 18)
         self.assertTrue(payload["ok"])
 
     def test_it_runs_without_a_model_endpoint(self):

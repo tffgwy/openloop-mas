@@ -10,6 +10,41 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.75] - 2026-11-17
+
+### 两个人的活不会互相吃掉
+
+v0.7.72 让改动先进草稿，人确认后才写回原文件。
+但草稿**从来不核对**它当时对着的那份文件 —— 人等草稿的这段时间里
+改了文件，批准下来会**把人的新内容静默覆盖掉**。
+两个 agent 抢一个文件时，这就是最常见的事故：**丢失更新**。
+
+这一版给草稿装上**乐观锁**：草稿记住基线哈希，
+写回之前对一下，**对不上就拒绝**。
+
+- **`mas/drafts.py` 新增冲突层** —— `file_digest()` 取当前文件的
+  sha256；`draft_conflict()` 比对草稿记录的 `before_sha256` 与
+  磁盘现状，返回 `unchanged` / `file_changed` / `no_recorded_hash` /
+  `no_file`；冲突时抛出 `DraftConflict`，**带上期望哈希与实际哈希**。
+- **`approve_draft(..., force=False)`** —— 默认**条件写回**：
+  文件动过就**拒绝写盘**，磁盘上人的新内容**原样不动**，
+  草稿**继续等着**。`force=True` 才覆盖 —— 明知故犯，得是人干的。
+- **`mas drafts approve --force`** —— 命令行加 `--force`，
+  冲突时报 `draft_conflict`，**报出期望哈希与实际哈希**，
+  退出码非零。
+- **`mas drafts conflict`** —— 新动作：**不动任何东西**地查
+  「这个草稿现在还能安全批准吗」，可以一次看完整个工作区。
+  `mas drafts list` / `show` 也会**标出**被移动过的草稿。
+- **票据不会被白烧** —— 票据是**一次性的**。以前兑票在前、
+  冲突在后的话，一次失败的批准会**烧掉人给的那一个决定**。
+  现在拆成 **`peek_ticket()`（看，不花）→ 查冲突 → `redeem_ticket()`
+  （花）→ 写回**。票不对、票过期、文件动过，**票都还在**。
+- **`mas_draft_resolve` 认 `force`** —— MCP 侧同样支持
+  `force: true`，冲突时返回 `draft_conflict` 与两个哈希。
+- **第 18 项门禁 `conflict_guard`** —— 十个观察点，两遍独立判定，
+  外加**两处自证**：故意让「什么都不是冲突」，故意让「先写盘再问」，
+  门禁必须报红。`work/_rc775.py` 十二条变异全部被捕获。
+
 ## [0.7.74] - 2026-11-17
 
 ### 人给出去的是一个决定，不是一把万能钥匙

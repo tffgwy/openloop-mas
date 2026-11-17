@@ -1071,6 +1071,24 @@ def _find_draft(
     return None
 
 
+def _draft_clash(draft: Dict[str, Any]) -> Dict[str, Any]:
+    """Whether the file moved under a draft while it waited.
+
+    A draft that was made against an older version of a file would
+    throw the newer work away when it is approved, so the clash is
+    reported wherever drafts are shown.
+    """
+    from mas.drafts import draft_conflict
+
+    if str(draft.get("state") or "") != "pending":
+        return {}
+    try:
+        clash = draft_conflict(str(draft.get("workspace") or ""), draft)
+    except Exception:  # noqa: BLE001 - a broken draft must not break the listing
+        return {}
+    return clash if clash.get("conflict") else {}
+
+
 def cmd_drafts(args: argparse.Namespace) -> int:
     """Show the drafts of a workspace, and approve or reject them.
 
@@ -1081,7 +1099,7 @@ def cmd_drafts(args: argparse.Namespace) -> int:
     <id>`` prints the diff, ``mas drafts approve <id>`` writes it back
     and ``mas drafts reject <id>`` throws it away.
     """
-    from mas.drafts import approve_draft, reject_draft
+    from mas.drafts import DraftConflict, approve_draft, reject_draft
 
     action = str(getattr(args, "action", "") or "list")
     if action == "token":
@@ -1210,9 +1228,71 @@ def cmd_drafts(args: argparse.Namespace) -> int:
             )
             if row.get("reason"):
                 print(f"        理由：{row.get('reason')}")
+            clash = _draft_clash(row)
+            if clash:
+                print(
+                    "        ⚠ 文件在草稿等待期间被改过，批准会被拒"
+                    "（除非加 --force）"
+                )
         return 0
 
     draft_id = str(getattr(args, "draft_id", "") or "")
+    if action == "conflict":
+        # "Is this draft still safe to approve?" - asked without
+        # changing anything. A human can check the whole list before
+        # deciding to approve anything.
+        if draft_id:
+            found = _find_draft(roots, draft_id)
+            if found is None:
+                message = f"找不到这个草稿：{draft_id}"
+                if getattr(args, "json", False):
+                    _print({"error": "draft_not_found", "message": message}, True)
+                else:
+                    print(message, file=sys.stderr)
+                return 2
+            rows = [found[1]]
+        else:
+            rows = _all_drafts(roots, getattr(args, "state", None))
+        clashes = []
+        for row in rows:
+            clash = _draft_clash(row)
+            if clash:
+                clashes.append(
+                    {
+                        "draft_id": row.get("id"),
+                        "path": clash.get("path") or row.get("path"),
+                        "expected_sha256": clash.get("expected_sha256"),
+                        "current_sha256": clash.get("current_sha256"),
+                    }
+                )
+        if getattr(args, "json", False):
+            _print(
+                {
+                    "workspace": str(base),
+                    "conflicts": clashes,
+                    "count": len(clashes),
+                    "checked": len(rows),
+                },
+                True,
+            )
+            return 0
+        if not clashes:
+            print(f"没有冲突：{len(rows)} 个草稿的文件都还在原样。")
+            return 0
+        print(f"{len(clashes)} 个草稿的文件在等待期间被改过：")
+        for row in clashes:
+            print(
+                "  %s  %s  期望 %s  实际 %s"
+                % (
+                    row.get("draft_id"),
+                    row.get("path"),
+                    str(row.get("expected_sha256") or "")[:12],
+                    str(row.get("current_sha256") or "")[:12],
+                )
+            )
+        print("批准这些草稿需要加 --force。")
+        return 0
+
     if action == "show":
         found = _find_draft(roots, draft_id)
         draft = found[1] if found else None
@@ -1231,6 +1311,16 @@ def cmd_drafts(args: argparse.Namespace) -> int:
         if draft.get("reason"):
             print(f"理由：{draft.get('reason')}")
         print(f"改动前 {draft.get('before_bytes')} 字节，改动后 {draft.get('after_bytes')} 字节")
+        clash = _draft_clash(draft)
+        if clash:
+            print(
+                "⚠ 文件在草稿等待期间被改过：期望 %s，实际 %s。"
+                "批准会被拒，除非加 --force。"
+                % (
+                    str(clash.get("expected_sha256") or "")[:12],
+                    str(clash.get("current_sha256") or "")[:12],
+                )
+            )
         print()
         for line in draft.get("diff") or []:
             print(line)
@@ -1246,13 +1336,49 @@ def cmd_drafts(args: argparse.Namespace) -> int:
                 print(message, file=sys.stderr)
             return 2
         owner = found[0]
+        owner_draft = found[1]
         try:
             if action == "approve":
-                draft = approve_draft(owner, draft_id, str(getattr(args, "note", "") or ""))
+                draft = approve_draft(
+                    owner,
+                    draft_id,
+                    str(getattr(args, "note", "") or ""),
+                    force=bool(getattr(args, "force", False)),
+                )
                 message = f"已写回：{draft.get('path')}"
             else:
                 draft = reject_draft(owner, draft_id, str(getattr(args, "note", "") or ""))
                 message = f"已丢弃：{draft.get('path')}"
+        except DraftConflict as exc:
+            # The file moved under the draft. The approval is refused
+            # and the human is told *what* moved and *how* - not just
+            # "no". The file on disk keeps the newer work.
+            clash = dict(getattr(exc, "clash", {}) or {})
+            message = (
+                "文件在草稿等待期间被改过，批准被拒："
+                "期望 %s，实际 %s。文件保持现在的内容不变；"
+                "确认要覆盖就用 --force 重新批准。"
+                % (
+                    str(clash.get("expected_sha256") or "")[:12],
+                    str(clash.get("current_sha256") or "")[:12],
+                )
+            )
+            if getattr(args, "json", False):
+                _print(
+                    {
+                        "error": "draft_conflict",
+                        "message": message,
+                        "path": clash.get("path") or owner_draft.get("path"),
+                        "expected_sha256": clash.get("expected_sha256"),
+                        "current_sha256": clash.get("current_sha256"),
+                        "draft_id": draft_id,
+                        "state": owner_draft.get("state"),
+                    },
+                    True,
+                )
+            else:
+                print(message, file=sys.stderr)
+            return 2
         except KeyError:
             message = f"找不到这个草稿：{draft_id}"
             if getattr(args, "json", False):
@@ -1873,7 +1999,7 @@ def build_parser() -> argparse.ArgumentParser:
         "action",
         nargs="?",
         default="list",
-        choices=["list", "show", "approve", "reject", "token", "ticket"],
+        choices=["list", "show", "approve", "reject", "token", "ticket", "conflict"],
         help="要做的动作（默认 list）",
     )
     drafts.add_argument("draft_id", nargs="?", default="", help="草稿编号")
@@ -1888,6 +2014,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="只看某种状态的草稿",
     )
     drafts.add_argument("--note", default="", help="人工说明")
+    drafts.add_argument(
+        "--force",
+        action="store_true",
+        help="明知文件在草稿等待期间被改过，仍要写回",
+    )
     drafts.add_argument(
         "--token",
         default="",

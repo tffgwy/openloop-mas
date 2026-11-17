@@ -266,6 +266,10 @@ TOOLS: List[Dict[str, Any]] = [
                 },
                 "note": {"type": "string", "description": "给人看的备注"},
                 "workspace": {"type": "string", "description": "工作区路径"},
+                "force": {
+                    "type": "boolean",
+                    "description": "明知文件在草稿等待期间被改过，仍要写回",
+                },
             },
             "required": ["action", "draft_id"],
         },
@@ -518,8 +522,11 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
 
     if name == "mas_draft_resolve":
         from mas.drafts import (
+            DraftConflict,
             approve_draft,
+            draft_conflict,
             find_draft,
+            peek_ticket,
             redeem_ticket,
             reject_draft,
             verify_human_token,
@@ -530,20 +537,31 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         if action not in ("approve", "reject"):
             return {"error": "unknown_action", "message": "action must be approve or reject"}
         base = _workspace_base(config, arguments.get("workspace"))
+        force = bool(arguments.get("force"))
+        found = find_draft(base, draft_id)
+        if found is None:
+            return {"error": "draft_not_found", "message": "draft not found: %s" % draft_id}
+        owner = found[0]
+        draft = found[1]
         ticket = str(arguments.get("ticket") or "").strip()
         if ticket:
             # A ticket is the narrow door: one draft, one use, one
             # expiry. It opens the door for exactly the decision the
             # human signed for - and nothing else.
-            redeemed = redeem_ticket(
+            #
+            # The ticket is *looked at* first, not spent. A ticket is
+            # one-shot, so a question that fails for some other
+            # reason - a ticket for another draft, an expired one -
+            # must not cost the human the decision they handed over.
+            peeked = peek_ticket(
                 _state_dir(config), draft_id, ticket, action=action
             )
-            if not redeemed.get("ok"):
+            if not peeked.get("ok"):
                 return {
                     "error": "ticket_refused",
-                    "reason": redeemed.get("reason"),
+                    "reason": peeked.get("reason"),
                     "message": (
-                        "the ticket does not open this door: %s" % redeemed.get("reason")
+                        "the ticket does not open this door: %s" % peeked.get("reason")
                     ),
                 }
         elif not verify_human_token(_state_dir(config), arguments.get("token")):
@@ -555,20 +573,64 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                     "on the machine that owns the files"
                 ),
             }
-        found = find_draft(base, draft_id)
-        if found is None:
-            return {"error": "draft_not_found", "message": "draft not found: %s" % draft_id}
-        owner = found[0]
+
+        # The clash is looked for before anything is spent. Nothing is
+        # written, no ticket is burned, and the draft keeps waiting -
+        # the human is told what moved and can decide.
+        if action == "approve" and not force:
+            clash = draft_conflict(owner, draft)
+            if clash.get("conflict"):
+                return {
+                    "error": "draft_conflict",
+                    "message": (
+                        "the file changed while the draft was waiting "
+                        "(expected %s, found %s); approve with force to "
+                        "overwrite it anyway"
+                        % (
+                            str(clash.get("expected_sha256") or "")[:12],
+                            str(clash.get("current_sha256") or "")[:12],
+                        )
+                    ),
+                    "path": clash.get("path") or draft.get("path"),
+                    "expected_sha256": clash.get("expected_sha256"),
+                    "current_sha256": clash.get("current_sha256"),
+                    "draft_id": draft_id,
+                    "state": draft.get("state"),
+                }
+
+        if ticket:
+            redeemed = redeem_ticket(
+                _state_dir(config), draft_id, ticket, action=action
+            )
+            if not redeemed.get("ok"):
+                return {
+                    "error": "ticket_refused",
+                    "reason": redeemed.get("reason"),
+                    "message": (
+                        "the ticket does not open this door: %s" % redeemed.get("reason")
+                    ),
+                }
         note = str(arguments.get("note") or "")
         try:
             if action == "approve":
-                draft = approve_draft(owner, draft_id, note)
+                draft = approve_draft(owner, draft_id, note, force=force)
                 message = "written back: %s" % draft.get("path")
             else:
                 draft = reject_draft(owner, draft_id, note)
                 message = "dropped: %s" % draft.get("path")
         except KeyError:
             return {"error": "draft_not_found", "message": "draft not found: %s" % draft_id}
+        except DraftConflict as exc:
+            clash = dict(getattr(exc, "clash", {}) or {})
+            return {
+                "error": "draft_conflict",
+                "message": str(exc),
+                "path": clash.get("path") or draft.get("path"),
+                "expected_sha256": clash.get("expected_sha256"),
+                "current_sha256": clash.get("current_sha256"),
+                "draft_id": draft_id,
+                "state": draft.get("state"),
+            }
         except ValueError as exc:
             return {"error": "draft_refused", "message": str(exc)}
         return {"draft": draft, "message": message}

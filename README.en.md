@@ -7,6 +7,31 @@
 
 [English](README.en.md) | [中文](README.md)
 
+- **The 18th gate `conflict_guard`** - v0.7.72 put the change into a
+  draft, but the draft never **checked** the file it was made against:
+  if you edited the file while the draft was waiting, approving it
+  **silently threw your newer work away**.
+  When two agents fight over one file that is a *lost update* - the
+  most common accident of a team.
+  A draft now **remembers the hash it was made against** and compares
+  before writing: when they differ the write is **refused**, your
+  newer content **stays on disk**, and the draft **keeps waiting**.
+  Only `mas drafts approve --force` overwrites - knowing what you are
+  doing is a human's job.
+  `mas drafts conflict` asks "is this draft still safe to approve?"
+  **without changing anything**.
+  A refusal reports **the hash it expected and the hash it found**,
+  not just "no".
+  One more real gap is closed: **a ticket is one-shot**, and with the
+  ticket spent before the conflict was looked for, a failed approval
+  would **burn the one decision you handed over**.
+  The order is now **peek at the ticket (do not spend it) → look for
+  the conflict → spend the ticket → write back**, so a wrong ticket,
+  an expired ticket or a moved file all **leave the ticket alive**.
+  The gap was found with a **mutation proof**: **all twelve mutations of
+  the conflict path were caught** (three of them are exactly the gate's
+  own verdict being edited).
+
 - **The 17th gate `ticket_approval`** - The **human token** of v0.7.73 was
   a **standing key**: paste it to an agent once and it can approve **every**
   draft, **for ever**. In a team of agents that is a real gap - the proposer
@@ -1895,6 +1920,8 @@ mas drafts approve D-1a2b3c4d           # approve: write it back
 mas drafts reject  D-1a2b3c4d           # reject: nothing changes
 mas drafts token                        # the human token (an agent cannot approve its own draft)
 mas drafts ticket D-1a2b3c4d --token <token>      # sign a ticket: one draft, one use, 15 minutes
+mas drafts conflict                                # which drafts had their file moved on?
+mas drafts approve D-1a2b3c4d --force                # overwrite anyway: you know what you are doing
 ```
 
 When a run wants to change a file that **already exists**, it no longer
@@ -2316,7 +2343,7 @@ mas verify        # real closure self-check
 mas bench         # offline benchmark
 mas files         # index the workspace: every file, its format, its facts
 mas preview FILE  # preview one file (PDF / Word / text...)
-mas drafts        # drafts waiting for a human: list / show / approve / reject / token / ticket
+mas drafts        # drafts waiting for a human: list / show / approve / reject / token / ticket / conflict
 mas drafts token  # the human token: an agent cannot approve its own draft
 mas drafts ticket D-ID --token <token>  # a ticket: one draft, one use, 15 minutes
 mas status        # local state

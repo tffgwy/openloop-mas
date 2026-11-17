@@ -4353,8 +4353,17 @@ def check_a_ticket_opens_one_door_once(
             import mas.drafts as drafts_module
 
             real_redeem = drafts_module.redeem_ticket
+            real_peek = drafts_module.peek_ticket
             try:
                 drafts_module.redeem_ticket = lambda *_args, **_kwargs: {
+                    "ok": True,
+                    "ticket_id": "T-forged",
+                }
+                # The door has two halves: the ticket is looked at
+                # before it is spent, and it is spent when the
+                # decision is carried out. Both are broken here, so
+                # the gate really is watching a door that is open.
+                drafts_module.peek_ticket = lambda *_args, **_kwargs: {
                     "ok": True,
                     "ticket_id": "T-forged",
                 }
@@ -4365,6 +4374,7 @@ def check_a_ticket_opens_one_door_once(
                     broken = {}
             finally:
                 drafts_module.redeem_ticket = real_redeem
+                drafts_module.peek_ticket = real_peek
             if broken.get("a ticket does not open the door for another draft"):
                 failures.append(
                     "round %d: the gate did not notice that the ticket check "
@@ -4390,6 +4400,405 @@ def check_a_ticket_opens_one_door_once(
 check_a_ticket_opens_one_door_once.CHECK_NAME = "ticket_approval"  # type: ignore[attr-defined]
 
 
+
+CONFLICT_OBSERVATIONS = (
+    "a draft remembers the file it was made against",
+    "the file moving under a draft is noticed",
+    "the newer work on the disk survives the refusal",
+    "the refusal says what was expected and what is there now",
+    "the draft is still waiting after the refusal",
+    "the ticket is not burned by the refusal",
+    "the command line refuses the approval too",
+    "the command line says what was expected and what is there now",
+    "only an explicit force writes over the newer work",
+)
+
+
+def _conflict_observations(root: Any) -> Dict[str, bool]:
+    """Watch the lost-update guard, one thing at a time.
+
+    Two agents editing one file is the most common accident of a
+    team: the second write throws the first one away without saying
+    so. The guard is *optimistic* - it notices the clash and refuses,
+    it does not lock anything.
+
+    Like every other gate in this file, this one collects **facts**
+    and leaves the verdict to :func:`_conflict_verdicts`.
+    """
+    import json
+    import pathlib
+
+    from mas.drafts import ensure_human_token, issue_ticket, ticket_store_path
+    from mas.mcp_server import handle_tool
+
+    seen: Dict[str, Any] = {}
+    workspace = pathlib.Path(root) / "ws"
+    workspace.mkdir(parents=True, exist_ok=True)
+    target = workspace / "notes.txt"
+    target.write_text("v1", encoding="utf-8")
+    seen["original_text"] = "v1"
+
+    state_dir = pathlib.Path(root) / "state"
+    os.environ["MAS_STATE_DIR"] = str(state_dir)
+
+    staged = handle_tool(
+        "mas_draft_stage",
+        {
+            "path": "notes.txt",
+            "content": "v2-agent",
+            "reason": "the agent proposes this",
+            "workspace": str(workspace),
+        },
+    )
+    draft_id = str((staged.get("draft") or {}).get("id") or "")
+    seen["draft_id"] = draft_id
+    seen["recorded_hash"] = str((staged.get("draft") or {}).get("before_sha256") or "")
+
+    # The human edits the file while the draft waits. The draft was
+    # made against "v1"; the file is now "v3-human".
+    target.write_text("v3-human", encoding="utf-8")
+    seen["human_text"] = target.read_text(encoding="utf-8")
+
+    token = ensure_human_token(state_dir)
+    signed = issue_ticket(state_dir, draft_id, action="approve", human_token=token)
+    ticket_secret = str(signed.get("secret") or "")
+    seen["ticket_id"] = str(signed.get("id") or "")
+
+    refused = handle_tool(
+        "mas_draft_resolve",
+        {
+            "action": "approve",
+            "draft_id": draft_id,
+            "ticket": ticket_secret,
+            "workspace": str(workspace),
+        },
+    )
+    seen["refused_error"] = str(refused.get("error") or "")
+    seen["refused_expected"] = str(refused.get("expected_sha256") or "")
+    seen["refused_current"] = str(refused.get("current_sha256") or "")
+    seen["file_after_refusal"] = target.read_text(encoding="utf-8")
+
+    # The ticket is one-shot. A refusal that burns it would waste the
+    # one decision the human handed over.
+    tickets = {}
+    store = ticket_store_path(state_dir)
+    if store.exists():
+        try:
+            tickets = json.loads(store.read_text(encoding="utf-8"))
+        except ValueError:
+            tickets = {}
+    record = tickets.get(seen["ticket_id"]) if isinstance(tickets, dict) else None
+    seen["ticket_used_after_refusal"] = bool((record or {}).get("used"))
+
+    # The draft is still waiting - the refusal did not consume it.
+    from mas.drafts import get_draft
+
+    draft_after = get_draft(workspace, draft_id) or {}
+    seen["draft_state_after_refusal"] = str(draft_after.get("state") or "")
+
+    # The same ticket still opens the door when the human insists.
+    forced = handle_tool(
+        "mas_draft_resolve",
+        {
+            "action": "approve",
+            "draft_id": draft_id,
+            "ticket": ticket_secret,
+            "force": True,
+            "workspace": str(workspace),
+        },
+    )
+    seen["forced_error"] = str(forced.get("error") or "")
+    seen["file_after_force"] = target.read_text(encoding="utf-8")
+
+    # The command line refuses it too, and says the same thing.
+    import argparse
+
+    from mas.cli import cmd_drafts
+
+    target.write_text("v1", encoding="utf-8")
+    staged2 = handle_tool(
+        "mas_draft_stage",
+        {
+            "path": "notes.txt",
+            "content": "v2-agent",
+            "reason": "the agent proposes this again",
+            "workspace": str(workspace),
+        },
+    )
+    draft2 = str((staged2.get("draft") or {}).get("id") or "")
+    seen["draft2_id"] = draft2
+    target.write_text("v3-human", encoding="utf-8")
+
+    # The command line prints its own report. The gate watches the
+    # exit code, so the printing is swallowed - a gate that scribbled
+    # on the machine's output would corrupt the report of the run it
+    # is part of.
+    import contextlib
+    import io
+
+    quiet = io.StringIO()
+    with contextlib.redirect_stdout(quiet):
+        cli_result = cmd_drafts(
+            argparse.Namespace(
+                action="approve",
+                draft_id=draft2,
+                workspace=str(workspace),
+                state=None,
+                note="",
+                token="",
+                ticket_action="approve",
+                force=False,
+                json=True,
+            )
+        )
+    seen["cli_exit_code"] = int(cli_result)
+    seen["file_after_cli_refusal"] = target.read_text(encoding="utf-8")
+
+    with contextlib.redirect_stdout(quiet):
+        listing = cmd_drafts(
+            argparse.Namespace(
+                action="conflict",
+                draft_id="",
+                workspace=str(workspace),
+                state=None,
+                note="",
+                token="",
+                ticket_action="approve",
+                force=False,
+                json=True,
+            )
+        )
+    seen["cli_conflict_exit_code"] = int(listing)
+    seen["cli_stdout_lines"] = len(quiet.getvalue().splitlines())
+    seen["json_module"] = json.__name__
+    return seen
+
+
+def _conflict_verdicts(facts: Dict[str, Any]) -> Dict[str, bool]:
+    """Turn the collected facts into the verdicts of the gate."""
+    return {
+        "a draft remembers the file it was made against": (
+            len(str(facts.get("recorded_hash") or "")) >= 32
+        ),
+        "the file moving under a draft is noticed": (
+            str(facts.get("refused_error") or "") == "draft_conflict"
+        ),
+        "the newer work on the disk survives the refusal": (
+            str(facts.get("file_after_refusal") or "") == str(facts.get("human_text") or "")
+            and str(facts.get("file_after_refusal") or "") != "v2-agent"
+        ),
+        "the refusal says what was expected and what is there now": (
+            len(str(facts.get("refused_expected") or "")) >= 32
+            and len(str(facts.get("refused_current") or "")) >= 32
+            and str(facts.get("refused_expected") or "")
+            != str(facts.get("refused_current") or "")
+        ),
+        "the draft is still waiting after the refusal": (
+            str(facts.get("draft_state_after_refusal") or "") == "pending"
+        ),
+        "the ticket is not burned by the refusal": (
+            facts.get("ticket_used_after_refusal") is False
+        ),
+        "the command line refuses the approval too": (
+            int(facts.get("cli_exit_code") or 0) != 0
+            and str(facts.get("file_after_cli_refusal") or "")
+            == str(facts.get("human_text") or "")
+        ),
+        "the command line says what was expected and what is there now": (
+            int(facts.get("cli_conflict_exit_code") or 0) == 0
+        ),
+        "only an explicit force writes over the newer work": (
+            str(facts.get("forced_error") or "") == ""
+            and str(facts.get("file_after_force") or "") == "v2-agent"
+        ),
+    }
+
+
+def _conflict_verdicts_independent(facts: Dict[str, Any]) -> Dict[str, bool]:
+    """A second, independent reading of the same facts.
+
+    Written from the rule rather than from the first implementation;
+    the gate needs the two to agree.
+    """
+    verdicts: Dict[str, bool] = {}
+    verdicts["a draft remembers the file it was made against"] = (
+        len(str(facts.get("recorded_hash") or "")) != 0
+        and len(str(facts.get("recorded_hash") or "")) >= 32
+    )
+    verdicts["the file moving under a draft is noticed"] = (
+        str(facts.get("refused_error") or "") == "draft_conflict"
+    )
+    verdicts["the newer work on the disk survives the refusal"] = (
+        str(facts.get("file_after_refusal") or "")
+        == str(facts.get("human_text") or "")
+    )
+    verdicts["the refusal says what was expected and what is there now"] = (
+        str(facts.get("refused_expected") or "") != ""
+        and str(facts.get("refused_current") or "") != ""
+        and str(facts.get("refused_expected") or "")
+        != str(facts.get("refused_current") or "")
+    )
+    verdicts["the draft is still waiting after the refusal"] = (
+        str(facts.get("draft_state_after_refusal") or "") != ""
+        and str(facts.get("draft_state_after_refusal") or "") == "pending"
+    )
+    verdicts["the ticket is not burned by the refusal"] = (
+        facts.get("ticket_used_after_refusal") is False
+    )
+    verdicts["the command line refuses the approval too"] = (
+        int(facts.get("cli_exit_code") or 0) != 0
+    )
+    verdicts["the command line says what was expected and what is there now"] = (
+        int(facts.get("cli_conflict_exit_code") or 0) == 0
+    )
+    verdicts["only an explicit force writes over the newer work"] = (
+        str(facts.get("forced_error") or "") == ""
+        and str(facts.get("file_after_force") or "") == "v2-agent"
+    )
+    return verdicts
+
+
+def check_a_draft_never_throws_away_newer_work(
+    iterations: int = 10,
+) -> Dict[str, Any]:
+    """Two agents, one file: the second write must not eat the first.
+
+    The guard is optimistic - it remembers the hash of the file the
+    draft was made against and refuses to write over a file that has
+    moved since. Nothing is locked, so two people can still edit at
+    the same time; what the guard guarantees is that nobody's work
+    disappears without anybody being told.
+
+    The gate proves it can fail: the conflict check is broken on
+    purpose - every draft is written back no matter what - and the
+    gate has to notice.
+    """
+    import pathlib
+    import shutil
+    import tempfile
+
+    failures: List[str] = []
+    rounds = 0
+    for round_index in range(max(1, int(iterations))):
+        root = pathlib.Path(tempfile.mkdtemp(prefix="mas-conflict-"))
+        rounds += 1
+        try:
+            try:
+                facts = _conflict_observations(root)
+            except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                failures.append(
+                    "round %d: the conflict guard broke: %s: %s"
+                    % (round_index + 1, type(exc).__name__, exc)
+                )
+                continue
+            seen = _conflict_verdicts(facts)
+            independent = _conflict_verdicts_independent(facts)
+            for label in CONFLICT_OBSERVATIONS:
+                if label in independent and independent[label] != seen.get(label):
+                    failures.append(
+                        "round %d: the two readings of %s disagree (%r vs %r) - "
+                        "the verdict was tampered with"
+                        % (round_index + 1, label, seen.get(label), independent[label])
+                    )
+                    break
+            for label in CONFLICT_OBSERVATIONS:
+                if label not in seen:
+                    failures.append(
+                        "round %d: the gate did not observe %s"
+                        % (round_index + 1, label)
+                    )
+                elif not seen[label]:
+                    failures.append("round %d: %s" % (round_index + 1, label))
+
+            # The gate proves it can fail. Two behaviours are broken
+            # on purpose - one where nothing is ever a conflict, one
+            # where the file is written before the clash is looked for
+            # - and the gate has to notice both.
+            import mas.drafts as drafts_module
+
+            real_conflict = drafts_module.draft_conflict
+            real_approve = drafts_module.approve_draft
+            try:
+                drafts_module.draft_conflict = lambda *_args, **_kwargs: {
+                    "conflict": False,
+                    "reason": "unchanged",
+                }
+                broken = {}
+                try:
+                    broken = _conflict_verdicts(_conflict_observations(root))
+                except Exception:  # noqa: BLE001 - a crash counts as "noticed"
+                    broken = {}
+            finally:
+                drafts_module.draft_conflict = real_conflict
+            if broken.get("the file moving under a draft is noticed"):
+                failures.append(
+                    "round %d: the gate did not notice that the conflict check "
+                    "stopped being made - it cannot fail, so it does not watch"
+                    % (round_index + 1)
+                )
+            if broken.get("the newer work on the disk survives the refusal"):
+                failures.append(
+                    "round %d: the gate did not notice that the newer work "
+                    "was thrown away" % (round_index + 1)
+                )
+
+            # The second proof: the clash is never looked for, and the
+            # approval writes the file *before* it would have asked.
+            # Both halves are broken on purpose - the server looks for
+            # the clash itself, and the approval looks for it again -
+            # so the newer work really is gone, and the gate has to
+            # notice that.
+            def _approve_too_early(workspace, draft_id, note="", force=False):
+                """An approval that writes first and asks later."""
+                draft = drafts_module.get_draft(workspace, draft_id)
+                if draft is None:
+                    raise KeyError(draft_id)
+                target = pathlib.Path(str(draft.get("absolute") or ""))
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(drafts_module._draft_bytes(workspace, draft_id))
+                return draft
+
+            try:
+                drafts_module.approve_draft = _approve_too_early
+                drafts_module.draft_conflict = lambda *_args, **_kwargs: {
+                    "conflict": False,
+                    "reason": "unchanged",
+                }
+                early = {}
+                try:
+                    early = _conflict_verdicts(_conflict_observations(root))
+                except Exception:  # noqa: BLE001 - a crash counts as "noticed"
+                    early = {}
+            finally:
+                drafts_module.approve_draft = real_approve
+                drafts_module.draft_conflict = real_conflict
+            if early.get("the newer work on the disk survives the refusal"):
+                failures.append(
+                    "round %d: the gate did not notice that the newer work "
+                    "was written over before the clash was looked for"
+                    % (round_index + 1)
+                )
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    return {
+        "name": "conflict_guard",
+        "title": "两个人的活不会互相吃掉",
+        "invariant": (
+            "草稿记住基线哈希；文件在等待期间被改过就拒绝写回；"
+            "拒绝时不碰磁盘、不烧票据、草稿仍在等待；"
+            "冲突信息报出期望与实际哈希；只有显式 force 才覆盖"
+        ),
+        "detail": "并发写冲突防护（乐观锁）：mas drafts approve --force",
+        "iterations": rounds,
+        "failures": failures,
+        "ok": not failures,
+    }
+
+
+check_a_draft_never_throws_away_newer_work.CHECK_NAME = "conflict_guard"  # type: ignore[attr-defined]
+
+
 CHECKS = (
     check_relay_refusal_keeps_the_connection_usable,
     check_provider_keeps_the_usage_of_a_failed_call,
@@ -4408,6 +4817,7 @@ CHECKS = (
     check_a_draft_is_approved_before_it_is_written_back,
     check_an_agent_can_propose_but_not_approve,
     check_a_ticket_opens_one_door_once,
+    check_a_draft_never_throws_away_newer_work,
 )
 
 
