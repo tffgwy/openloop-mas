@@ -63,7 +63,13 @@ class CompareBaselineTests(unittest.TestCase):
         self.workspace = self.root / "ws"
         self.workspace.mkdir()
         self.target = self.workspace / "notes.txt"
-        self.target.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+        # The bytes are written exactly, with no newline translation.
+        # ``write_text`` would rewrite "\n" as "\r\n" on Windows and
+        # keep it as "\n" on Linux and macOS - and a digest taken over
+        # the text is a *different number* on each platform. That makes
+        # a test about digests pass on one platform and fail on another
+        # for a reason that has nothing to do with the code under test.
+        self.target.write_bytes(b"alpha\nbeta\ngamma\n")
         self._saved_state = os.environ.get("MAS_STATE_DIR")
         os.environ["MAS_STATE_DIR"] = str(self.root / "state")
 
@@ -132,11 +138,17 @@ class CompareBaselineTests(unittest.TestCase):
     def test_an_old_draft_without_a_basis_is_not_a_false_alarm(self):
         """A draft made before v0.7.76 recorded the hash of the *text*.
 
-        Its number cannot be compared with a byte hash, so the file
-        looks changed even when it did not. Such a draft kept no
-        baseline either, so nothing can be said with confidence - and
-        a false alarm is worse than no alarm, because it teaches the
-        human to ignore the real ones.
+        A text digest and a byte digest are the same number for every
+        file that decodes as UTF-8 (decoding and re-encoding gives the
+        same bytes back), and different numbers only for a file that
+        does not decode. So a text-basis number *cannot* be compared
+        with the byte hash of the file: for most files the comparison
+        would silently succeed, and for a binary file it would always
+        cry wolf.
+
+        Such an old draft kept no baseline either, so nothing can be
+        said with confidence - and a false alarm is worse than no
+        alarm, because it teaches the human to ignore the real ones.
         """
         import mas.drafts as drafts_module
 
@@ -153,6 +165,28 @@ class CompareBaselineTests(unittest.TestCase):
         self.assertEqual(clash["reason"], "unknown_basis")
         self.assertEqual(clash["expected_sha256"], staged["before_sha256"])
         self.assertTrue(clash["current_sha256"])
+
+    def test_an_old_draft_is_judged_by_its_baseline_not_by_its_number(self):
+        """The recorded number of an old draft is not comparable.
+
+        For a file that decodes as UTF-8 the text digest and the byte
+        digest are the *same* number, so comparing the recorded number
+        with the byte hash would "succeed" for the wrong reason: it
+        would be comparing a number with itself, not with the file.
+        The only honest comparison is the baseline the draft kept.
+        """
+        import mas.drafts as drafts_module
+
+        staged = stage_draft(self.workspace, "notes.txt", b"alpha\n")
+        staged.pop("digest_basis", None)
+        staged["before_sha256"] = drafts_module._digest_text(
+            b"alpha\nbeta\ngamma\n"
+        )
+        # The file moved away from the baseline.
+        self.target.write_bytes(b"alpha\nbeta\ngamma\nhuman-added\n")
+        clash = draft_conflict(self.workspace, staged)
+        self.assertTrue(clash["conflict"], clash)
+        self.assertEqual(clash["reason"], "file_changed")
 
     def test_an_old_draft_with_a_baseline_is_compared_honestly(self):
         """The baseline is the only honest comparison for an old draft."""

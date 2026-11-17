@@ -347,18 +347,20 @@ def draft_conflict(workspace: Any, draft: Dict[str, Any]) -> Dict[str, Any]:
         # against, so nothing to claim about a conflict.
         return {"conflict": False, "reason": "no_recorded_hash"}
     current = file_digest(absolute)
-    if current == expected:
-        return {"conflict": False, "reason": "unchanged"}
-    # A draft made before v0.7.76 recorded the hash of the *decoded
-    # text*. Its number cannot be compared with a byte hash - for a
-    # file that is valid UTF-8 the two happen to differ anyway (the
-    # text hash is the hash of the decoded string, the byte hash the
-    # hash of the raw bytes; for a file with a BOM or with a newline
-    # the platform rewrote, they are different numbers for the same
-    # file). Such a draft is compared the only honest way there is:
-    # by reading the baseline it was made against, if it kept one.
     basis = str(draft.get("digest_basis") or "")
     if basis != DIGEST_BASIS_BYTES:
+        # A draft made before v0.7.76 recorded the hash of the
+        # *decoded text*. That number is not comparable with a byte
+        # hash: for a file that decodes as UTF-8 the two are the
+        # *same* number (decoding and re-encoding gives the same
+        # bytes back), and for a file that does not decode they are
+        # different numbers for the same file. Either way the
+        # number alone says nothing about whether the file moved -
+        # and a comparison that sometimes works by coincidence is
+        # not a comparison. So the recorded number is NOT used
+        # here at all: such a draft is judged the only honest way
+        # there is, by reading the baseline it was made against, if
+        # it kept one.
         baseline = _draft_baseline_bytes(workspace, draft)
         if baseline is None:
             # The draft is old, has no basis, and kept no baseline.
@@ -374,6 +376,15 @@ def draft_conflict(workspace: Any, draft: Dict[str, Any]) -> Dict[str, Any]:
             }
         if _digest_bytes(baseline) == current:
             return {"conflict": False, "reason": "unchanged"}
+        return {
+            "conflict": True,
+            "reason": "file_changed",
+            "path": str(draft.get("path") or ""),
+            "expected_sha256": expected,
+            "current_sha256": current,
+        }
+    if current == expected:
+        return {"conflict": False, "reason": "unchanged"}
     return {
         "conflict": True,
         "reason": "file_changed",
