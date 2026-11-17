@@ -28,6 +28,24 @@ import unittest
 from mas.doctor import run_doctor
 
 
+class _FakeResponse:
+    """A stand-in for the object ``urlopen`` returns."""
+
+    def __init__(self, payload):
+        self._payload = payload
+
+    def read(self):
+        import json
+
+        return json.dumps(self._payload).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
 class DoctorCleanInstallTest(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.mkdtemp(prefix="mas-doctor-")
@@ -65,6 +83,99 @@ class DoctorCleanInstallTest(unittest.TestCase):
         """Every check must resolve to a status, never an exception."""
         statuses = {c["status"] for c in run_doctor()}
         self.assertTrue(statuses <= {"ok", "warn", "fail"})
+
+
+class DoctorPypiPresenceTest(unittest.TestCase):
+    """``mas doctor`` must say whether the package name works on PyPI.
+
+    A beginner who is told "pip install openloop-mas" needs to know,
+    before they type it, whether that name resolves. And when it does
+    not, the answer has to include somewhere else to go - a dead end
+    is not an answer.
+    """
+
+    def _run(self, monkey_payload):
+        calls = {"count": 0}
+
+        class _Response:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def read(self):
+                import json
+
+                return json.dumps(self._payload).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def fake_urlopen(url, timeout=None):
+            calls["count"] += 1
+            return monkey_payload(calls["count"])
+
+        import urllib.request
+
+        real = urllib.request.urlopen
+        urllib.request.urlopen = fake_urlopen
+        try:
+            return run_doctor()
+        finally:
+            urllib.request.urlopen = real
+
+    def test_a_published_name_is_reported_as_installable(self):
+        checks = self._run(
+            lambda n: _FakeResponse({"info": {"version": "0.7.78"}})
+        )
+        by_name = {c["check"]: c for c in checks}
+        self.assertIn("pypi", by_name)
+        self.assertEqual(by_name["pypi"]["status"], "ok")
+        self.assertIn("pip install openloop-mas", by_name["pypi"]["detail"])
+        self.assertIn("0.7.78", by_name["pypi"]["detail"])
+
+    def test_a_name_that_does_not_exist_points_somewhere_else(self):
+        import urllib.error
+
+        def missing(_n):
+            raise urllib.error.HTTPError(
+                "https://pypi.org/pypi/openloop-mas/json",
+                404,
+                "Not Found",
+                None,
+                None,
+            )
+
+        checks = self._run(missing)
+        by_name = {c["check"]: c for c in checks}
+        self.assertEqual(by_name["pypi"]["status"], "warn")
+        self.assertIn("pip install openloop-mas", by_name["pypi"]["detail"])
+        self.assertIn("releases/latest", by_name["pypi"]["detail"])
+
+    def test_a_failed_lookup_is_not_reported_as_not_published(self):
+        """A network failure says nothing about the package.
+
+        Reporting "not published" because the lookup failed would be a
+        lie with a confident voice: the name might be perfectly fine and
+        the network might be down.
+        """
+
+        def broken(_n):
+            raise OSError("the network said no")
+
+        checks = self._run(broken)
+        by_name = {c["check"]: c for c in checks}
+        self.assertEqual(by_name["pypi"]["status"], "warn")
+        detail = by_name["pypi"]["detail"]
+        self.assertIn("失败", detail)
+        self.assertNotIn("还没有", detail)
+
+    def test_the_lookup_can_be_skipped(self):
+        checks = run_doctor(allow_network=False)
+        by_name = {c["check"]: c for c in checks}
+        self.assertEqual(by_name["pypi"]["status"], "warn")
+        self.assertIn("--no-network", by_name["pypi"]["detail"])
 
 
 class DoctorSkillsSourceTest(unittest.TestCase):

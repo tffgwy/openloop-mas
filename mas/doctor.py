@@ -41,6 +41,7 @@ CHECK_PLAIN_LANGUAGE: Dict[str, str] = {
     "endpoint": "模型端点连得上吗",
     "instruction": "模型端点认不认角色指令（不认就等于没有闭环）",
     "file_checks": "能不能读真实文件（不能的话验收会变成空话）",
+    "pypi": "这个包名在 PyPI 上能不能被 pip 安装（还没发布就记得下来）",
 }
 
 #: The checks that are *optional* - the loop runs without them, they
@@ -59,7 +60,7 @@ ESSENTIAL_CHECKS = frozenset(
 #: file is the classic example - the runtime falls back to sane defaults,
 #: so it is a "建议" rather than a "必需", and calling it required while
 #: also reporting it as a warning is a contradiction.
-RECOMMENDED_CHECKS = frozenset({"config"})
+RECOMMENDED_CHECKS = frozenset({"config", "pypi"})
 
 
 def _check(name: str, status: str, detail: str) -> Dict[str, Any]:
@@ -334,7 +335,70 @@ def run_doctor(config: Dict[str, Any] | None = None, allow_network: bool = True)
     # is exercised here, once, on a real temporary file.
     results.append(_file_check_capability())
 
+    # Where this copy of the package came from, and whether the name
+    # resolves on PyPI at all. A beginner who followed a link that says
+    # "pip install openloop-mas" needs to know, before they try, whether
+    # that name works - and if it does not, where the package actually
+    # is. The answer is looked up, not assumed.
+    results.append(_check_pypi_presence(allow_network))
+
     return results
+
+
+#: The name this project publishes under.
+PYPI_NAME = "openloop-mas"
+
+#: Where a person goes to manage the publish credentials.
+PYPI_PUBLISHING_URL = (
+    "https://pypi.org/manage/project/%s/settings/publishing/" % PYPI_NAME
+)
+
+#: Where the built wheels live when the name is not on PyPI yet.
+RELEASES_URL = "https://github.com/tffgwy/openloop-mas/releases/latest"
+
+
+def _check_pypi_presence(allow_network: bool) -> Dict[str, Any]:
+    """Is the package name live on PyPI, and what does that mean here?
+
+    Three states, and they lead to different advice:
+
+    * the name resolves - the package is published, install it with pip;
+    * the name does not resolve - the project has never been created on
+      PyPI, so ``pip install openloop-mas`` cannot work yet, and the
+      answer is the release page, not a pip command;
+    * the lookup failed - the network said nothing useful, which is not
+      the same as "not published" and must not be reported as one.
+    """
+    if not allow_network:
+        return _check("pypi", "warn", "已按 --no-network 跳过 PyPI 查询")
+
+    import json
+    import urllib.error
+    import urllib.request
+
+    url = "https://pypi.org/pypi/%s/json" % PYPI_NAME
+    try:
+        with urllib.request.urlopen(url, timeout=15) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return _check(
+                "pypi",
+                "warn",
+                "PyPI 上还没有 %s 这个名字，pip install %s 现在还用不了；"
+                "可从 GitHub Releases 下载：%s" % (PYPI_NAME, PYPI_NAME, RELEASES_URL),
+            )
+        return _check("pypi", "warn", "查询 PyPI 失败: HTTP %s" % exc.code)
+    except Exception as exc:  # noqa: BLE001 - a failed lookup is not a verdict
+        return _check("pypi", "warn", "查询 PyPI 失败: %s" % exc)
+
+    latest = str((payload.get("info") or {}).get("version") or "")
+    return _check(
+        "pypi",
+        "ok",
+        "%s 已发布（最新 %s）：pip install %s"
+        % (PYPI_NAME, latest or "?", PYPI_NAME),
+    )
 
 
 def _file_check_capability() -> Dict[str, Any]:
