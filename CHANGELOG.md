@@ -4,6 +4,91 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.82] - 2026-11-18
+
+### 「影子运行时」闭环：安装器自检的是它自己，你敲 mas 跑的是另一份
+
+**安装器自检全绿，但你敲 `mas` 跑的是另一份。**
+
+这不是假设，是本机实测结果。PATH 上有 **8 份** `mas`：
+
+```
+C:\Users\...\AppData\Roaming\Python\Python314\Scripts\mas.exe   0.7.16  <- 这个赢
+C:\Users\...\.mas\bin\mas.cmd                                      0.7.81
+... （其余 6 份是各场测试遗留的）
+```
+
+一键安装把启动器放在 `~/.mas/bin`，但**是追加到 PATH 末尾的**。
+PATH 按顺序搜，所以更早安装的那份（pip 装的）一直赢，
+而安装器自检的是它刚装好的那份。
+所以自检说「一切就绪」，你手里跑的是 0.7.16。
+
+现在修了四件事：
+
+1. **新增 `mas shadow` 命令**：像 shell 一样清点 PATH，列出每一份 `mas`
+   及其版本，标出哪一份赢。版本是从磁盘上的包里读的，不是猜的。
+2. **新增 `shadow_runtime` 自检项**：发现影子就报，且它有自己的判定桶（
+   `shadowed_runtime`）——不是「还没装」，否则会把人引到 `mas install`（它改不了
+   PATH 达到哪一份）。
+3. **新增 `mas upgrade --fix-shadow`**：把 PATH 上的旧副本一并处理。
+   pip 管的副本**不改代码**（改了就会让 `pip list` 开始撒谎），
+   只报出卸载命令；其他副本备份后换成现在这一版，换完当场核对版本号。
+4. **安装器把启动器放到 PATH 最前面**（不是最后面），
+   并且 PATH 前面还有别的 `mas` 时**当场告警**。
+
+### 安装器不再污染真实用户的 PATH
+
+**一个必须说的自馟：上一轮的测试把一些临时目录写进了本机真实的用户 PATH。**
+
+原因：PowerShell 安装器写的是真实的用户 PATH 注册表项，
+而不是 `HOME`/`USERPROFILE` 指向的那个。所以每一次用临时目录跑安装器
+（测试、沙箱、CI），都会在真实用户的 PATH 上留下一个永远删不掉的目录，
+且后来每一次运行都输给它。本机 PATH 从 48 项被撒到 48 项的子集，
+已经清理并回归 30 项（只留 `.mas\bin`）。
+
+现在安装器在 `USERPROFILE` 被重定向时**不再动真实的注册表项**，
+只会提示手动加 PATH。
+
+### 门禁可以失败
+
+新增 20 条测试（`tests/test_shadow_runtime.py`），针对下列事实：
+
+- PATH 按 shell 的顺序被走，第一个启动器就是赢家；
+- 影子的版本是从磁盘读的，读不出就说读不出（不猜）；
+- 自检对影子有自己的判定桶，不会被当成「还没装」；
+- 安装器把启动器放在 PATH 前面，且重定向 home 时不动真实 PATH；
+- pip 管的副本被报出而不是被改写。
+
+**自证能失败**：把 `shadowed` 恒为 `False`（静默谎报「没有影子」）
+→ 3 条测试变红。恢复后全绿。
+
+### 第 22 项门禁 `shadow_guard`：你敲 mas 跑的就是被检查过的那一份
+
+上面的修复只解决了「**发现**影子」。但发现不等于**看住**——
+没有任何一条检查会在影子回来的时候报红。
+
+现在有了第 22 项门禁。它盯的是**这条缝**：
+
+- PATH 按 **shell 的规矩**走一遍，赢家是 shell 真会跑的那一份；
+- PATH 上的**每一份**启动器都被找到（不是只找第一个）；
+- 版本**从磁盘上的文件读出来**；**读不出就报「不确定」**，绝不当作安全；
+- `mas doctor` 把影子报在**自己的一档**（`shadow_runtime`）里，
+  绝不会在影子还在的时候说「一切就绪」；
+- `mas shadow` 在命令行上**点名赢家**；
+- pip 管的副本**被报出来**，而不是被偷改。
+
+**自证能失败**：故意让影子检测永远返回「没有影子」（不崩溃、只是看不见），
+门禁必须报红 —— 实测 **4 条观测同时变红**：
+
+```
+→ round 1: the winner is the copy the shell would run
+→ round 1: an untraceable winner is not called safe
+→ round 1: doctor reports the shadow in its own bucket
+→ round 1: the command line names the winner
+```
+
+恢复后全绿。新增 6 条测试（`tests/test_selftest_shadow_gate.py`）钉住这个不变量。
+
 ## [0.7.81] - 2026-11-18
 
 ### macOS 平台取消不再能 redden 构建

@@ -246,3 +246,134 @@ def format_runtime_status(status: Dict[str, Any]) -> str:
     if outdated:
         lines.append(f"[..] 有 {outdated} 处比当前运行的版本旧，运行 mas upgrade 升级")
     return "\n".join(lines)
+
+
+def _pip_managed_package(package: pathlib.Path) -> bool:
+    """Is this package directory managed by pip?
+
+    A pip-managed directory sits next to a ``*.dist-info`` folder. Its
+    metadata records the version that was installed, so rewriting the
+    code without rewriting the metadata would leave a *new* lie on
+    disk: ``pip list`` would say 0.7.16 while the code says 0.7.81.
+    """
+    parent = package.parent
+    try:
+        siblings = list(parent.iterdir())
+    except OSError:
+        return False
+    for sibling in siblings:
+        if sibling.name.endswith(".dist-info") or sibling.name.endswith(".egg-info"):
+            return True
+    return False
+
+
+def upgrade_shadowed_runtimes(state_dir: pathlib.Path, force: bool = False) -> Dict[str, Any]:
+    """Deal with the copies on the PATH that are older than this one.
+
+    ``mas upgrade`` replaces the runtime the installer unpacked. But a
+    user who also ran ``pip install openloop-mas`` has a second copy on
+    the PATH, and that copy is usually *earlier* - so it is the one the
+    shell runs. Upgrading only the installed copy leaves the user
+    running the old code, which is exactly the gap this command was
+    built to close.
+
+    Two different problems, two different fixes:
+
+    * a **pip-managed** copy is not rewritten here. Its metadata would
+      go stale and ``pip list`` would start lying. The fix is to
+      remove it - ``pip uninstall`` - and let the installer's copy
+      answer the name. The command is reported, not run: uninstalling
+      a package is the user's call, not the tool's.
+    * any other copy (an old checkout, a hand-made copy) is replaced
+      with the running one, after a backup, and the version is read
+      back: a replacement that did not land is an error, never a
+      success.
+    """
+    from mas.shadow import shadow_status
+
+    running = _running_version()
+    status = shadow_status()
+    result: Dict[str, Any] = {
+        "running_version": running,
+        "replaced": [],
+        "skipped": [],
+        "errors": [],
+        "removals": [],
+    }
+
+    source = pathlib.Path(__file__).resolve().parent
+    for index, row in enumerate(status.get("launchers") or []):
+        version = str(row.get("version") or "")
+        label = row["path"]
+        if not version:
+            result["skipped"].append("%s（读不出版本，不动它）" % label)
+            continue
+        if not force and not is_older(version, running):
+            result["skipped"].append("%s（%s，不比你旧）" % (label, version))
+            continue
+        package = _package_of_launcher(pathlib.Path(label))
+        if package is None:
+            result["errors"].append("%s：找不到它对应的 mas 包目录" % label)
+            continue
+        if _pip_managed_package(package):
+            result["removals"].append({
+                "path": label,
+                "package": str(package),
+                "version": version,
+                "command": "pip uninstall openloop-mas",
+            })
+            continue
+        backup = _backup_dir(state_dir, "%s-shadow%d" % (version or "unknown", index))
+        try:
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            if backup.exists():
+                shutil.rmtree(backup, ignore_errors=True)
+            shutil.copytree(package, backup)
+            shutil.rmtree(package, ignore_errors=True)
+            shutil.copytree(source, package)
+            for cache in package.rglob("__pycache__"):
+                shutil.rmtree(cache, ignore_errors=True)
+            after = _installed_version(package)
+            if after != running:
+                result["errors"].append(
+                    "%s：换完版本仍不对（%s，应为 %s）" % (label, after, running)
+                )
+                continue
+            result["replaced"].append("%s（%s -> %s）" % (label, version, running))
+        except OSError as exc:
+            result["errors"].append("%s 替换失败：%s" % (label, exc))
+    return result
+
+
+def format_shadow_upgrade_report(report: Dict[str, Any]) -> str:
+    """Render what was done about the shadow copies."""
+    lines: List[str] = []
+    replaced = report.get("replaced") or []
+    if replaced:
+        lines.append("[OK ] 已换掉 %d 处 PATH 上的旧副本：" % len(replaced))
+        for item in replaced:
+            lines.append("       %s" % item)
+    else:
+        lines.append("[OK ] PATH 上没有需要替换的旧副本")
+    removals = report.get("removals") or []
+    if removals:
+        lines.append("[..] 有 %d 处是 pip 装的副本，不替你改它的文件：" % len(removals))
+        for item in removals:
+            lines.append("       %s（%s）" % (item["path"], item["version"]))
+        lines.append("       移除它，让安装器那一份接管这个名字：")
+        for item in removals:
+            lines.append("         %s" % item["command"])
+    skipped = report.get("skipped") or []
+    for item in skipped:
+        lines.append("[..] 跳过：%s" % item)
+    errors = report.get("errors") or []
+    for item in errors:
+        lines.append("[!!] %s" % item)
+    return "\n".join(lines)
+
+
+def _package_of_launcher(launcher: pathlib.Path) -> Optional[pathlib.Path]:
+    """The package directory a launcher would import."""
+    from mas.shadow import _package_dir_of_launcher
+
+    return _package_dir_of_launcher(launcher)

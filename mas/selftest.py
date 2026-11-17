@@ -45,6 +45,9 @@ from mas.providers import OpenAICompatProvider, ProviderError
 from mas.selftest_audit import (
     check_a_human_decision_leaves_a_trace_that_cannot_be_changed,
 )
+from mas.selftest_shadow import (
+    check_the_program_you_type_is_the_program_that_was_checked,
+)
 
 #: How many times each invariant is hammered. The two historical bugs
 #: showed up roughly once in twenty and once in a few hundred calls, so
@@ -5427,6 +5430,7 @@ CHECKS = (
     check_a_forced_approval_says_what_it_would_cost,
     check_an_approved_change_can_be_taken_back,
     check_a_human_decision_leaves_a_trace_that_cannot_be_changed,
+    check_the_program_you_type_is_the_program_that_was_checked,
 )
 
 

@@ -7,6 +7,36 @@
 
 [English](README.en.md) | [中文](README.md)
 
+- **The 22nd gate `shadow_guard`** - every check in this project asks a question about
+  the **code that is running**. But the person at the keyboard does not run the code
+  the installer verified - they run whatever ``mas`` their PATH reaches first.
+  On a real machine that was:
+
+  ```
+  AppData\Roaming\Python\Python314\Scripts\mas.exe   0.7.16
+  .mas\bin\mas.cmd                                      0.7.81
+  ```
+
+  The installer unpacked 0.7.81, ran ``mas doctor`` against it and said "everything
+  is ready" - and then the user typed ``mas`` and got 0.7.16. Every check passed
+  and the wrong program ran anyway. Now ``mas shadow`` walks the PATH the way the
+  shell walks it, names the **winner** and the version it would run (read **from a
+  file on disk**; when it cannot be traced to a package it says so instead of
+  guessing). ``mas doctor`` gained a ``shadow_runtime`` bucket and does **not**
+  count it as "not installed" - that copy **is** there, it is just the **wrong**
+  one, and ``mas install`` cannot change which copy the PATH reaches; the right
+  advice is ``mas upgrade``. ``mas upgrade --fix-shadow`` replaces the old copies
+  on the PATH with the running one (backup first, the version is read back
+  afterwards, and a replacement that did not land is an error rather than a
+  success). A **pip-managed** copy is **reported, not rewritten** - the command
+  ``pip uninstall openloop-mas`` is printed instead, because rewriting the files
+  would make ``pip list`` start lying. Both installers (``install.ps1`` /
+  ``install.sh``) now **prepend** their launcher to the PATH (they used to append
+  it, which handed the win to any older copy) and warn on the spot when another
+  ``mas`` is still ahead of it. The gap was found by **counter-proof**: make the
+  shadow detection always report "no shadow", and the gate has to go red (four
+  observations turn red at once).
+
 - **The 21st gate `audit_chain`** - v0.7.77 made the **undo** put the file
   back byte for byte. But the undo was still only a *file operation*: once
   it was done, nothing in the machine's own records said that an approval

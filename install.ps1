@@ -252,15 +252,41 @@ Write-Ok "launcher: $cmdPath"
 # ---------------------------------------------------------------- PATH
 if (-not $SkipPath) {
     Write-Step "Adding $BinDir to the user PATH"
+    # A redirected home means this run is not the user own machine -
+    # a test, a sandbox, a CI job. Writing the *real* user PATH from
+    # there would put a throwaway directory on the user PATH
+    # forever, and every later run would lose to it. The registry is
+    # only touched when the home is the real one.
+    $realHome = [Environment]::GetFolderPath("UserProfile")
+    $homeIsRedirected = $env:USERPROFILE -and ($env:USERPROFILE -ne $realHome)
+    if ($homeIsRedirected) {
+        Write-Warn "USERPROFILE is redirected to $env:USERPROFILE - skipping the user PATH"
+        Write-Warn "add $BinDir to your PATH by hand if you want mas on the command line"
+    } else {
     $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
     if ($null -eq $userPath) { $userPath = "" }
     $parts = $userPath -split ";" | Where-Object { $_ -ne "" }
-    if ($parts -contains $BinDir) {
-        Write-Ok "already in PATH"
-    } else {
-        $newPath = if ($parts.Count -gt 0) { ($parts + $BinDir) -join ";" } else { $BinDir }
-        [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
-        Write-Ok "added (new terminals will see it)"
+    # The launcher has to come *first*, not last. A PATH is searched in
+    # order, so appending the launcher means an older `mas` that was
+    # installed earlier (a `pip install openloop-mas`, most often) keeps
+    # winning - and the user would type `mas` and run the old copy while
+    # the installer reports that everything is ready.
+    $rest = $parts | Where-Object { $_ -ne $BinDir }
+    $newPath = (@($BinDir) + $rest) -join ";"
+    [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
+    Write-Ok "added at the front of the PATH (new terminals will see it)"
+
+    # Say it out loud: another `mas` that the PATH reaches earlier is
+    # still there, and it will win over this one in the *current*
+    # terminal session too.
+    $earlier = $parts | Where-Object {
+        ($_ -ne $BinDir) -and ((Test-Path (Join-Path $_ "mas.exe")) -or (Test-Path (Join-Path $_ "mas.cmd")))
+    }
+    if ($earlier) {
+        Write-Warn "another mas is still ahead of this one in the current session:"
+        foreach ($dir in $earlier) { Write-Warn "  $dir" }
+        Write-Warn 'open a NEW terminal, or put $BinDir first, before trusting mas --version'
+    }
     }
 }
 

@@ -188,18 +188,32 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
     copy, so an old runtime can keep serving while every check says
     "registered". This command replaces it and says what it did.
     """
-    from mas.upgrade import format_upgrade_report, upgrade_runtime
+    from mas.upgrade import (
+        format_shadow_upgrade_report,
+        format_upgrade_report,
+        upgrade_runtime,
+        upgrade_shadowed_runtimes,
+    )
 
     state = _current_state_dir()
     report = upgrade_runtime(state, force=getattr(args, "force", False))
+    shadow_report = None
+    if getattr(args, "fix_shadow", False):
+        shadow_report = upgrade_shadowed_runtimes(state, force=getattr(args, "force", False))
     if getattr(args, "json", False):
-        _print(report, as_json=True)
-    else:
-        print(format_upgrade_report(report))
-        if report.get("upgraded"):
-            print("")
-            print("下一步：运行 mas install 让 MCP 注册指向新版本")
-    return 1 if report.get("errors") else 0
+        payload = dict(report)
+        if shadow_report is not None:
+            payload["shadow"] = shadow_report
+        _print(payload, as_json=True)
+        return 1 if report.get("errors") or (shadow_report or {}).get("errors") else 0
+    print(format_upgrade_report(report))
+    if shadow_report is not None:
+        print("")
+        print(format_shadow_upgrade_report(shadow_report))
+    if report.get("upgraded"):
+        print("")
+        print("下一步：运行 mas install 让 MCP 注册指向新版本")
+    return 1 if report.get("errors") or (shadow_report or {}).get("errors") else 0
 
 
 def cmd_runtime_status(args: argparse.Namespace) -> int:
@@ -212,6 +226,25 @@ def cmd_runtime_status(args: argparse.Namespace) -> int:
     else:
         print(format_runtime_status(status))
     return 0
+
+
+def cmd_shadow(args: argparse.Namespace) -> int:
+    """Show which ``mas`` the user actually runs when they type it.
+
+    The PATH can hold several copies of this program. The installer
+    puts one there, but a ``pip install`` puts another one there too -
+    usually *earlier*, so the old copy wins. This command names the
+    winner and the version it would run, so the discrepancy is visible
+    instead of surprising.
+    """
+    from mas.shadow import format_shadow_status, shadow_status
+
+    status = shadow_status()
+    if getattr(args, "json", False):
+        _print(status, as_json=True)
+    else:
+        print(format_shadow_status(status))
+    return 1 if status.get("shadowed") else 0
 
 
 def cmd_uninstall(args: argparse.Namespace) -> int:
@@ -2205,6 +2238,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="把已安装的旧版运行时换成当前这版（升级真正的运行时本体）",
     )
     upgrade.add_argument("--force", action="store_true", help="版本相同也强制替换")
+    upgrade.add_argument(
+        "--fix-shadow",
+        action="store_true",
+        help="一并处理 PATH 上那些旧副本（你敲 mas 时实际跑的那份）",
+    )
     add_json(upgrade)
     upgrade.set_defaults(func=cmd_upgrade)
 
@@ -2214,6 +2252,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_json(runtime)
     runtime.set_defaults(func=cmd_runtime_status)
+
+    shadow = sub.add_parser(
+        "shadow",
+        help="看 PATH 上到底有几份 mas，你敲 mas 跑的是哪一份",
+    )
+    add_json(shadow)
+    shadow.set_defaults(func=cmd_shadow)
 
     uninstall = sub.add_parser("uninstall", help="移除 skills 与 MCP 注册（保留账本）")
     uninstall.add_argument("--skip-skills", action="store_true", help="不移除 agent skills")

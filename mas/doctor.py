@@ -38,6 +38,7 @@ CHECK_PLAIN_LANGUAGE: Dict[str, str] = {
     "mcp_codex": "给 Codex 注册的 MCP 服务：让 Codex 能直接调 mas 的工具",
     "mcp_claude": "给 Claude 注册的 MCP 服务：让 Claude 能直接调 mas 的工具",
     "runtime": "本机装的是哪一版运行时（装了旧版就升级，别让它一直跑老代码）",
+    "shadow_runtime": "你敲 mas 时究竟跑哪一份（PATH 上有多份时常跑的不是刚装的那份）",
     "provider": "模型后端配好了没有（mock 是离线演示模式）",
     "endpoint": "模型端点连得上吗",
     "instruction": "模型端点认不认角色指令（不认就等于没有闭环）",
@@ -55,6 +56,7 @@ OPTIONAL_CHECKS = frozenset(
         "mcp_codex",
         "mcp_claude",
         "runtime",
+        "shadow_runtime",
     }
 )
 
@@ -301,6 +303,44 @@ def run_doctor(config: Dict[str, Any] | None = None, allow_network: bool = True)
     except Exception as exc:  # pragma: no cover - defensive
         results.append(_check("runtime", "warn", f"查不到运行时版本：{exc}"))
 
+    # Which copy does the user's own ``mas`` run? The runtime check
+    # above looks at the copy the installer unpacked. If the PATH
+    # reaches a *different* copy first - a pip install, an old
+    # checkout - the user types ``mas`` and gets that one instead.
+    # The installer would still say "everything is ready".
+    try:
+        from mas.shadow import shadow_status
+
+        shadow = shadow_status()
+        if shadow.get("shadowed"):
+            winner = shadow.get("winner") or {}
+            results.append(
+                _check(
+                    "shadow_runtime",
+                    "warn",
+                    "你敲 mas 时跑的是 {path}（{version}），"
+                    "不是现在这一版（{running}）；"
+                    "把它从 PATH 前面移掉，"
+                    "或者跑 mas upgrade 把它换成现在这一版"
+                    .format(
+                        path=winner.get("path", "?"),
+                        version=winner.get("version") or "读不出版本",
+                        running=shadow.get("running_version", "?"),
+                    ),
+                )
+            )
+        else:
+            results.append(
+                _check(
+                    "shadow_runtime",
+                    "ok",
+                    "你敲 mas 跑的就是现在这一版"
+                    f"（{shadow.get('running_version', '?')}）",
+                )
+            )
+    except Exception as exc:  # pragma: no cover - defensive
+        results.append(_check("shadow_runtime", "warn", f"查不到 PATH 上的 mas：{exc}"))
+
     provider = str(config.get("provider") or "mock")
     env_name = str(config.get("api_key_env") or "MAS_API_KEY")
     key = os.environ.get(env_name) or str(config.get("api_key") or "")
@@ -523,12 +563,22 @@ def verdict(results: List[Dict[str, Any]]) -> Dict[str, Any]:
         for row in results
         if row["status"] == "warn" and row["check"] == "runtime"
     ]
+    # A shadow is not a missing piece either. The copy the user types is
+    # *there* - it is just the wrong one, and the fix is to move it out
+    # of the way (or replace it), not to "install" anything. Lumping it
+    # in with the optional parts would send beginners to `mas install`,
+    # which cannot change which copy the PATH reaches.
+    shadowed = [
+        row["check"]
+        for row in results
+        if row["status"] == "warn" and row["check"] == "shadow_runtime"
+    ]
     missing_optional = [
         row["check"]
         for row in results
         if row["status"] == "warn"
         and row["check"] in OPTIONAL_CHECKS
-        and row["check"] != "runtime"
+        and row["check"] not in ("runtime", "shadow_runtime")
     ]
     missing_recommended = [
         row["check"]
@@ -551,6 +601,18 @@ def verdict(results: List[Dict[str, Any]]) -> Dict[str, Any]:
         action = "运行 mas install，一条命令装上 skill 并注册 MCP 服务。"
         if runtime_outdated:
             action += " 另外机器上装的运行时是旧版，运行 mas upgrade 升级。"
+        if shadowed:
+            action += " 另外 PATH 前面还有一份旧的 mas，你敲 mas 跑的是它。"
+    elif shadowed:
+        state = "shadowed_runtime"
+        headline = (
+            "闭环能跑，但你敲 mas 时跑的另一份旧版本，"
+            "而不是刚装好的这一份。"
+        )
+        action = (
+            "把 PATH 前面那份旧的 mas 移掉（或升级它），"
+            "然后运行 mas upgrade 把它换成现在这一版。"
+        )
     elif runtime_outdated:
         state = "runtime_outdated"
         headline = (
@@ -577,6 +639,7 @@ def verdict(results: List[Dict[str, Any]]) -> Dict[str, Any]:
         "broken": broken,
         "missing_optional": missing_optional,
         "runtime_outdated": runtime_outdated,
+        "shadowed_runtime": shadowed,
         "missing_recommended": missing_recommended,
         "checks": {
             name: {

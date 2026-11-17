@@ -349,15 +349,31 @@ if [ "${MAS_SKIP_PATH:-0}" = "1" ]; then
   step "Skipping the PATH step (MAS_SKIP_PATH=1)"
 else
   step "Adding $BIN_DIR to PATH"
-  if echo "${PATH:-}" | tr ':' '\n' | grep -Fqx -- "$BIN_DIR"; then
-    ok "already in PATH"
-  else
-    for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
-      if [ -f "$rc" ] || [ "$rc" = "$HOME/.bashrc" ]; then
-        printf '\n# OpenLoop MAS\nexport PATH="$BIN_DIR:$PATH"\n' >> "$rc"
-      fi
-    done
-    ok "added to shell rc files (new terminals will see it)"
+  # The launcher has to come *first*, not last. A PATH is searched in
+  # order, so appending the launcher means an older `mas` that was
+  # installed earlier (a `pip install openloop-mas`, most often) keeps
+  # winning - and the user would type `mas` and run the old copy while
+  # the installer reports that everything is ready.
+  for rc in "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
+    if [ -f "$rc" ] || [ "$rc" = "$HOME/.bashrc" ]; then
+      printf '\n# OpenLoop MAS\nexport PATH="$BIN_DIR:$PATH"\n' >> "$rc"
+    fi
+  done
+  ok "added to shell rc files (new terminals will see it)"
+
+  # Say it out loud: another `mas` that the PATH reaches earlier is
+  # still there, and it will win over this one in the *current* shell.
+  earlier=$(echo "${PATH:-}" | tr ':' '\n' | while IFS= read -r d; do
+    [ "$d" = "$BIN_DIR" ] && continue
+    [ -n "$d" ] || continue
+    if [ -f "$d/mas" ] || [ -f "$d/mas.cmd" ] || [ -f "$d/mas.exe" ]; then
+      printf '%s\n' "$d"
+    fi
+  done)
+  if [ -n "$earlier" ]; then
+    warn "another mas is still ahead of this one in the current shell:"
+    echo "$earlier" | while IFS= read -r d; do warn "  $d"; done
+    warn "open a NEW terminal, or put $BIN_DIR first, before trusting \`mas --version\`"
   fi
 fi
 
