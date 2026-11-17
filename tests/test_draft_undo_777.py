@@ -48,7 +48,7 @@ from mas.drafts import (
     undo_draft,
 )
 from mas.mcp_server import TOOLS, handle_tool
-from mas.selftest import CHECKS
+from mas.selftest import CHECKS, EXPECTED_CHECKS
 
 
 def _tool_names():
@@ -428,7 +428,7 @@ class UndoGateTests(unittest.TestCase):
             for check in CHECKS
         ]
         self.assertIn("undo_guard", names)
-        self.assertEqual(len(CHECKS), 21)
+        self.assertEqual(len(CHECKS), EXPECTED_CHECKS)
 
     def test_the_gate_is_green(self):
         from mas.selftest import run_selftest

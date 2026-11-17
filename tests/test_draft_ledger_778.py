@@ -43,7 +43,7 @@ import unittest
 from mas.audit import AuditChain, audit_report
 from mas.drafts import approve_draft, stage_draft, undo_draft
 from mas.ledger import Ledger
-from mas.selftest import CHECKS
+from mas.selftest import CHECKS, EXPECTED_CHECKS
 
 
 def _tool_names():
@@ -383,7 +383,7 @@ class GateRegistrationTests(unittest.TestCase):
 
     def test_the_gate_is_the_twenty_first(self):
         names = [getattr(c, "CHECK_NAME", c.__name__) for c in CHECKS]
-        self.assertEqual(len(CHECKS), 21)
+        self.assertEqual(len(CHECKS), EXPECTED_CHECKS)
         self.assertIn("audit_chain", names)
 
     def test_the_gate_passes(self):

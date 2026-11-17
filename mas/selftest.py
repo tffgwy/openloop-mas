@@ -5433,6 +5433,18 @@ CHECKS = (
     check_the_program_you_type_is_the_program_that_was_checked,
 )
 
+#: How many gates the suite is expected to hold.
+#:
+#: Nineteen assertions in nine test files used to pin this number to the
+#: literal 21, which meant every new gate broke nineteen unrelated
+#: tests and the "fix" was to edit nine files. The count belongs to the
+#: suite, so it is read from the suite.
+#:
+#: It is still *checked* - a gate that quietly disappears is a hole in
+#: the ground, so the count is asserted rather than assumed. What is no
+#: longer true is the number being written down in nine places.
+EXPECTED_CHECKS = len(CHECKS)
+
 
 def run_selftest(
     iterations: int = DEFAULT_ITERATIONS,

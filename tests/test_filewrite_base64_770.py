@@ -187,11 +187,11 @@ class EngineOverlayTest(unittest.TestCase):
 
 class BinaryWriteGateTest(unittest.TestCase):
     def test_the_gate_is_registered(self):
-        from mas.selftest import CHECKS
+        from mas.selftest import CHECKS, EXPECTED_CHECKS
 
         names = {getattr(c, "CHECK_NAME", c.__name__) for c in CHECKS}
         self.assertIn("binary_write", names)
-        self.assertEqual(len(CHECKS), 21)
+        self.assertEqual(len(CHECKS), EXPECTED_CHECKS)
 
     def test_the_gate_passes_offline(self):
         from mas.selftest import check_a_binary_write_lands_as_bytes

@@ -29,14 +29,18 @@ class ParallelPickGateTest(unittest.TestCase):
         self.assertGreaterEqual(len(CHECKS), 7)
 
     def test_the_check_passes_offline(self):
-        from mas.selftest import check_parallel_candidates_pick_the_same_winner_every_time
+        from mas.selftest import (
+            check_parallel_candidates_pick_the_same_winner_every_time,
+        )
 
         row = check_parallel_candidates_pick_the_same_winner_every_time(iterations=2)
         self.assertTrue(row["ok"], row["failures"])
         self.assertEqual(row["name"], "parallel_pick")
 
     def test_the_check_states_what_it_guarantees(self):
-        from mas.selftest import check_parallel_candidates_pick_the_same_winner_every_time
+        from mas.selftest import (
+            check_parallel_candidates_pick_the_same_winner_every_time,
+        )
 
         row = check_parallel_candidates_pick_the_same_winner_every_time(iterations=1)
         self.assertTrue(row.get("title"))
@@ -60,11 +64,11 @@ class ParallelPickGateTest(unittest.TestCase):
         self.assertLessEqual(int(row["iterations"]), 20)
 
     def test_the_full_gate_still_passes(self):
-        from mas.selftest import run_selftest
+        from mas.selftest import EXPECTED_CHECKS, run_selftest
 
         result = run_selftest(iterations=2)
         self.assertTrue(result["ok"], result)
-        self.assertEqual(len(result["checks"]), 21)
+        self.assertEqual(len(result["checks"]), EXPECTED_CHECKS)
 
 
 class CliTest(unittest.TestCase):
@@ -78,10 +82,11 @@ class CliTest(unittest.TestCase):
         )
 
     def test_the_json_form_lists_eighteen_checks(self):
+        from mas.selftest import EXPECTED_CHECKS
         proc = self._run("selftest", "--iterations", "1", "--json")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         payload = json.loads(proc.stdout)
-        self.assertEqual(len(payload["checks"]), 21)
+        self.assertEqual(len(payload["checks"]), EXPECTED_CHECKS)
         self.assertTrue(payload["ok"])
 
     def test_it_runs_without_a_model_endpoint(self):

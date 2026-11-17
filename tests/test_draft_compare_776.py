@@ -401,11 +401,11 @@ class ForceCostGateTest(unittest.TestCase):
     """The nineteenth gate must exist and mean something."""
 
     def test_the_check_is_registered(self):
-        from mas.selftest import CHECKS
+        from mas.selftest import CHECKS, EXPECTED_CHECKS
 
         names = {getattr(c, "CHECK_NAME", c.__name__) for c in CHECKS}
         self.assertIn("force_cost", names)
-        self.assertEqual(len(CHECKS), 21)
+        self.assertEqual(len(CHECKS), EXPECTED_CHECKS)
 
     def test_the_check_passes_offline(self):
         from mas.selftest import check_a_forced_approval_says_what_it_would_cost
@@ -431,11 +431,11 @@ class ForceCostGateTest(unittest.TestCase):
         self.assertTrue(result["ok"], result)
 
     def test_the_full_gate_still_passes(self):
-        from mas.selftest import run_selftest
+        from mas.selftest import EXPECTED_CHECKS, run_selftest
 
         result = run_selftest(iterations=1)
         self.assertTrue(result["ok"], result)
-        self.assertEqual(len(result["checks"]), 21)
+        self.assertEqual(len(result["checks"]), EXPECTED_CHECKS)
 
 
 if __name__ == "__main__":  # pragma: no cover
