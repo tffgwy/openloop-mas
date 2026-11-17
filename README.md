@@ -1288,15 +1288,33 @@ OpenLoop MAS 的做法是把闭环写成代码约束，而不是寄望于提示�
 
 ## 5 分钟上手
 
-### 方式一：pip 一条命令（推荐，跨平台）
+### 方式一：一条脚本（跨平台，不需要 Python 环境准备）
 
 ```bash
-pip install openloop-mas
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/tffgwy/openloop-mas/main/install.sh | bash
+
+# Windows（PowerShell）
+irm https://raw.githubusercontent.com/tffgwy/openloop-mas/main/install.ps1 | iex
+```
+
+脚本会自己建好虚拟环境、装好包、注册 MCP 服务、跑一遍自检。
+
+### 方式二：pip（需要 Python 3.10+）
+
+```bash
+pip install openloop-mas     # 见下方说明：这个包名目前还没上 PyPI
 mas install        # 装 skills + 注册 MCP 服务器
 mas demo           # 不需要任何 API Key，先看它自己跑通闭环
 mas doctor         # 自检（包含 skills 版本是否漂移）
 mas sync           # 把已安装的 skills 同步回包内版本
 ```
+
+> **关于 `pip install openloop-mas`**：这个包名**目前还没有在 PyPI 上建立**，
+> 直接 pip 会得到 `No matching distribution found`。现在请用上面的**安装脚本**，
+> 或从 [Releases](https://github.com/tffgwy/openloop-mas/releases/latest) 下载 wheel。
+> `mas doctor` 会**实测**这个包名在 PyPI 上的状态并如实告诉你——
+> 包名一旦发布，这段说明和 doctor 的检查都会自动对上。
 
 `mas doctor` 说的是人话：每一项都解释「这是什么」，标清楚是**必需 / 建议 / 可选**，
 最后给一句**结论**和一条**下一步命令**：

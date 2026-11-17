@@ -1711,15 +1711,35 @@ ledger entry** all exist. Otherwise the status is one of exactly three:
 > your setup. In CI, use `MAS_CONFIG_PATH` for the config file and
 > `MAS_STATE_DIR` for the state directory.
 
-### Option 1: one pip command (recommended, cross-platform)
+### Option 1: one script (cross-platform, no Python setup needed)
 
 ```bash
-pip install openloop-mas
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/tffgwy/openloop-mas/main/install.sh | bash
+
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/tffgwy/openloop-mas/main/install.ps1 | iex
+```
+
+The script creates the virtual environment, installs the package,
+registers the MCP server and runs a self-check.
+
+### Option 2: pip (needs Python 3.10+)
+
+```bash
+pip install openloop-mas     # see the note below: this name is not on PyPI yet
 mas install        # install skills + register the MCP server
 mas doctor         # self-check (including skill version drift)
 mas sync           # bring the installed skills back to the packaged version
 mas demo           # no API key needed - watch it close a loop on its own
 ```
+
+> **About `pip install openloop-mas`**: the name has **not been created on
+> PyPI yet**, so pip answers `No matching distribution found`. Use the
+> install script above for now, or take a wheel from
+> [Releases](https://github.com/tffgwy/openloop-mas/releases/latest).
+> `mas doctor` **looks the name up** on PyPI and tells you the truth -
+> once the name is published, both the note and the check line up.
 
 `mas doctor` talks to a person: every check explains what it *is*, is
 tagged **required / recommended / optional**, and the report ends with
