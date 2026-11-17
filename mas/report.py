@@ -27,6 +27,10 @@ from mas.verdict_text import (
 # engine reported. ``closure`` is deliberately not in this list: it is
 # a checkpoint of the running total, not a charge of its own - the
 # money is booked on the call entries.
+#: The ledger roles that record a human decision about a draft. They
+#: belong to the draft layer, not to a run.
+DRAFT_DECISION_ROLES = ("draft_approve", "draft_undo")
+
 CHARGE_ROLES = (
     "planner",
     "candidates",
@@ -231,6 +235,11 @@ def group_runs(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     runs: Dict[str, List[Dict[str, Any]]] = {}
     order: List[str] = []
     for row in rows:
+        if str(row.get("role") or "") in DRAFT_DECISION_ROLES:
+            # A human decision about a draft is not a run. Folding it
+            # into one would invent a run with no closure and no goal,
+            # and the report would list it as an unfinished problem.
+            continue
         run_id = str(row.get("run_id") or "unknown")
         if run_id not in runs:
             runs[run_id] = []
@@ -1181,6 +1190,15 @@ def _human_detail(row: Dict[str, Any]) -> str:
         reason = str(row.get("error") or "")
         if reason:
             return reason_text(reason)[:300]
+    if role in ("draft_approve", "draft_undo"):
+        parts = ["人工" + ("撤销了改动" if role == "draft_undo" else "批准了改动")]
+        path = str(row.get("path") or "")
+        if path:
+            parts.append(path)
+        note = str(row.get("note") or "")
+        if note:
+            parts.append(note)
+        return "；".join(parts)[:300]
     if role == "reflector":
         payload = _reflection_payload(row)
         issues = payload.get("issues") or []
@@ -1265,6 +1283,24 @@ def _short_detail(row: Dict[str, Any]) -> str:
         return "；".join(parts)[:300]
     if role == "error":
         return str(row.get("error", ""))[:300]
+    if role in ("draft_approve", "draft_undo"):
+        # A human decision that reached the ledger. The detail says
+        # which file, and - for an undo - what the undo put back, so a
+        # reader of the table learns that a wrong approval was taken
+        # back without having to open the chain.
+        parts = [str(row.get("path") or "-")]
+        sha = str(row.get("current_sha256") or row.get("approved_sha256") or "")
+        if sha:
+            parts.append("文件 " + sha[:10])
+        note = str(row.get("note") or "")
+        if note:
+            parts.append("理由：" + note)
+        if role == "draft_undo":
+            lost = int(row.get("would_lose_count") or 0)
+            parts.append("退回改动前" + ("（会丢 %d 行）" % lost if lost else ""))
+        if row.get("forced"):
+            parts.append("强制")
+        return "；".join(parts)[:300]
     if role == "run_end":
         # The ledger table must say how the run ended - the same
         # sentence the report gives, so the two never contradict.

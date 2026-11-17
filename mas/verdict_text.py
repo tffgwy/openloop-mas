@@ -103,6 +103,12 @@ ROLE_READING: Dict[str, str] = {
     "run_end": "收尾",
     "artifact": "交付物",
     "handback": "人工交回",
+    # v0.7.78: the human decisions that leave a trace in the ledger.
+    # "Approve" and "take back" are two readings of the same pair of
+    # hands, and a reader who only sees "draft_approve" cannot tell
+    # which one happened.
+    "draft_approve": "批准改动",
+    "draft_undo": "撤销改动",
 }
 
 

@@ -405,7 +405,7 @@ class ForceCostGateTest(unittest.TestCase):
 
         names = {getattr(c, "CHECK_NAME", c.__name__) for c in CHECKS}
         self.assertIn("force_cost", names)
-        self.assertEqual(len(CHECKS), 20)
+        self.assertEqual(len(CHECKS), 21)
 
     def test_the_check_passes_offline(self):
         from mas.selftest import check_a_forced_approval_says_what_it_would_cost
@@ -435,7 +435,7 @@ class ForceCostGateTest(unittest.TestCase):
 
         result = run_selftest(iterations=1)
         self.assertTrue(result["ok"], result)
-        self.assertEqual(len(result["checks"]), 20)
+        self.assertEqual(len(result["checks"]), 21)
 
 
 if __name__ == "__main__":  # pragma: no cover

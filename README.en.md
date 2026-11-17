@@ -7,7 +7,27 @@
 
 [English](README.en.md) | [中文](README.md)
 
-- **The 20th gate `undo_guard`** - v0.7.72 made the **approval** the only
+- **The 21st gate `audit_chain`** - v0.7.77 made the **undo** put the file
+  back byte for byte. But the undo was still only a *file operation*: once
+  it was done, nothing in the machine's own records said that an approval
+  had been taken back - the thread looked like an ordinary approved change.
+  Now every **approval** and every **undo** is written **twice**: once into
+  a **hash-linked chain** (`<workspace>/.mas-drafts/audit.jsonl`, where every
+  entry carries the hash of the one before it and the hash of its own
+  content, so a changed or deleted entry is visible), and once into the
+  **main ledger** that `mas ledger` shows. The two copies have to agree, and
+  the new **`mas audit`** checks exactly that - a changed entry, a deleted
+  entry and a copy edited on its own are all **named** when they are found
+  ("entry N was changed", "the ledger and the chain disagree about field X
+  of draft Y"). The MCP server gained **`mas_audit`**, and `mas report` no
+  longer mistakes an approval or an undo for a **run**.
+  Honest limit: a chain is **not a notarisation** - rewriting the whole
+  chain makes it verify again; what is detected is a **single change**, not
+  a rewrite of both copies at once.
+  The gap was found by **counter-proof**: replace the chain's verification
+  with a stub that always passes, and the gate has to go red.
+
+- **The 20th gate `undo_guard`** - v0.7.72 made the **approval** the only - v0.7.72 made the **approval** the only
   way a change reaches a file. That is right, but it also made the
   approval a **one-way door**: once you approved the wrong thing, the
   only way back was to **edit the file by hand**.

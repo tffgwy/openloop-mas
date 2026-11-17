@@ -459,6 +459,16 @@ def cmd_status(args: argparse.Namespace) -> int:
             "closed": len([t for t in threads if t.get("closed")]),
             "items": threads,
         },
+        # The human decisions, and whether their chain is still whole.
+        # A status page that does not mention the audit chain cannot
+        # tell the reader that a wrong approval was taken back - and
+        # cannot tell them that the record of it was tampered with.
+        "audit": {
+            "chain_count": 0,
+            "entries": 0,
+            "ok": True,
+            "problems": [],
+        },
         # The deliverables, and whether they are still on disk.
         "artifacts": {
             "count": len(artifacts),
@@ -466,6 +476,24 @@ def cmd_status(args: argparse.Namespace) -> int:
             "items": artifacts,
         },
     }
+    # The audit chain of the human decisions. A failure here must not
+    # break the status page - it is reported as a finding instead.
+    try:
+        from mas.audit import audit_report
+
+        artifacts_root = pathlib.Path(
+            os.path.expanduser(os.path.expandvars(str(config.get("state_dir") or "")))
+        ) / "artifacts"
+        audit = audit_report(artifacts_root, rows)
+        payload["audit"] = {
+            "chain_count": int(audit.get("chain_count") or 0),
+            "entries": int(audit.get("entries") or 0),
+            "ok": bool(audit.get("ok")),
+            "problems": list(audit.get("problems") or []),
+        }
+    except Exception:  # noqa: BLE001 - status must never crash
+        pass
+
     if args.json:
         _print(payload, True)
         return 0
@@ -497,6 +525,15 @@ def cmd_status(args: argparse.Namespace) -> int:
     )
     # The deliverables come first among the things to look at: they are
     # what the user came for.
+    audit = payload.get("audit") or {}
+    if int(audit.get("chain_count") or 0):
+        mark = "完好" if audit.get("ok") else "有问题"
+        print(
+            f"审计链：{audit.get('chain_count')} 条  "
+            f"{audit.get('entries')} 个人工决定  {mark}"
+        )
+        for problem in list(audit.get("problems") or [])[:3]:
+            print(f"  ⚠ {problem}")
     print(f"交付物：{payload['artifacts']['count']} 份")
     for item in artifacts:
         flag = "OK " if item["exists"] else "缺失"
@@ -536,6 +573,62 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_audit(args: argparse.Namespace) -> int:
+    """Check the human-decision chain: has it been changed?
+
+    Every approval and every undo leaves a hash-linked entry next to
+    the workspace it belongs to, and a copy in the main ledger. This
+    command says whether the chain still verifies and whether the two
+    copies still agree.
+
+    A finding is not a failure of the tool - it is the tool doing its
+    job: it says *what* disagrees, and where.
+    """
+    from mas.audit import audit_report
+
+    config = load_config()
+    engine = _engine(config)
+    rows = engine.ledger.entries()
+    workspace = str(getattr(args, "workspace", "") or "").strip()
+    explicit = bool(workspace)
+    if not workspace:
+        base = pathlib.Path(
+            os.path.expanduser(os.path.expandvars(str(config.get("state_dir") or "")))
+        ) / "artifacts"
+    else:
+        base = pathlib.Path(workspace).expanduser()
+    report = audit_report(base, rows)
+    if getattr(args, "json", False):
+        _print(report, True)
+        return 0 if report.get("ok") else 1
+    if not report.get("chain_count"):
+        message = "还没有任何审计链：还没有人批准或撤销过改动。"
+        if explicit:
+            print(message)
+        else:
+            print(message)
+            print(f"  工作区：{base}")
+        return 0
+    print(f"审计链 {report['chain_count']} 条，共 {report['entries']} 个事件：")
+    for chain in report.get("chains") or []:
+        mark = "OK" if chain.get("ok") else "有问题"
+        print(f"  [{mark}] {chain.get('path')}  {chain.get('entries')} 个事件")
+        for name, count in sorted((chain.get("events") or {}).items()):
+            print(f"        {name}: {count}")
+    problems = list(report.get("problems") or [])
+    if problems:
+        print()
+        print(f"发现 {len(problems)} 个问题：")
+        for problem in problems:
+            print(f"  - {problem}")
+        print()
+        print("审计链被改过，或账本里的副本与链不一致。")
+        return 1
+    print()
+    print("审计链完好：每一条记录都还是写下去时的那一条，账本副本与链一致。")
+    return 0
+
+
 def cmd_ledger(args: argparse.Namespace) -> int:
     """Show the append-only ledger.
 
@@ -569,6 +662,18 @@ def cmd_ledger(args: argparse.Namespace) -> int:
         verdict = _both(row.get("verdict"), verdict_word(row.get("verdict")))
         decision = _both(row.get("decision"), decision_reading(row.get("decision")))
         bits = [f"#{row.get('seq')}", str(row.get("ts") or ""), role]
+        if str(row.get("role") or "") in ("draft_approve", "draft_undo"):
+            # A human decision does not belong to a round of the loop.
+            # Printing "round 0" for it would be a lie - there was no
+            # round - so the line shows the file instead.
+            detail = str(row.get("path") or "")
+            note = str(row.get("note") or "")
+            if detail:
+                bits.append(detail)
+            if note:
+                bits.append(f"（{note}）")
+            print("  ".join(bits))
+            continue
         bits.append(f"第{row.get('iteration')}轮")
         if verdict:
             bits.append(verdict)
@@ -2122,6 +2227,18 @@ def build_parser() -> argparse.ArgumentParser:
     ledger.add_argument("--run-id")
     add_json(ledger)
     ledger.set_defaults(func=cmd_ledger)
+
+    audit = sub.add_parser(
+        "audit",
+        help="检查人工决定的审计链：被改过么么",
+    )
+    audit.add_argument(
+        "--workspace",
+        default="",
+        help="审计链所在的工作区文件夹（默认本机 artifacts 目录）",
+    )
+    add_json(audit)
+    audit.set_defaults(func=cmd_audit)
 
     tickets = sub.add_parser("tickets", help="查看人工工单")
     tickets.add_argument("--state", choices=["waiting_human", "resolved"])

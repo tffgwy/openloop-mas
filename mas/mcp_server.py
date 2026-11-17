@@ -318,6 +318,20 @@ TOOLS: List[Dict[str, Any]] = [
         },
     ),
     _tool(
+        "mas_audit",
+        "Check the chain of human decisions: has an approval or an undo "
+        "been changed after it was written? The chain lives next to the "
+        "workspace and every entry links to the one before it by hash; "
+        "the main ledger holds a second copy that has to agree. The "
+        "answer names what disagrees and where.",
+        {
+            "type": "object",
+            "properties": {
+                "workspace": {"type": "string", "description": "工作区路径"},
+            },
+        },
+    ),
+    _tool(
         "mas_files",
         "Index a folder: every file it holds, named by its own header, "
         "with the facts the file carries (pages of a PDF, family of a "
@@ -480,12 +494,46 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                     )
             payload["undone_drafts"] = undone_rows
             payload["undone_draft_count"] = len(undone_rows)
+
+            # The chain of human decisions. An agent that is asked
+            # "was the approval right?" needs to see that an undo
+            # happened at all - and it needs to know whether the record
+            # of that undo still holds.
+            from mas.audit import audit_report
+
+            try:
+                audit = audit_report(
+                    _workspace_base(config, arguments.get("workspace")),
+                    engine.ledger.entries(),
+                )
+                payload["audit"] = {
+                    "chain_count": int(audit.get("chain_count") or 0),
+                    "entries": int(audit.get("entries") or 0),
+                    "ok": bool(audit.get("ok")),
+                    "problems": list(audit.get("problems") or []),
+                }
+            except Exception:  # noqa: BLE001 - status must never crash
+                payload["audit"] = {
+                    "chain_count": 0,
+                    "entries": 0,
+                    "ok": True,
+                    "problems": [],
+                }
         except Exception:  # noqa: BLE001 - status must never crash
             payload["conflicting_drafts"] = []
             payload["conflicting_draft_count"] = 0
             payload["undone_drafts"] = []
             payload["undone_draft_count"] = 0
         return payload
+
+    if name == "mas_audit":
+        from mas.audit import audit_report
+
+        engine = _engine(config)
+        base = _workspace_base(config, arguments.get("workspace"))
+        report = audit_report(base, engine.ledger.entries())
+        report["ok"] = bool(report.get("ok"))
+        return report
 
     if name == "mas_ledger":
         engine = _engine(config)

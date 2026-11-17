@@ -428,7 +428,7 @@ class UndoGateTests(unittest.TestCase):
             for check in CHECKS
         ]
         self.assertIn("undo_guard", names)
-        self.assertEqual(len(CHECKS), 20)
+        self.assertEqual(len(CHECKS), 21)
 
     def test_the_gate_is_green(self):
         from mas.selftest import run_selftest

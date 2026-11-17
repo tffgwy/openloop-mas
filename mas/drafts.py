@@ -51,6 +51,7 @@ import pathlib
 import secrets
 from typing import Any, Dict, List, Optional, Tuple
 
+from mas.audit import COPY_FIELDS, AuditChain
 from mas.util import ensure_dir, now_iso, short_sha
 
 #: The folder inside a workspace that holds the drafts.
@@ -205,6 +206,90 @@ def _is_text(data: bytes) -> bool:
     return True
 
 
+def audit_chain(workspace: Any) -> AuditChain:
+    """The tamper-evident chain of one workspace.
+
+    The chain lives next to the drafts, so it travels with the folder
+    it belongs to - the same rule the drafts follow.
+    """
+    return AuditChain(drafts_dir(workspace) / AuditChain.AUDIT_FILENAME)
+
+
+def record_decision(
+    workspace: Any,
+    event: str,
+    draft: Dict[str, Any],
+    **fields: Any,
+) -> Dict[str, Any]:
+    """Write one human decision into the chain - and into the ledger.
+
+    The decision is written twice on purpose:
+
+    * into the chain next to the workspace, where the hash of every
+      entry links it to the one before it, so a changed entry is
+      visible;
+    * into the main ledger, where ``mas ledger`` shows it, so the
+      decision is visible in the audit trail of the whole machine.
+
+    The two copies have to agree - that agreement is checked by
+    ``mas audit`` and by the twenty-second gate. A failure to write
+    the ledger copy must not lose the chain entry, so the ledger is
+    written first and a problem with it is recorded in the chain
+    rather than raised.
+    """
+    payload: Dict[str, Any] = {
+        "draft_id": str(draft.get("id") or ""),
+        "path": str(draft.get("path") or ""),
+    }
+    payload.update(fields)
+    entry = audit_chain(workspace).append(event, **payload)
+    # The ledger copy is written after the chain entry, so the chain -
+    # the authoritative record - always exists first.
+    if not append_ledger_copy(entry, workspace):
+        entry["ledger_copy"] = "failed"
+    return entry
+
+
+def ledger_row_for(entry: Dict[str, Any], workspace: Any) -> Dict[str, Any]:
+    """The main ledger's copy of one chain entry."""
+    row: Dict[str, Any] = {
+        "role": str(entry.get("event") or "event"),
+        "run_id": "",
+        "task_id": "",
+        "iteration": 0,
+        "event": str(entry.get("event") or "event"),
+        "workspace": str(workspace),
+        "audit_sha256": str(entry.get("sha256") or ""),
+        "audit_prev_sha256": str(entry.get("prev_sha256") or ""),
+    }
+    for field in COPY_FIELDS:
+        if field in entry:
+            row[field] = entry.get(field)
+    return row
+
+
+def append_ledger_copy(entry: Dict[str, Any], workspace: Any) -> bool:
+    """Copy one chain entry into the main ledger.
+
+    Returns ``True`` when the copy was written. A failure is not
+    fatal: the chain entry is the authoritative record, and the
+    cross-check will report the missing copy instead of the undo
+    being lost.
+    """
+    try:
+        from mas.config import load_config
+        from mas.ledger import Ledger
+
+        config = load_config()
+        path = pathlib.Path(config.get("state_dir") or "~/.mas")
+        path = pathlib.Path(
+            os.path.expanduser(os.path.expandvars(str(path)))
+        ) / "ledgers" / "runs.jsonl"
+        Ledger(path).append(ledger_row_for(entry, workspace))
+        return True
+    except Exception:  # noqa: BLE001 - the chain is the authoritative copy
+        return False
+
 def stage_draft(
     workspace: Any,
     relative_path: str,
@@ -271,6 +356,18 @@ def stage_draft(
     # "how" is the whole question when somebody is about to overwrite
     # newer work with --force.
     (drafts_dir(base) / ("%s.base" % draft_id)).write_bytes(before)
+    # The chain records the whole life of the draft: it was proposed,
+    # then (maybe) approved, then (maybe) taken back. The proposal
+    # itself stays in the chain only - it is not a human decision, so
+    # it does not belong in the ledger of decisions.
+    audit_chain(base).append(
+        "draft_stage",
+        draft_id=draft_id,
+        path=relative,
+        baseline_sha256=_digest_bytes(before),
+        approved_sha256=_digest_bytes(data),
+        note=str(reason or ""),
+    )
     return payload
 
 
@@ -557,6 +654,20 @@ def approve_draft(
     _draft_file(base, str(draft.get("id"))).write_text(
         json.dumps(draft, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
+    # The approval is a human decision, so it leaves a trace. The
+    # chain holds the hash-linked copy; the ledger holds the copy a
+    # reader sees in ``mas ledger``.
+    record_decision(
+        base,
+        "draft_approve",
+        draft,
+        baseline_sha256=str(draft.get("before_sha256") or ""),
+        approved_sha256=_digest_bytes(data),
+        current_sha256=_digest_bytes(data),
+        note=str(note or ""),
+        would_lose_count=0,
+        forced=bool(force),
+    )
     return draft
 
 
@@ -739,6 +850,27 @@ def undo_draft(
     draft["resolved_at"] = None
     _draft_file(base, str(draft.get("id"))).write_text(
         json.dumps(draft, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    # "Once was enough" is not a fact the draft can hold on its own:
+    # the draft's state says the *newest* thing about it, so an
+    # approval that was taken back and then approved again leaves no
+    # trace by itself. The chain keeps every decision, in order, and
+    # the ledger gets a copy of each one.
+    lost = 0
+    try:
+        lost = int(plan.get("would_lose_count") or 0)
+    except (TypeError, ValueError):
+        lost = 0
+    record_decision(
+        base,
+        "draft_undo",
+        draft,
+        baseline_sha256=str(plan.get("baseline_sha256") or ""),
+        approved_sha256=str(plan.get("approved_sha256") or ""),
+        current_sha256=_digest_bytes(baseline),
+        note=str(note or ""),
+        would_lose_count=lost,
+        forced=bool(force),
     )
     return draft
 
