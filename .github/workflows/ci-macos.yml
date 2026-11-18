@@ -25,7 +25,14 @@ on:
 jobs:
   test:
     runs-on: macos-latest
-    timeout-minutes: 60
+    # The macOS leg is the slowest of the three: the offline suite alone
+    # takes about half an hour on a GitHub-hosted macOS runner. The hour
+    # was never a budget for the work; it was a guess. The suite plus
+    # the flaky gate needed about eighty minutes on this pool, and at
+    # sixty the job was cancelled *by the clock* - which GitHub reports
+    # as "cancelled", not "failed". A reader cannot tell that apart
+    # from a cancelled runner, so the job said nothing about the code.
+    timeout-minutes: 95
     strategy:
       fail-fast: false
       matrix:
@@ -58,10 +65,34 @@ jobs:
         run: python -m mas bench --repeats 1
       - name: Run closure self-check
         run: python -m mas verify
+      - name: Self-check
+        run: python -m mas doctor
+
+  flaky:
+    runs-on: macos-latest
+    # The flaky-bug gate gets its own job, with its own budget.
+    #
+    # It used to sit at the end of the test job, where it shared that
+    # job's clock. Split, each half gets the time it actually needs,
+    # and a slow gate can no longer hide the result of the suite.
+    timeout-minutes: 90
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Run the flaky-bug gate
         # The two historical bugs of this project only showed up once in
         # a while. This step hammers the paths that used to fail at
         # random, so a regression is caught by CI instead of by a user.
-        run: python -m mas selftest --iterations 120
-      - name: Self-check
-        run: python -m mas doctor
+        #
+        # Forty iterations here, a hundred and twenty in ci.yml. The
+        # flaky hunt is the Linux and Windows leg's job - they run the
+        # full count on four versions each. What this leg adds is the
+        # proof that the *same* gates hold on a macOS toolchain, and a
+        # hundred and twenty iterations of that on the smallest runner
+        # pool in GitHub bought one thing: a job cancelled by the clock.
+        run: python -m mas selftest --iterations 40
