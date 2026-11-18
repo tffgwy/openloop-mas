@@ -159,6 +159,13 @@ jobs:
         # that is not on PATH, or the branch under test would never be
         # entered. The runner images ship one; the setup-python action
         # is deliberately NOT used.
+        #
+        # The path is platform specific on purpose. A Git Bash path
+        # such as /c/hostedtoolcache/... is a POSIX spelling that the
+        # Windows installer cannot execute - it would try to open a file
+        # whose name starts with a slash. The Windows leg therefore
+        # asks the tool cache directly and hands over a native path.
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
@@ -168,6 +175,33 @@ jobs:
             exit 1
           fi
           echo "MAS_PROBE_PYTHON=$interpreter" >> "$GITHUB_ENV"
+
+      - name: Find the interpreter to stage (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # The newest interpreter wins. Sorting the *paths* as text
+          # would put 3.9 above 3.12, so the version is parsed out of
+          # the folder name and compared as a version.
+          $candidates = Get-ChildItem -Path "$env:RUNNER_TOOL_CACHE\windows\Python" `
+            -Include "python.exe", "python3.exe" -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\x64\\python3?\.exe$' }
+          $best = $null
+          $bestVersion = $null
+          foreach ($item in $candidates) {
+            if ($item.FullName -notmatch 'Python(\\d+)\\.(\\d+)\\.') { continue }
+            $version = [version]("$($Matches[1]).$($Matches[2])")
+            if ($version -lt [version]"3.10") { continue }
+            if (-not $best -or $version -gt $bestVersion) {
+              $best = $item
+              $bestVersion = $version
+            }
+          }
+          if (-not $best) {
+            Write-Output "::error::no interpreter to stage the rehearsal with"
+            exit 1
+          }
+          "MAS_PROBE_PYTHON=$($best.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Install on a machine that has no Python (Linux)
         if: runner.os != 'Windows'
@@ -208,10 +242,42 @@ jobs:
           # treats python.exe as a *document*, and the installer has to
           # reach its interpreter without the shell's help - which is
           # what a restricted environment really looks like.
+          #
+          # The installer is started by its *absolute* path for the
+          # same reason: with PATHEXT naming no executable, this very
+          # shell can no longer resolve a bare 'powershell'. The hostile
+          # PATHEXT is the point of the leg, so it has to be set before
+          # the installer starts - and the installer has to be reachable
+          # without the shell's help to get there.
           $env:PATHEXT = '.CPL'
-          powershell -NoProfile -ExecutionPolicy Bypass -File ./install.ps1 `
-            -InstallDir $env:MAS_HOME -SkipPath `
-            -ForceBootstrap -BootstrapProbe $env:MAS_BOOTSTRAP_PROBE
+          $shell = Join-Path $env:SystemRoot `
+            'System32\WindowsPowerShell\v1.0\powershell.exe'
+          # The installer is started through .NET, not with `&`.
+          #
+          # With a PATHEXT that names no executable suffix, this shell
+          # cannot resolve a native command - not even by absolute path -
+          # and the call does not fail: it produces no output and no exit
+          # code. The leg would then report a green run while the
+          # installer had never started. Starting the process directly
+          # keeps the real exit code, so a broken installer is a red
+          # leg instead of a silent one.
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = $shell
+          $psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -File ./install.ps1 ' +
+            ('-InstallDir "{0}" -SkipPath -ForceBootstrap -BootstrapProbe "{1}"' -f `
+              $env:MAS_HOME, $env:MAS_BOOTSTRAP_PROBE)
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $psi.UseShellExecute = $false
+          $proc = New-Object System.Diagnostics.Process
+          $proc.StartInfo = $psi
+          [void]$proc.Start()
+          $stdout = $proc.StandardOutput.ReadToEnd()
+          $stderr = $proc.StandardError.ReadToEnd()
+          $proc.WaitForExit()
+          Write-Output $stdout
+          if ($stderr) { Write-Output $stderr }
+          if ($proc.ExitCode -ne 0) { exit $proc.ExitCode }
 
       - name: Assert the bootstrap branch really ran and the install is complete
         shell: bash
