@@ -115,5 +115,81 @@ class TheGateTest(unittest.TestCase):
         self.assertFalse(broken["the installation that follows is complete"])
 
 
+class TheShadowPathTest(unittest.TestCase):
+    """The shadow folder keeps the machine's tools and loses its Python.
+
+    The CI runs this gate on a Linux runner, where the interpreter
+    lives in /usr/bin next to bash and the coreutils. An earlier
+    version dropped that whole folder from PATH, and the gate then
+    died with "bash: not found" - the gate had removed the shell it
+    needed to test the installer with. A gate that cannot run is not
+    a gate.
+    """
+
+    def _folder_with_tools(self):
+        import pathlib
+        import tempfile
+
+        folder = pathlib.Path(tempfile.mkdtemp(prefix="mas-shadow-src-"))
+        (folder / "python3").write_text("not an interpreter", encoding="utf-8")
+        (folder / "python3.12").write_text("not an interpreter", encoding="utf-8")
+        (folder / "bash").write_text("a shell", encoding="utf-8")
+        (folder / "ls").write_text("a coreutil", encoding="utf-8")
+        self.addCleanup(_remove_tree, folder)
+        return folder
+
+    def test_the_shadow_keeps_the_other_tools_of_the_folder(self):
+        import mas.selftest_bootstrap_execution as gate_module
+
+        folder = self._folder_with_tools()
+        shadow = gate_module._make_shadow(folder)
+        self.addCleanup(gate_module._clean_shadows)
+
+        self.assertTrue((shadow / "bash").exists(), "the shadow lost the shell")
+        self.assertTrue((shadow / "ls").exists(), "the shadow lost a coreutil")
+
+    def test_the_shadow_loses_every_interpreter(self):
+        import mas.selftest_bootstrap_execution as gate_module
+
+        folder = self._folder_with_tools()
+        shadow = gate_module._make_shadow(folder)
+        self.addCleanup(gate_module._clean_shadows)
+
+        self.assertFalse((shadow / "python3").exists())
+        self.assertFalse((shadow / "python3.12").exists())
+        self.assertFalse(gate_module._folder_holds_interpreter(shadow))
+
+    def test_a_folder_that_holds_no_interpreter_is_kept_as_it_is(self):
+        import pathlib
+        import tempfile
+
+        import mas.selftest_bootstrap_execution as gate_module
+
+        folder = pathlib.Path(tempfile.mkdtemp(prefix="mas-shadow-clean-"))
+        (folder / "bash").write_text("a shell", encoding="utf-8")
+        self.addCleanup(_remove_tree, folder)
+
+        path_value = str(folder)
+        self.assertEqual(gate_module._shadow_path(path_value), path_value)
+
+    def test_the_shadow_leaves_the_original_folder_alone(self):
+        import mas.selftest_bootstrap_execution as gate_module
+
+        folder = self._folder_with_tools()
+        gate_module._make_shadow(folder)
+        self.addCleanup(gate_module._clean_shadows)
+
+        self.assertTrue((folder / "python3").exists(), "the original lost its file")
+        self.assertTrue((folder / "bash").exists())
+        self.assertTrue(gate_module._folder_holds_interpreter(folder))
+
+
+def _remove_tree(folder):
+    """Remove a folder the test made."""
+    import shutil
+
+    shutil.rmtree(folder, ignore_errors=True)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

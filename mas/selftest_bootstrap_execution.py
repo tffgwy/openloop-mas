@@ -165,6 +165,127 @@ def _run_bash(script: pathlib.Path, args: List[str], env: Dict[str, str]) -> Dic
     return {"returncode": completed.returncode, "output": output}
 
 
+#: The names a Python answers to on the PATH.
+INTERPRETER_NAMES = (
+    "python",
+    "python2",
+    "python3",
+    "pythonw",
+    "python2.7",
+    "python3.10",
+    "python3.11",
+    "python3.12",
+    "python3.13",
+    "python3.14",
+)
+
+
+def _is_interpreter_name(name: str) -> bool:
+    """Is this file name one of the names a Python answers to?"""
+    stem = name.lower()
+    if stem.endswith(".exe"):
+        stem = stem[:-4]
+    if stem in INTERPRETER_NAMES:
+        return True
+    # A versioned interpreter such as python3.12.
+    return bool(stem.startswith("python") and stem[6:7] == "." and stem[7:].isdigit())
+
+
+def _folder_holds_interpreter(folder: pathlib.Path) -> bool:
+    """Does this folder hold an interpreter under any of its names?"""
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return False
+    return any(_is_interpreter_name(name) for name in names)
+
+
+#: The shadows the rehearsal built, so they can be cleaned up.
+_SHADOWS: List[pathlib.Path] = []
+
+
+def _make_shadow(folder: pathlib.Path) -> pathlib.Path:
+    """Build a copy of ``folder`` without any interpreter in it.
+
+    The shadow holds a link to every other file of the folder, so the
+    machine keeps every tool it had - the shell, the coreutils, the
+    package managers - and loses only the interpreters. Nothing on the
+    machine is moved, renamed or deleted: the shadow is a separate
+    folder that only exists for the length of the rehearsal.
+    """
+    import tempfile
+
+    shadow = pathlib.Path(tempfile.mkdtemp(prefix="mas-shadow-path-"))
+    _SHADOWS.append(shadow)
+    try:
+        for child in folder.iterdir():
+            if _is_interpreter_name(child.name):
+                continue
+            target = shadow / child.name
+            if target.exists():
+                continue
+            try:
+                target.symlink_to(child)
+                continue
+            except OSError:
+                pass
+            # A machine without the privilege to create a symbolic link
+            # still has to keep its tools reachable, so the shadow falls
+            # back to a hard link and then to a copy. The rehearsal only
+            # needs the tools to be *there*; it never writes through them.
+            try:
+                os.link(child, target)
+                continue
+            except OSError:
+                pass
+            try:
+                if child.is_dir():
+                    shutil.copytree(child, target, symlinks=True)
+                else:
+                    shutil.copy2(child, target)
+            except (OSError, shutil.Error):
+                continue
+    except OSError:
+        pass
+    return shadow
+
+
+def _shadow_path(path_value: str) -> str:
+    r"""Return a PATH in which no interpreter can be found.
+
+    A folder that holds an interpreter is replaced by a shadow of
+    itself; every other folder is left exactly as it was. On Windows
+    the folders are simply dropped: the installer there needs no
+    external tool, and a shadow of ``C:\Windows\System32`` would be
+    neither possible nor useful.
+    """
+    if os.name == "nt":
+        kept = [
+            entry
+            for entry in path_value.split(os.pathsep)
+            if entry and not _folder_holds_interpreter(pathlib.Path(entry))
+        ]
+        return os.pathsep.join(kept)
+
+    entries: List[str] = []
+    for entry in path_value.split(os.pathsep):
+        if not entry:
+            continue
+        folder = pathlib.Path(entry)
+        if _folder_holds_interpreter(folder):
+            entries.append(str(_make_shadow(folder)))
+        else:
+            entries.append(entry)
+    return os.pathsep.join(entries)
+
+
+def _clean_shadows() -> None:
+    """Remove the shadows the rehearsal built."""
+    while _SHADOWS:
+        shadow = _SHADOWS.pop()
+        shutil.rmtree(shadow, ignore_errors=True)
+
+
 def _rehearsal_env(home: pathlib.Path, probe: pathlib.Path, interpreter: str) -> Dict[str, str]:
     """The environment the rehearsal runs in.
 
@@ -187,18 +308,20 @@ def _rehearsal_env(home: pathlib.Path, probe: pathlib.Path, interpreter: str) ->
     # reach its interpreter without the shell's help - which is what
     # a restricted environment really looks like.
     env["PATHEXT"] = ".CPL"
-    # Take every directory that holds a Python off the PATH. The
-    # rehearsal is only honest if the machine really looks bare.
-    kept: List[str] = []
-    for entry in env.get("PATH", "").split(os.pathsep):
-        if not entry:
-            continue
-        if pathlib.Path(entry, "python.exe").exists():
-            continue
-        if pathlib.Path(entry, "python3").exists():
-            continue
-        kept.append(entry)
-    env["PATH"] = os.pathsep.join(kept)
+    # Take every *interpreter* off the PATH, and leave the rest of the
+    # machine alone. The rehearsal is only honest if the machine really
+    # looks bare of Python - and it must still be able to run a shell.
+    #
+    # On a Linux runner the interpreter lives in /usr/bin next to bash
+    # and the coreutils. Dropping that whole directory would take the
+    # shell away with it, and the rehearsal would die with "bash: not
+    # found" - a failure of the machine the gate built, not of the
+    # installer it is supposed to test. A gate that cannot run is not
+    # a gate.
+    #
+    # So the directory is replaced by a shadow: the same folder, with
+    # every tool in it, except the interpreters.
+    env["PATH"] = _shadow_path(env.get("PATH", ""))
     return env
 
 
@@ -287,19 +410,27 @@ def _path_only_observation(root: pathlib.Path) -> Dict[str, Any]:
     env["PYTHONUTF8"] = "1"
     env["PATHEXT"] = ".CPL"
     # The interpreter's own folder is the *only* place on PATH that
-    # holds a Python.
+    # holds a Python - and every other folder that holds one is taken
+    # out of the way.
+    #
+    # The folder is replaced by a shadow of itself: the same folder
+    # with every tool in it, except the interpreters. Dropping the
+    # whole folder would take the shell and the coreutils with it on a
+    # Linux runner, and the observation would die of "bash: not found"
+    # instead of reporting what it went out to report.
     kept: List[str] = []
     for entry in env.get("PATH", "").split(os.pathsep):
         if not entry:
             continue
-        if pathlib.Path(entry).resolve() == interpreter_dir:
-            continue
-        if pathlib.Path(entry, "python.exe").exists():
-            continue
-        if pathlib.Path(entry, "python3").exists():
-            continue
-        kept.append(entry)
-    kept.insert(0, str(interpreter_dir))
+        folder = pathlib.Path(entry)
+        try:
+            same = folder.resolve() == interpreter_dir
+        except OSError:
+            same = False
+        if same:
+            kept.append(str(folder))
+        elif _folder_holds_interpreter(folder):
+            kept.append(str(_make_shadow(folder)))
     env["PATH"] = os.pathsep.join(kept)
     if _is_windows():
         result = _run_powershell(
@@ -605,6 +736,10 @@ def check_the_bootstrap_path_is_executed_and_not_just_described(
             )
 
     finally:
+        # The shadows are cleaned up before the temporary folder: they
+        # live outside it, and a shadow left behind would keep a copy
+        # of the machine's PATH folders alive.
+        _clean_shadows()
         shutil.rmtree(root, ignore_errors=True)
 
     return {
