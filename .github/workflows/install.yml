@@ -123,6 +123,102 @@ jobs:
         shell: bash
         run: python "${{ github.workspace }}/tools/check_install_smoke.py" "${{ runner.temp }}/standalone-home"
 
+  no-python:
+    name: install without a Python (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+    steps:
+      # This job is the one the others are not.
+      #
+      # Every other install job begins with actions/setup-python, so the
+      # runner already has an interpreter before the installer looks for
+      # one. The branch that says "this machine has no Python" was
+      # therefore never executed anywhere - not in CI, not on a
+      # contributor's machine. A path nobody runs breaks silently, and
+      # it breaks exactly where it is hardest to debug: on a beginner's
+      # fresh laptop.
+      #
+      # So this job does *not* set up a Python. It hides every Python
+      # from PATH, hands the installer a rehearsal interpreter, and
+      # requires the installer to find it with its production lookup.
+      #
+      # The rehearsal switch (MAS_FORCE_BOOTSTRAP / MAS_BOOTSTRAP_PROBE)
+      # is what makes that possible without downloading and installing a
+      # real Python on every CI run.
+      - uses: actions/checkout@v4
+
+      - name: Find the interpreter to stage (the rehearsal material)
+        # The rehearsal needs *a* real interpreter to hand over - one
+        # that is not on PATH, or the branch under test would never be
+        # entered. The runner images ship one; the setup-python action
+        # is deliberately NOT used.
+        shell: bash
+        run: |
+          set -euo pipefail
+          interpreter="$(command -v python3 || command -v python || true)"
+          if [ -z "$interpreter" ]; then
+            echo "::error::no interpreter to stage the rehearsal with"
+            exit 1
+          fi
+          echo "MAS_PROBE_PYTHON=$interpreter" >> "$GITHUB_ENV"
+
+      - name: Install on a machine that has no Python (Linux)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HOME="${{ runner.temp }}/bare-home"
+          mkdir -p "$HOME"
+          export MAS_HOME="$HOME/.mas"
+          export MAS_FORCE_BOOTSTRAP=1
+          export MAS_BOOTSTRAP_PROBE="${{ runner.temp }}/bare-probe"
+          mkdir -p "$MAS_BOOTSTRAP_PROBE"
+          # Hide every Python from PATH: the machine has to look bare.
+          export PATH="/usr/bin:/bin"
+          bash ./install.sh
+
+      - name: Install on a machine that has no Python (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:USERPROFILE = "${{ runner.temp }}\bare-home"
+          New-Item -ItemType Directory -Force -Path $env:USERPROFILE | Out-Null
+          $env:MAS_HOME = "$env:USERPROFILE\.mas"
+          $env:MAS_FORCE_BOOTSTRAP = "1"
+          $env:MAS_BOOTSTRAP_PROBE = "${{ runner.temp }}\bare-probe"
+          New-Item -ItemType Directory -Force -Path $env:MAS_BOOTSTRAP_PROBE | Out-Null
+          # Hide every Python from PATH: the machine has to look bare,
+          # or the branch under test is never entered.
+          $kept = @()
+          foreach ($entry in ($env:PATH -split ';')) {
+            if (-not $entry) { continue }
+            if (Test-Path -LiteralPath (Join-Path $entry 'python.exe')) { continue }
+            if (Test-Path -LiteralPath (Join-Path $entry 'python3.exe')) { continue }
+            $kept += $entry
+          }
+          $env:PATH = ($kept -join ';')
+          # A PATHEXT that names no executable at all: the shell then
+          # treats python.exe as a *document*, and the installer has to
+          # reach its interpreter without the shell's help - which is
+          # what a restricted environment really looks like.
+          $env:PATHEXT = '.CPL'
+          powershell -NoProfile -ExecutionPolicy Bypass -File ./install.ps1 `
+            -InstallDir $env:MAS_HOME -SkipPath `
+            -ForceBootstrap -BootstrapProbe $env:MAS_BOOTSTRAP_PROBE
+
+      - name: Assert the bootstrap branch really ran and the install is complete
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/verify_install.py "${{ runner.temp }}/bare-home"
+
   standalone-build:
     name: standalone script with a locally built wheel
     runs-on: ${{ matrix.os }}

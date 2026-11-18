@@ -16,17 +16,51 @@ fail() { printf '[XX] %s\n' "$1"; exit 1; }
 
 printf '\nOpenLoop MAS - one-click installer\nsource: %s\n\n' "$SRC_ROOT"
 
+# The production lookup for a Python that was just installed.
+#
+# On POSIX the package manager normally puts the interpreter on PATH,
+# so the search is mostly a safety net. The rehearsal, however, needs
+# a lookup that reads a *folder* - the same way the Windows one does -
+# because the rehearsal has to stage the interpreter somewhere the
+# lookup will look. This is that lookup, and it is the one the rehearsal
+# uses: unchanged code, unchanged path.
+find_mas_bootstrapped_python() {
+  local probe_root="${1:-${MAS_BOOTSTRAP_PROBE:-}}"
+  [ -n "$probe_root" ] || return 0
+  local candidate
+  # The name is matched loosely on purpose: a per-user install puts
+  # several names in the folder (``python3``, ``python3.12``), and the
+  # lookup has to find whichever of them the machine actually has.
+  for candidate in "$probe_root"/3*/python3* "$probe_root"/3*/python "$probe_root"/python3* "$probe_root"/python; do
+    [ -x "$candidate" ] || continue
+    if "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' >/dev/null 2>&1; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 0
+}
+
 step "Locating Python 3.10+"
 # MAS_PYTHON is the counterpart of the PowerShell installer's -Python
 # switch: it names the interpreter to use instead of searching PATH.
-if [ -n "${MAS_PYTHON:-}" ]; then
+# MAS_FORCE_BOOTSTRAP is the rehearsal switch: it makes the installer
+# behave as if the machine had *no* Python at all, so the bootstrap
+# branch is taken on a machine that does have one. The bootstrap branch
+# can otherwise only be reached on a machine without Python - and no
+# developer owns such a machine, so the branch would never be
+# exercised anywhere.
+if [ "${MAS_FORCE_BOOTSTRAP:-0}" = "1" ]; then
+  step "Rehearsal mode: pretending this machine has no Python"
+  PYTHON_BIN=""
+elif [ -n "${MAS_PYTHON:-}" ]; then
   if [ -x "$MAS_PYTHON" ] && "$MAS_PYTHON" -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' >/dev/null 2>&1; then
     PYTHON_BIN="$MAS_PYTHON"
   else
     fail "MAS_PYTHON is set to '$MAS_PYTHON' but it is not a usable Python 3.10+"
   fi
 fi
-if [ -z "$PYTHON_BIN" ]; then
+if [ -z "$PYTHON_BIN" ] && [ "${MAS_FORCE_BOOTSTRAP:-0}" != "1" ]; then
   for cand in python3 python; do
     if command -v "$cand" >/dev/null 2>&1; then
       if "$cand" -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' >/dev/null 2>&1; then
@@ -35,6 +69,65 @@ if [ -z "$PYTHON_BIN" ]; then
       fi
     fi
   done
+fi
+if [ -z "$PYTHON_BIN" ]; then
+  if [ "${MAS_NO_BOOTSTRAP:-0}" = "1" ]; then
+    fail "Python 3.10+ not found, and MAS_NO_BOOTSTRAP=1 was given. Install it, then re-run this script."
+  fi
+  # The rehearsal. The download is replaced by an interpreter that was
+  # staged in advance; the lookup afterwards is the *production* one,
+  # so a change that breaks the lookup breaks the rehearsal too.
+  if [ -n "${MAS_BOOTSTRAP_PROBE:-}" ]; then
+    step "Rehearsal mode: no Python will be installed"
+    if [ "${MAS_PROBE_STAGE:-1}" = "0" ]; then
+      # The counter-proof: stage nothing, so the lookup finds nothing.
+      # The lookup below is the *production* one, unchanged.
+      PYTHON_BIN="$(find_mas_bootstrapped_python)"
+      if [ -z "$PYTHON_BIN" ]; then
+        fail "the rehearsal could not find the interpreter it staged"
+      fi
+      ok "rehearsal found the interpreter at $PYTHON_BIN"
+    fi
+    if [ -z "${MAS_PROBE_PYTHON:-}" ]; then
+      fail "the rehearsal needs an interpreter to stage: set MAS_PROBE_PYTHON to a Python 3.10+ executable"
+    fi
+    if [ ! -x "$MAS_PROBE_PYTHON" ]; then
+      fail "the rehearsal interpreter is not executable: $MAS_PROBE_PYTHON"
+    fi
+    # The interpreter is staged where a real bootstrap would have left
+    # it, and then it is found again by the *production* lookup - the
+    # same function the real path uses, with the same arguments. A
+    # change that breaks the lookup breaks the rehearsal.
+    probe_dir="$MAS_BOOTSTRAP_PROBE/$(printf '%s' "3.12" | tr -d '.')"
+    rm -rf "$probe_dir"
+    mkdir -p "$probe_dir"
+    # The staged interpreter has to *run* - a rehearsal that stages
+    # something unusable proves nothing, and the failure would look
+    # like a broken lookup.
+    #
+    # It is staged as a small wrapper that *execs* the real
+    # interpreter by its absolute path. A copy would not do: an
+    # interpreter that lives next to its own libraries cannot start
+    # once it is copied somewhere else, and the rehearsal empties the
+    # PATH of every Python on purpose - so a copy cannot even boot.
+    # A link is not used either: a shell that emulates links can
+    # create a file that looks like one and cannot be executed.
+    #
+    # The wrapper is decided by *running* it, not by what the
+    # filesystem command reported.
+    staged="$probe_dir/python3"
+    printf '#!/bin/sh\nexec "%s" "$@"\n' "$MAS_PROBE_PYTHON" > "$staged"
+    chmod +x "$staged" 2>/dev/null || true
+    if ! "$staged" -c "import sys" >/dev/null 2>&1; then
+      fail "the staged interpreter does not run: $staged"
+    fi
+    ok "rehearsal interpreter staged at $staged"
+    PYTHON_BIN="$(find_mas_bootstrapped_python)"
+    if [ -z "$PYTHON_BIN" ]; then
+      fail "the rehearsal could not find the interpreter it staged"
+    fi
+    ok "rehearsal found the interpreter at $PYTHON_BIN"
+  fi
 fi
 if [ -z "$PYTHON_BIN" ]; then
   if [ "${MAS_NO_BOOTSTRAP:-0}" = "1" ]; then

@@ -140,11 +140,11 @@ server and the skills, and finishes with an offline self-check.
 Pin a specific release instead of "the latest":
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.86
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.87
 ```
 
 ```bash
-MAS_VERSION=0.7.86 bash install.sh
+MAS_VERSION=0.7.87 bash install.sh
 ```
 
 > The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
@@ -891,9 +891,60 @@ MIT © OpenLoop MAS contributors
 
 ## Gate archaeology
 
-This project now holds **26 gates**, and every one of them grew out of a
+This project now holds **27 gates**, and every one of them grew out of a
 **real incident**. They are listed below newest first - if you just want to
 use the tool, skip this section.
+
+- **The 27th gate `bootstrap_execution`** - v0.7.86 wrote "install a
+  Python yourself when there is none" into the installers, and added the
+  26th gate to watch the rules for drift. But that gate compares **text**,
+  and every CI install job starts with `actions/setup-python` - so
+  **every machine that runs the tests already has a Python**.
+  The branch that says "this machine has no Python" was therefore
+  **executed nowhere**: not in CI, not on a developer's machine, not on a
+  contributor's machine. A path nobody runs breaks silently, and it
+  breaks in the hardest place to debug: on a beginner's new laptop, with
+  nobody around who could explain the error message.
+  Now the branch is **actually executed**: every Python is **hidden from
+  `PATH`** so the machine really looks bare; a **rehearsal switch** puts
+  the interpreter where a real bootstrap would have put it; the
+  installer has to find it **with the production lookup** - unchanged
+  code, unchanged path; and the installation that follows has to be
+  **complete** (runtime in place, launcher in place, self-check green).
+  The **counter-proof** has to work too: staged where the lookup cannot
+  read it, the rehearsal must **say so honestly**.
+  It also watches two things nobody watched before: the **Microsoft Store
+  stub** (on a brand-new Windows, `WindowsApps\python.exe` and
+  `python3.exe` are **already there** even though no Python was ever
+  installed - they are aliases, and running one **opens the Microsoft
+  Store**, prints nothing, and fails; an installer that treats them as
+  "a Python was found" reports success and then **cannot run**) and the
+  **wait** (the official installer exe is a **bootstrapper**: it may
+  return while its files are still being written, so a lookup that tries
+  once misses).
+  Three real drifts went with it: **Windows did not honour
+  `MAS_NO_BOOTSTRAP`** (both installers could refuse, but one only knew
+  the switch and the other only the variable); **the rehearsal switches
+  were spelled differently on the two sides** (they now share one set of
+  environment variables, and the 26th gate watches that an installer
+  losing one means that platform stops being rehearsed); and **the gate
+  itself read the wrong output** - it read the rehearsal's output rather
+  than the refusal run's.
+  The gate then caught **two real defects of its own**, and both only
+  bite in a **restricted environment** (a service account, a scheduled
+  task, a CI step that builds its own): **`PATHEXT` that is present but
+  useless** (it may be `.CPL` - a list that names **no executable
+  extension at all**; the shell then treats `python.exe` as a
+  **document**, calling it in a pipeline raises "Cannot run a document
+  in the middle of a pipeline", and calling it on its own produces
+  **no output** and leaves `$LASTEXITCODE` empty - so the installer
+  judged a **perfectly good Python** unusable and told the user the
+  machine had none); and **the lookup asked the shell** (`Get-Command`
+  goes through `PATHEXT` too, and misses an interpreter that is sitting
+  right there on `PATH`).
+  The installer now **walks `PATH` itself** and **starts the
+  interpreter through .NET**, and the gate's rehearsal deliberately
+  carries `PATHEXT=.CPL` so that path is walked **every single time**.
 
 - **The 26th gate `bootstrap_path`** - this version closes a gap that was
   written into the README itself. The README said the first install path is

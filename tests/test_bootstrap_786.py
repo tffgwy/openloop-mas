@@ -260,7 +260,7 @@ class TheGateTest(unittest.TestCase):
         self.assertFalse(result["skipped"])
 
     def test_the_gate_reports_every_observation(self):
-        self.assertEqual(len(BOOTSTRAP_OBSERVATIONS), 7)
+        self.assertEqual(len(BOOTSTRAP_OBSERVATIONS), 8)
 
     def test_the_gate_notices_a_drift(self):
         # The gate has to be able to fail. A drift in the Windows
@@ -292,6 +292,43 @@ class TheGateTest(unittest.TestCase):
         )
         self.assertFalse(
             broken["the Windows installer and the module agree on the download URL"]
+        )
+
+    def test_the_gate_notices_a_missing_rehearsal_switch(self):
+        # The twenty-seventh gate can only rehearse a platform whose
+        # installer offers the rehearsal switches. If one of them goes
+        # missing, that platform silently stops being tested - and a
+        # path that is no longer tested is a path that no longer works.
+        import mas.selftest_bootstrap as gate_module
+
+        facts = gate_module._bootstrap_observations(gate_module.REPO_ROOT)
+        broken = dict(facts)
+        broken["rehearsal_switches"] = {
+            name: [
+                switch
+                for switch in found
+                if switch != "MAS_FORCE_BOOTSTRAP"
+            ]
+            for name, found in (facts.get("rehearsal_switches") or {}).items()
+        }
+        verdicts = gate_module._bootstrap_verdicts(broken)
+        self.assertFalse(
+            verdicts["both installers offer the same rehearsal switches"]
+        )
+
+    def test_both_installers_offer_the_same_rehearsal_switches(self):
+        import mas.selftest_bootstrap as gate_module
+
+        facts = gate_module._bootstrap_observations(gate_module.REPO_ROOT)
+        for name in ("install.ps1", "install.sh"):
+            found = set((facts.get("rehearsal_switches") or {}).get(name) or [])
+            self.assertEqual(
+                found, set(gate_module.REHEARSAL_ENV_SWITCHES), name
+            )
+        # The command line is an extra on the PowerShell side.
+        self.assertEqual(
+            set((facts.get("rehearsal_cli_switches") or {}).get("install.ps1") or []),
+            set(gate_module.REHEARSAL_CLI_SWITCHES),
         )
 
     def test_the_gate_notices_a_dead_end(self):
@@ -328,6 +365,9 @@ class TheGateTest(unittest.TestCase):
             )
             self.assertTrue(
                 verdicts["both installers can be told not to bootstrap a Python"]
+            )
+            self.assertTrue(
+                verdicts["both installers offer the same rehearsal switches"]
             )
             # The module's own rules still have to hold there: the
             # installed runtime is what a beginner ends up running.

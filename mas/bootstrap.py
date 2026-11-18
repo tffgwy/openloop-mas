@@ -228,6 +228,10 @@ def find_just_installed(base: Any = None) -> Optional[str]:
     best: Optional[str] = None
     best_version: Tuple[int, int, int] = (0, 0, 0)
     for candidate in installed_python_dirs(base):
+        if is_store_stub(candidate):
+            # A Store alias is not an interpreter. "Finding" one here
+            # would report a Python that cannot run.
+            continue
         version = interpreter_version(str(candidate))
         if not is_supported(version):
             continue
@@ -313,3 +317,93 @@ def bootstrap_status(
     plan = bootstrap_plan(platform, interpreter, opted_out)
     plan["text"] = describe(plan)
     return plan
+
+
+#: The names Windows gives to the "app execution aliases" it ships in
+#: the WindowsApps folder. They are *Store stubs*: running one opens
+#: the Microsoft Store instead of running an interpreter, and they exit
+#: with a code that looks like a normal failure.
+WINDOWS_STORE_STUB_MARKER = "windowsapps"
+
+
+def is_store_stub(path: Any) -> bool:
+    """Is this path a Microsoft Store stub rather than a real Python?
+
+    A fresh Windows machine has ``python.exe`` and ``python3.exe`` in
+    ``WindowsApps`` even when no Python was ever installed. Those files
+    are *aliases*: running one opens the Microsoft Store on the user's
+    screen, prints nothing, and fails. An installer that treats them
+    as "a Python was found" reports success and then cannot run.
+
+    The check is a path check, not an execution - executing the stub is
+    exactly the thing to avoid.
+    """
+    text = str(path or "").strip()
+    if not text:
+        return False
+    normalised = text.replace("/", "\\").lower()
+    if WINDOWS_STORE_STUB_MARKER not in normalised:
+        return False
+    # A real interpreter installed under the Store's own Programs
+    # folder is a real interpreter - only the alias shims live
+    # directly inside WindowsApps.
+    return "windowsapps\\programs" not in normalised
+
+
+def interpret_candidates(
+    names: Any = None,
+    extra: Any = None,
+) -> List[str]:
+    """The paths a machine may hold a usable interpreter at.
+
+    The order matters: the newest real interpreter first, and the
+    Store stubs never at all.
+    """
+    found: List[str] = []
+    for source in (extra or [], names or []):
+        for item in source:
+            text = str(item or "").strip()
+            if not text:
+                continue
+            if is_store_stub(text):
+                continue
+            if text in found:
+                continue
+            found.append(text)
+    return found
+
+
+def simulated_bootstrap(
+    base: Any,
+    version: str = BOOTSTRAP_PYTHON_VERSION,
+    delay_rounds: int = 0,
+) -> Dict[str, Any]:
+    """What a bootstrap *would* leave on disk - without touching a machine.
+
+    This is the rehearsal of the bootstrap: it creates the folder
+    layout the Windows installer produces (a version-named folder with
+    a ``python.exe`` inside) and reports the path the installer would
+    then find. It never downloads and never installs anything.
+
+    It exists because the real path is the one that cannot be tested
+    on a machine that already has Python - and that is every machine a
+    developer owns. The rehearsal runs the same lookup the installer
+    runs, so a change that breaks the lookup breaks the rehearsal too.
+
+    ``delay_rounds`` says how many lookups have to fail before the
+    interpreter shows up. That is how the "the installer is still
+    writing its files" race is rehearsed: the real installer has to
+    *wait*, and a lookup that only tries once would fail.
+    """
+    root = pathlib.Path(base)
+    folder = root / ("Python%s" % version.replace(".", ""))
+    folder.mkdir(parents=True, exist_ok=True)
+    exe = folder / "python.exe"
+    exe.write_text("rehearsal placeholder\n", encoding="utf-8")
+    return {
+        "root": str(root),
+        "folder": str(folder),
+        "interpreter": str(exe),
+        "version": version,
+        "delay_rounds": int(delay_rounds),
+    }

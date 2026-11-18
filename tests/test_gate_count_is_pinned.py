@@ -53,6 +53,7 @@ EXPECTED_GATE_NAMES = (
     "packaged_docs",
     "undo_visibility",
     "bootstrap_path",
+    "bootstrap_execution",
 )
 
 

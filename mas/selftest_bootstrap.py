@@ -68,6 +68,7 @@ BOOTSTRAP_OBSERVATIONS = (
     "both installers can be told not to bootstrap a Python",
     "neither installer dead-ends on a missing Python",
     "the module refuses what it should refuse",
+    "both installers offer the same rehearsal switches",
 )
 
 #: The repository root, two levels up from this file.
@@ -100,6 +101,26 @@ INSTALLERS = (
 #: compares the *expanded* URL rather than a literal: the copy that
 #: matters is the rule, not the string.
 WINDOWS_URL_VARIABLE = "$MAS_BOOTSTRAP_PYTHON"
+
+#: The rehearsal switches, spelled as environment variables. Both
+#: installers have to offer the *same* rehearsal, or the twenty-seventh
+#: gate would only be able to rehearse one of them - and the other
+#: would go back to being untested. The environment is the spelling
+#: both sides share; the command line is an extra on the Windows side.
+REHEARSAL_ENV_SWITCHES = (
+    "MAS_FORCE_BOOTSTRAP",
+    "MAS_BOOTSTRAP_PROBE",
+    "MAS_PROBE_PYTHON",
+    "MAS_NO_BOOTSTRAP",
+)
+
+#: The command-line spelling of the same two switches, which only the
+#: PowerShell installer has - the POSIX one is a shell script and
+#: takes its switches from the environment.
+REHEARSAL_CLI_SWITCHES = (
+    "ForceBootstrap",
+    "BootstrapProbe",
+)
 
 
 def _installer_text(name: str) -> str:
@@ -210,6 +231,23 @@ def _bootstrap_observations(root: Any) -> Dict[str, Any]:
     seen["can_opt_out"] = can_opt_out
     seen["dead_end"] = dead_end
 
+    # The rehearsal switches each installer offers. A switch that only
+    # one installer has means one of them cannot be rehearsed - and an
+    # unrehearsed installer is an installer nobody has ever run on a
+    # machine without Python.
+    switches: Dict[str, List[str]] = {}
+    cli_switches: Dict[str, List[str]] = {}
+    for name, _flag in INSTALLERS:
+        installer_text = installers[name]
+        switches[name] = [
+            switch for switch in REHEARSAL_ENV_SWITCHES if switch in installer_text
+        ]
+        cli_switches[name] = [
+            switch for switch in REHEARSAL_CLI_SWITCHES if switch in installer_text
+        ]
+    seen["rehearsal_switches"] = switches
+    seen["rehearsal_cli_switches"] = cli_switches
+
     # The module's own behaviour - the rules the copies must match.
     seen["module_rejects_old"] = is_supported("3.9.0") is False
     seen["module_accepts_min"] = is_supported(minimum) is True
@@ -319,6 +357,24 @@ def _bootstrap_verdicts(facts: Dict[str, Any]) -> Dict[str, bool]:
         or (bool(names) and all(bool(can_opt_out.get(name)) for name in names))
     )
 
+    switches = facts.get("rehearsal_switches") or {}
+    cli_switches = facts.get("rehearsal_cli_switches") or {}
+    verdicts["both installers offer the same rehearsal switches"] = (
+        not source_tree
+        or (
+            bool(names)
+            and all(
+                set(switches.get(name) or []) == set(REHEARSAL_ENV_SWITCHES)
+                for name in names
+            )
+            and all(
+                set(cli_switches.get(name) or []) == set(REHEARSAL_CLI_SWITCHES)
+                for name in names
+                if name.endswith(".ps1")
+            )
+        )
+    )
+
     dead_end = facts.get("dead_end") or {}
     verdicts["neither installer dead-ends on a missing Python"] = not any(
         bool(dead_end.get(name)) for name in names
@@ -391,6 +447,24 @@ def _bootstrap_verdicts_independent(facts: Dict[str, Any]) -> Dict[str, bool]:
     verdicts["both installers can be told not to bootstrap a Python"] = (
         not source_tree
         or (bool(names) and all(bool(can_opt_out.get(name)) for name in names))
+    )
+
+    switches = facts.get("rehearsal_switches") or {}
+    cli_switches = facts.get("rehearsal_cli_switches") or {}
+    verdicts["both installers offer the same rehearsal switches"] = (
+        not source_tree
+        or (
+            bool(names)
+            and all(
+                set(switches.get(name) or []) == set(REHEARSAL_ENV_SWITCHES)
+                for name in names
+            )
+            and all(
+                set(cli_switches.get(name) or []) == set(REHEARSAL_CLI_SWITCHES)
+                for name in names
+                if name.endswith(".ps1")
+            )
+        )
     )
 
     dead_end = facts.get("dead_end") or {}
@@ -520,6 +594,31 @@ def check_the_one_click_install_survives_a_machine_without_python(
                     failures.append(
                         "round %d: the gate did not notice that the download URL "
                         "drifted - it cannot fail, so it does not watch"
+                        % (round_index + 1)
+                    )
+
+                # The third counter-proof removes a rehearsal switch
+                # from one of the installers. That is the drift the
+                # twenty-seventh gate would walk straight into: the
+                # rehearsal would only ever run on one platform, and
+                # the other one would go back to being untested.
+                without_switch = dict(drifted)
+                without_switch["rehearsal_switches"] = {
+                    name: [
+                        switch
+                        for switch in (found or [])
+                        if switch != "MAS_FORCE_BOOTSTRAP"
+                    ]
+                    for name, found in (
+                        drifted.get("rehearsal_switches") or {}
+                    ).items()
+                }
+                if _bootstrap_verdicts(without_switch).get(
+                    "both installers offer the same rehearsal switches"
+                ):
+                    failures.append(
+                        "round %d: the gate did not notice that a rehearsal "
+                        "switch went missing - it cannot fail, so it does not watch"
                         % (round_index + 1)
                     )
         finally:

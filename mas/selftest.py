@@ -48,6 +48,9 @@ from mas.selftest_audit import (
 from mas.selftest_bootstrap import (
     check_the_one_click_install_survives_a_machine_without_python,
 )
+from mas.selftest_bootstrap_execution import (
+    check_the_bootstrap_path_is_executed_and_not_just_described,
+)
 from mas.selftest_onboarding import (
     check_a_beginner_can_walk_the_docs_and_close_a_loop,
 )
@@ -5447,6 +5450,7 @@ CHECKS = (
     check_the_documents_the_beginner_reads_travel_with_the_wheel,
     check_an_undo_is_visible_in_the_audit,
     check_the_one_click_install_survives_a_machine_without_python,
+    check_the_bootstrap_path_is_executed_and_not_just_described,
 )
 
 #: How many gates the suite is expected to hold.
