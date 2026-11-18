@@ -48,6 +48,9 @@ from mas.selftest_audit import (
 from mas.selftest_onboarding import (
     check_a_beginner_can_walk_the_docs_and_close_a_loop,
 )
+from mas.selftest_packaged_docs import (
+    check_the_documents_the_beginner_reads_travel_with_the_wheel,
+)
 from mas.selftest_shadow import (
     check_the_program_you_type_is_the_program_that_was_checked,
 )
@@ -5435,6 +5438,7 @@ CHECKS = (
     check_a_human_decision_leaves_a_trace_that_cannot_be_changed,
     check_the_program_you_type_is_the_program_that_was_checked,
     check_a_beginner_can_walk_the_docs_and_close_a_loop,
+    check_the_documents_the_beginner_reads_travel_with_the_wheel,
 )
 
 #: How many gates the suite is expected to hold.
@@ -5486,12 +5490,19 @@ def run_selftest(
         else:
             row = check(iterations=int(iterations))
         results.append(row)
-    ok = all(row["ok"] for row in results)
+    failed = [row["name"] for row in results if not row.get("ok")]
+    skipped = [row["name"] for row in results if row.get("skipped")]
     return {
-        "ok": ok,
+        "ok": not failed,
         "iterations": int(iterations),
         "checks": results,
-        "failed": [row["name"] for row in results if not row["ok"]],
+        "failed": failed,
+        "skipped": skipped,
+        "passed": [
+            row["name"]
+            for row in results
+            if row.get("ok") and not row.get("skipped")
+        ],
     }
 
 
@@ -5508,16 +5519,39 @@ def format_selftest(result: Dict[str, Any]) -> str:
     """Render the self-test so that a person can act on it."""
     lines: List[str] = []
     for row in result.get("checks", []):
-        mark = "[OK  ]" if row.get("ok") else "[坏了]"
+        if row.get("skipped"):
+            mark = "[\u8df3\u8fc7]"
+        elif row.get("ok"):
+            mark = "[OK  ]"
+        else:
+            mark = "[\u574f\u4e86]"
         lines.append("%s %s" % (mark, row.get("title", row.get("name", ""))))
         lines.append("       \u4fdd\u8bc1\uff1a%s" % row.get("invariant", ""))
-        lines.append("       \u6253\u4e86 %s \u6b21" % row.get("iterations", 0))
+        if row.get("skipped"):
+            lines.append(
+                "       \u2192 \u8fd9\u4e00\u9879\u6ca1\u6709\u53ef\u89c2\u5bdf\u7684\u5bf9\u8c61\uff0c"
+                "\u8df3\u8fc7\uff08\u4e0d\u662f\u901a\u8fc7\uff09"
+            )
+        else:
+            lines.append("       \u6253\u4e86 %s \u6b21" % row.get("iterations", 0))
         for failure in row.get("failures", []) or []:
             lines.append("       \u2192 %s" % failure)
     lines.append("")
     failed = result.get("failed") or []
+    skipped = result.get("skipped") or []
     if failed:
-        lines.append("\u7ed3\u8bba\uff1a%d \u9879\u81ea\u68c0\u5931\u8d25\uff08%s\uff09" % (len(failed), ", ".join(failed)))
+        lines.append(
+            "\u7ed3\u8bba\uff1a%d \u9879\u81ea\u68c0\u5931\u8d25\uff08%s\uff09"
+            % (len(failed), ", ".join(failed))
+        )
     else:
-        lines.append("\u7ed3\u8bba\uff1a\u6240\u6709\u81ea\u68c0\u9879\u90fd\u7ecf\u8fc7\u4e86\u3002")
+        lines.append(
+            "\u7ed3\u8bba\uff1a\u6240\u6709\u81ea\u68c0\u9879\u90fd\u7ecf\u8fc7\u4e86\u3002"
+        )
+    if skipped:
+        lines.append(
+            "\u6ce8\u610f\uff1a%d \u9879\u81ea\u68c0\u8df3\u8fc7\uff08%s\uff09"
+            "\u2014\u2014\u6ca1\u6709\u53ef\u89c2\u5bdf\u7684\u5bf9\u8c61\uff0c\u4e0d\u7b97\u901a\u8fc7\u3002"
+            % (len(skipped), ", ".join(skipped))
+        )
     return "\n".join(lines) + "\n"

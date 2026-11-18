@@ -127,11 +127,11 @@ server and the skills, and finishes with an offline self-check.
 Pin a specific release instead of "the latest":
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.83
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.84
 ```
 
 ```bash
-MAS_VERSION=0.7.83 bash install.sh
+MAS_VERSION=0.7.84 bash install.sh
 ```
 
 > The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
@@ -876,9 +876,28 @@ MIT © OpenLoop MAS contributors
 
 ## Gate archaeology
 
-This project now holds **23 gates**, and every one of them grew out of a
+This project now holds **24 gates**, and every one of them grew out of a
 **real incident**. They are listed below newest first - if you just want to
 use the tool, skip this section.
+
+- **The 24th gate `packaged_docs`** - installing the published wheel into a
+  **clean home** found a real defect: `mas selftest --only onboarding_path`
+  **reported red on itself** (exit 2).
+  The cause was not that the gate was too strict. It was that **a wheel
+  carries the package, not the repository's prose** - so the gate looked for
+  a README next to `site-packages`, did not find one, and raised
+  `FileNotFoundError`.
+  That failure is wrong twice over: it says nothing about the beginner, and
+  it is not a real defect either. What it *did* expose is that **the wheel a
+  beginner receives does not carry the two documents they will read** -
+  and those are the only two they will read.
+  So the onboarding documents now **travel with the wheel** (`mas/docs/`),
+  the gate **reads the packaged copy first and falls back to the
+  repository**, and the summary grew a third state: **skipped**. A gate
+  with no subject does not claim the beginner is lost, and it is not
+  silently counted as a pass either - it is listed on its own.
+  The evidence: in a clean home with the new wheel, the gate **really
+  passes** (exit 0).
 
 - **The 23rd gate `onboarding_path`** - the first 22 gates all watch the
   *runtime*: does the engine close, does the ledger keep, does the draft hold.

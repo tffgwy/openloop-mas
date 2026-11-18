@@ -105,11 +105,11 @@ bash install.sh
 想装固定版本（而不是"最新版"）：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.83
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.84
 ```
 
 ```bash
-MAS_VERSION=0.7.83 bash install.sh
+MAS_VERSION=0.7.84 bash install.sh
 ```
 
 > 脚本默认会往 `PATH` 里加一条 `~/.mas/bin`（Windows 写当前用户的注册表）。
@@ -985,8 +985,22 @@ MIT © OpenLoop MAS contributors
 
 ## 门禁考古
 
-这个项目至今有 **23 道门禁**，每一道都是从一个**真实事故**里长出来的。
+这个项目至今有 **24 道门禁**，每一道都是从一个**真实事故**里长出来的。
 下面按门禁编号倒序记录它们各自的来历 —— 如果你只想用，直接跳过这一节就好。
+
+- **第 24 项门禁 `packaged_docs`** —— 上一轮把发布出来的 wheel 装进
+  一个**干净 home** 里跑，抓到一处真缺陷：`mas selftest --only
+  onboarding_path` **自己报红**（exit 2）。
+  根因不是门禁太严，是 **wheel 只带包、不带仓库的散文** ——
+  门禁去源码树找 README，找不到，`FileNotFoundError`。
+  这个失败有两重坏：它说的不是初学者的事，它也不是任何真实缺陷；
+  它只是暴露了一件事 —— **初学者拿到手的 wheel 里没有那两份文档**，
+  而那正是初学者唯一会读的东西。
+  现在入门文档**随 wheel 走**（`mas/docs/`），门禁**读打包副本优先、
+  仓库兜底**，并且汇总器多出第三种状态：**跳过** ——
+  一道门禁在没有观察对象时不谎报「初学者走不通」，
+  也不被悄悄算成「通过」，它单独列出来。
+  证据是干净 home 装新 wheel 后门禁**真通过**（exit 0）。
 
 - **第 23 项门禁 `onboarding_path`** —— 前面 22 道门禁全在管**运行时**：
   引擎闭不闭合、账本留不留、草稿挡不挡得住。**没有一道管「门」**——

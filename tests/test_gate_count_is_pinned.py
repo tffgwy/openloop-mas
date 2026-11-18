@@ -50,6 +50,7 @@ EXPECTED_GATE_NAMES = (
     "audit_chain",
     "shadow_guard",
     "onboarding_path",
+    "packaged_docs",
 )
 
 

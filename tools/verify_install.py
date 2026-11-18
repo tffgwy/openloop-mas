@@ -330,6 +330,28 @@ def check_runtime(home: pathlib.Path) -> None:
         )
         print(f"[OK] mas {' '.join(args)}")
 
+    # The onboarding gate has to work *in the installation*. It watches
+    # the README and the quickstart, and it only has a subject if the
+    # wheel carried them - so this asserts the whole chain at once: the
+    # documents travelled, the gate found them, and the gate passed.
+    #
+    # A wheel without the documents used to make this fail with a
+    # FileNotFoundError about a README, which says nothing about the
+    # beginner and looks like a broken product.
+    for gate in ("onboarding_path", "packaged_docs"):
+        result = _run_in_installed_env(
+            home, ["selftest", "--only", gate, "--iterations", "1"]
+        )
+        assert result.returncode == 0, (
+            f"the {gate} gate does not pass in the installation: "
+            + (result.stdout + result.stderr)[-600:]
+        )
+        assert "[\u8df3\u8fc7]" not in result.stdout, (
+            f"the {gate} gate was skipped in the installation - the wheel "
+            "did not carry the documents: " + result.stdout[-400:]
+        )
+        print(f"[OK] the {gate} gate passes in the installation")
+
 
 def main() -> int:
     if len(sys.argv) < 2:

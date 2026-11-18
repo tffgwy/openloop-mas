@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openloop-mas"
-version = "0.7.83"
+version = "0.7.84"
 description = "A loop-engineering runtime for multi-agent systems: closure, verification, budgets and an auditable ledger."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -41,7 +41,19 @@ include-package-data = true
 # enough to get a *working* setup, and the skills are what teach Codex /
 # Claude Code the workflow. Shipping them is what makes `mas install` able
 # to do the whole job on a machine that never cloned the repository.
-"mas" = ["teams/*.json", "skills/*/SKILL.md", "skills/*/*.md", "skills/*/*.json"]
+"mas" = [
+    "teams/*.json",
+    "skills/*/SKILL.md",
+    "skills/*/*.md",
+    "skills/*/*.json",
+    # The onboarding documents travel with the wheel too. The gate
+    # `mas selftest --only onboarding_path` watches the README and the
+    # quickstart; a plain `pip install` tree has no repository, so
+    # without these the gate would have no subject and the install
+    # would report a failure that says nothing about the beginner.
+    "docs/*.md",
+    "docs/MANIFEST.txt",
+]
 
 [tool.ruff]
 # The project ships with zero third-party dependencies, so linting is not

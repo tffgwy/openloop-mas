@@ -4,6 +4,108 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.84] - 2026-11-18
+
+### 隔离安装抓出来的真缺陷：门禁自己报红
+
+上一轮把发布出来的 wheel 装进一个干净 home 里跑，结果是：
+
+```
+mas demo                                  -> exit 0
+mas doctor --no-network                   -> exit 0
+mas selftest --only onboarding_path       -> exit 2   <-- 坏了
+```
+
+**根因不是门禁太严，是文档没随包走。**
+
+wheel 只带包，不带仓库的散文。`onboarding_path` 门禁假定文档永远在源码树里，
+于是它去 `site-packages` 旁边找 README，找不到，`FileNotFoundError` ——
+**门禁自己报红**。
+
+这个失败信息有两重坏：它说的不是初学者的事，它也不是任何真实缺陷；
+它只是暴露了一件事 —— **初学者拿到手的 wheel 里没有那两份文档**。
+它们是初学者唯一会读的东西。
+
+### 修法：文档随包走
+
+| 改动 | 位置 |
+| --- | --- |
+| 入门文档进 wheel | `mas/docs/`（README、README.en、quickstart）|
+| 同步脚本 | `tools/sync_packaged_docs.py`（`--check` 只校验）|
+| 打包声明 | `pyproject.toml` 的 `package-data` 加上 `docs/*`|
+| 门禁改读打包副本 | `mas/selftest_onboarding.py`：打包副本优先，仓库兜底 |
+| 断言 wheel 真的带文档 | `tools/check_wheel_docs.py`（CI 构建后跑）|
+| 断言装好的环境门禁真通过 | `tools/verify_install.py` |
+
+现在**装好的环境里门禁是真通过的**，不是跳过、不是报红：
+
+```
+$ mas selftest --only onboarding_path
+[OK  ] 初学者照着文档就能跑通
+结论：所有自检项都经过了。
+```
+
+### 第 24 项门禁 `packaged_docs`
+
+「文档随包走」这件事本身也该被门禁守住。新门禁盯三件事：
+
+1. **入门文档在包里**（不在只在仓库里）；
+2. **打包副本与仓库副本逐字节一致** —— 漂移比缺失更糟：
+   缺失是门禁瞎了，漂移是**门禁在检查一份没人拿得到的文字**；
+3. **打包声明真的会把它们带进 wheel** —— 以后谁改了
+   `pyproject.toml`，也不能悄悄把它们从 wheel 里弄掉。
+
+反证同样做了，而且**第一次打错了地方**：最初打瞎的是
+`doc_path`（第 23 项门禁用的查找函数），而这道门禁自己按包目录找文件，
+所以变异**根本没生效**。一个打不响的反证不是反证 —— 改成把包目录指向空目录，
+门禁如期报红。
+
+### 隔离安装抓到的第二处同类缺陷
+
+第一次把新 wheel 装进干净 home，`packaged_docs` 门禁**又报红了**：
+
+```
+round 1: the packaged copy matches the repository
+round 1: the packaging declaration ships the documents
+```
+
+**同一个错误，第二次。** 这道门禁拿**仓库根**当基准，
+可在安装环境里**根本没有仓库** —— 于是它报了一个它根本没发现的漂移。
+
+改法：仓库**在的时候**才拿它当基准；不在的时候，
+**打包副本自己就是基准**（没别的副本被发出去过，没有东西可漂）。
+打包声明同理：安装环境里 wheel 已经建好了，
+声明**早就表过态**，它不在场不是「声明缺失」。
+
+修完再装一次，两个门禁在干净 home 里**都真通过**：
+
+```
+mas selftest --only onboarding_path -> exit 0
+mas selftest --only packaged_docs  -> exit 0
+```
+
+### 门禁的第三种状态：跳过
+
+汇总器以前只有「通过」和「坏了」两种。这次多了一种：**跳过**。
+
+一道门禁在没有观察对象时，不该谎报「初学者走不通」，
+也不该被悄悄算成「通过」—— 它单独列出来：
+
+```
+[跳过] 初学者照着文档就能跑通
+       → 这一项没有可观察的对象，跳过（不是通过）
+```
+
+跳过**不算失败**（否则安装会平白变红），但也**不是通过** ——
+读者能看见有门禁没在看。
+
+### 证据
+
+- 干净 home 装新 wheel -> `selftest --only onboarding_path` **exit 0**（真通过）
+- 无文档场景 -> 报 `skipped`，`ok=True`，`failures=[]`
+- wheel 内容检查 -> `mas/docs/{README.md,README.en.md,quickstart.md}` 均在
+- CI 新增两步：同步校验（drift 即红）、构建产物文档检查
+
 ## [0.7.83] - 2026-11-18
 
 ### 「门」也有门禁：初学者照着文档能不能走通

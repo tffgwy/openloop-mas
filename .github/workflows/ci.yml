@@ -34,6 +34,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Assert the packaged documents are in step
+        # The wheel ships the onboarding documents, and the onboarding gate
+        # reads them. A drift between the repository's copy and the packaged
+        # copy would make the gate check prose nobody is shipped - so the
+        # drift fails here, before it can reach a release.
+        run: python tools/sync_packaged_docs.py --check
       - name: Run offline tests
         run: python -m unittest discover -s tests -v
       - name: Run offline demo
@@ -77,6 +83,12 @@ jobs:
         run: |
           python -m pip install twine
           python -m twine check dist/*
+      - name: Assert the wheel carries the onboarding documents
+        # The onboarding gate watches the README and the quickstart. If the
+        # wheel does not carry them, an installed runtime has nothing to
+        # watch - and the install reports a failure that says nothing at
+        # all about the beginner. So the wheel is opened and looked at.
+        run: python tools/check_wheel_docs.py dist/*.whl
       - name: Upload the artifacts
         uses: actions/upload-artifact@v4
         with:

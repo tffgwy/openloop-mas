@@ -47,15 +47,71 @@ ONBOARDING_OBSERVATIONS = (
 )
 
 
-#: The repository root, three levels up from this file.
+#: The package directory - where the documents live *inside* the wheel.
+PACKAGE_ROOT = pathlib.Path(__file__).resolve().parent
+
+#: The repository root, two levels up from this file.
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
-#: The files a newcomer reads, in the order they read them.
-DOC_FILES = ("README.md", "README.en.md", "docs/quickstart.md")
+#: Where the packaged documents are copied to.
+PACKAGED_DOCS = PACKAGE_ROOT / "docs"
+
+#: The logical documents a newcomer reads, in the order they read them.
+#:
+#: Each entry maps a logical name to the places it may live, relative
+#: to one of the two roots below. The packaged copy is searched first:
+#: it is the copy that travelled with the wheel, so it is the copy the
+#: installed runtime actually read.
+DOC_FILES = ("README.md", "README.en.md", "quickstart.md")
+
+#: logical name -> candidate paths, relative to a root.
+DOC_CANDIDATES = {
+    "README.md": ("README.md",),
+    "README.en.md": ("README.en.md",),
+    "quickstart.md": ("quickstart.md", "docs/quickstart.md"),
+}
+
+
+def _roots() -> List[pathlib.Path]:
+    """The places the documents may be, most specific first."""
+    roots = [PACKAGED_DOCS]
+    if REPO_ROOT not in roots:
+        roots.append(REPO_ROOT)
+    return roots
+
+
+def doc_path(name: str) -> pathlib.Path | None:
+    """Where the document ``name`` actually is, or None."""
+    for root in _roots():
+        for candidate in DOC_CANDIDATES.get(name, (name,)):
+            path = root / candidate
+            if path.exists():
+                return path
+    return None
 
 
 def _read(rel: str) -> str:
-    return (REPO_ROOT / rel).read_text(encoding="utf-8")
+    path = doc_path(rel)
+    if path is None:
+        raise FileNotFoundError(rel)
+    return path.read_text(encoding="utf-8")
+
+
+def docs_present() -> Dict[str, bool]:
+    """Which of the three onboarding documents are actually here.
+
+    A wheel carries the package, not the repository's prose - so the
+    documents are packaged with it. When they are missing anyway there
+    is nothing to walk, and the gate has no subject: it says so
+    instead of crying wolf.
+    """
+    return {name: doc_path(name) is not None for name in DOC_FILES}
+
+
+def missing_docs() -> List[str]:
+    """The onboarding documents that are not on disk."""
+    present = docs_present()
+    return [name for name in DOC_FILES if not present.get(name)]
 
 
 def _level_two_headings(text: str) -> List[Tuple[int, str]]:
@@ -131,18 +187,23 @@ def _onboarding_observations(root: Any) -> Dict[str, Any]:
     from mas import __version__ as running
 
     seen: Dict[str, Any] = {}
+    absent = missing_docs()
+    seen["docs_present"] = not absent
+    seen["docs_missing"] = absent
     texts: Dict[str, str] = {}
     for rel in DOC_FILES:
+        if rel in absent:
+            continue
         texts[rel] = _read(rel)
 
-    chinese = texts["README.md"]
+    chinese = texts.get("README.md", "")
     seen["readme_lines"] = len(chinese.split("\n"))
     seen["quickstart_line"] = _find_heading(chinese, "5 分钟上手")
     seen["why_line"] = _find_heading(chinese, "为什么做这个")
     seen["archaeology_line"] = _find_heading(chinese, "门禁考古")
 
     # The English README has the same shape.
-    english = texts["README.en.md"]
+    english = texts.get("README.en.md", "")
     seen["readme_en_quickstart_line"] = _find_heading(english, "5-minute quickstart")
 
     # Install options are numbered once, without a duplicate.
@@ -174,6 +235,7 @@ def _onboarding_observations(root: Any) -> Dict[str, Any]:
     head = chinese.split("\n")
     quick_at = seen["quickstart_line"]
     window = "\n".join(head[quick_at:quick_at + 40]) if quick_at >= 0 else ""
+    seen["first_path_window"] = window
     seen["first_path_has_no_key"] = (
         "MAS_API_KEY" not in window
         and "api_key" not in window.lower()
@@ -266,6 +328,7 @@ def check_a_beginner_can_walk_the_docs_and_close_a_loop(
     """
     failures: List[str] = []
     rounds = 0
+    skipped = False
     for round_index in range(max(1, int(iterations))):
         root = pathlib.Path(tempfile.mkdtemp(prefix="mas-onboarding-"))
         rounds += 1
@@ -278,6 +341,13 @@ def check_a_beginner_can_walk_the_docs_and_close_a_loop(
                     % (round_index + 1, type(exc).__name__, exc)
                 )
                 facts = {}
+            # A wheel carries the package, not the prose. With no
+            # document on disk the gate has no subject, so it reports
+            # "skipped" - it does not pretend the beginner is lost.
+            if facts.get("docs_present") is False:
+                skipped = True
+                continue
+
             verdicts = _onboarding_verdicts(facts)
             independent = _onboarding_verdicts_independent(facts)
             for label in ONBOARDING_OBSERVATIONS:
@@ -331,6 +401,7 @@ def check_a_beginner_can_walk_the_docs_and_close_a_loop(
     return {
         "name": "onboarding_path",
         "title": "初学者照着文档就能跑通",
+        "skipped": skipped,
         "invariant": (
             "上手章节在首屏而不是压在门禁考古下面；安装方式编号不重复；"
             "文档里出现的每个 mas 命令都真的存在；文档钉住的版本就是当前版本；"
