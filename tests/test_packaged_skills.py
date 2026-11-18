@@ -124,15 +124,44 @@ class CiWorkflowTest(unittest.TestCase):
         self.assertIn("name: ci-macos", self.macos)
 
     def test_the_macos_workflow_runs_the_same_checks(self):
+        # The *checks* the macOS leg runs, not the iteration counts.
+        # The count is a budget decision - see the next test - and a
+        # test that pinned it would turn every budget change into a
+        # red build, which is exactly how a build stops meaning
+        # anything.
         for step in (
             "python -m unittest discover -s tests -v",
             "python -m mas demo",
             "python -m mas bench --repeats 1",
             "python -m mas verify",
-            "python -m mas selftest --iterations 120",
+            "python -m mas selftest --iterations",
             "python -m mas doctor",
         ):
             self.assertIn(step, self.macos, step)
+
+    def test_the_macos_leg_has_room_to_finish(self):
+        # The macOS job was cancelled twice at exactly sixty minutes -
+        # the timeout - while the offline suite, the demo, the benchmark
+        # and the closure self-check had all passed. A job killed by
+        # its own clock reports "cancelled", not "failed", so it said
+        # nothing about the code and looked exactly like a cancelled
+        # runner.
+        #
+        # The budget is now larger than the hour, and the flaky gate
+        # has a job of its own so that a slow gate cannot hide the
+        # result of the suite.
+        self.assertIn("timeout-minutes: 95", self.macos)
+        self.assertIn("timeout-minutes: 90", self.macos)
+        self.assertIn("flaky:", self.macos)
+
+    def test_the_macos_flaky_gate_runs_in_its_own_job(self):
+        # The gate is a long tail on the end of the suite. Sharing one
+        # clock meant the two halves could starve each other; split,
+        # each half gets the time it needs.
+        flaky_job = self.macos.split("flaky:", 1)[1]
+        self.assertIn("python -m mas selftest --iterations", flaky_job)
+        # The suite itself must not sit in the flaky job.
+        self.assertNotIn("unittest discover", flaky_job)
 
     def test_the_macos_workflow_asks_for_one_runner(self):
         # The GitHub-hosted macOS pool is the smallest of the three, and
