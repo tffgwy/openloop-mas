@@ -65,6 +65,12 @@ COPY_FIELDS = (
     "note",
     "would_lose_count",
     "forced",
+    # The size of the change, in lines, seen from both ends: the
+    # approval says how much it changed, the undo says how much it
+    # took back. The two copies of the record have to agree on both,
+    # so the fields are copied like every other one.
+    "changed_line_count",
+    "reverted_line_count",
 )
 
 #: What the events read like, for a person.

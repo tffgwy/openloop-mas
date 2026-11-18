@@ -51,6 +51,7 @@ EXPECTED_GATE_NAMES = (
     "shadow_guard",
     "onboarding_path",
     "packaged_docs",
+    "undo_visibility",
 )
 
 

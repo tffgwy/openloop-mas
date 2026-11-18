@@ -54,6 +54,9 @@ from mas.selftest_packaged_docs import (
 from mas.selftest_shadow import (
     check_the_program_you_type_is_the_program_that_was_checked,
 )
+from mas.selftest_undo_visibility import (
+    check_an_undo_is_visible_in_the_audit,
+)
 
 #: How many times each invariant is hammered. The two historical bugs
 #: showed up roughly once in twenty and once in a few hundred calls, so
@@ -5439,6 +5442,7 @@ CHECKS = (
     check_the_program_you_type_is_the_program_that_was_checked,
     check_a_beginner_can_walk_the_docs_and_close_a_loop,
     check_the_documents_the_beginner_reads_travel_with_the_wheel,
+    check_an_undo_is_visible_in_the_audit,
 )
 
 #: How many gates the suite is expected to hold.

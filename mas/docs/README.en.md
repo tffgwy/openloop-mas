@@ -127,11 +127,11 @@ server and the skills, and finishes with an offline self-check.
 Pin a specific release instead of "the latest":
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.84
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.85
 ```
 
 ```bash
-MAS_VERSION=0.7.84 bash install.sh
+MAS_VERSION=0.7.85 bash install.sh
 ```
 
 > The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
@@ -800,11 +800,13 @@ mas verify        # real closure self-check
 mas bench         # offline benchmark
 mas files         # index the workspace: every file, its format, its facts
 mas preview FILE  # preview one file (PDF / Word / text...)
-mas drafts        # drafts waiting for a human: list / show / approve / reject / token / ticket / conflict
+mas drafts        # drafts waiting for a human: list / show / approve / reject / undo / token / ticket / conflict
 mas drafts token  # the human token: an agent cannot approve its own draft
 mas drafts ticket D-ID --token <token>  # a ticket: one draft, one use, 15 minutes
 mas status        # local state
 mas ledger        # closure ledger
+mas ledger --undone   # only the approvals that were taken back
+mas undos        # which approvals were taken back: the pairs, and how many lines
 mas report        # Markdown closure report
 mas replay        # replay a run trace
 mas export        # export the ledger as Markdown
@@ -876,9 +878,39 @@ MIT © OpenLoop MAS contributors
 
 ## Gate archaeology
 
-This project now holds **24 gates**, and every one of them grew out of a
+This project now holds **25 gates**, and every one of them grew out of a
 **real incident**. They are listed below newest first - if you just want to
 use the tool, skip this section.
+
+- **The 25th gate `undo_visibility`** - v0.7.77 made an undo put the file back
+  byte for byte, and v0.7.78 made it leave a verifiable trace. Both of those
+  are still a *stream*: a ledger is a river, one line after another. An audit
+  needs a *list*.
+  What the person at the screen actually wants is the question **"which of the
+  things I approved were wrong?"** - and until now they had to read the whole
+  ledger, pick out the undo lines, and work out by hand which approval each
+  one cancels. That is exactly the work the tool should be doing.
+  The second gap is quieter and worse. A draft that was approved, taken back
+  and approved again looks *approved* - "this was once wrong" disappears from
+  the draft's own state. The draft file holds only the newest state; the chain
+  remembers it, but nobody put it in front of the reader.
+  So there is now **`mas undos`**: it pairs every undo with the approval it
+  cancels - read off a *stack*, because an undo takes back the most recent
+  approval that is still standing, so the pairing is read, not guessed - and
+  it says **how big the change was** (the approval records
+  `changed_line_count`, the undo records `reverted_line_count`, and the two
+  ends have to agree). `mas ledger --undone` and `mas ledger --draft <id>`
+  filter down to just those rows; `mas drafts list` now says outright
+  "this draft's approval was taken back N times"; `mas audit` ends with a
+  summary of the taken-back approvals; MCP gains **`mas_undos`**, so an agent
+  asks the same question a person asks and gets the same answer.
+  Honest edges: an undo that pairs with nothing lands in `unmatched` and is
+  **not** paired with a neighbour; a record from before v0.7.85 without
+  `reverted_line_count` keeps the gap and is **not guessed at** - "not written"
+  and "zero" are two different facts and are not merged.
+  Found the same way as the rest: the pairing is changed on purpose to "always
+  pair the newest approval" (which may be an approval that happened *after*
+  the undo), and the gate has to notice.
 
 - **The 24th gate `packaged_docs`** - installing the published wheel into a
   **clean home** found a real defect: `mas selftest --only onboarding_path`

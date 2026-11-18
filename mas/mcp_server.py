@@ -104,6 +104,25 @@ TOOLS: List[Dict[str, Any]] = [
         },
     ),
     _tool(
+        "mas_undos",
+        "List the approvals that were taken back: which of the things a "
+        "human approved had to be undone, and how many lines each undo "
+        "took back.",
+        {
+            "type": "object",
+            "properties": {
+                "workspace": {
+                    "type": "string",
+                    "description": "工作区文件夹（默认本机 artifacts 目录）",
+                },
+                "draft_id": {
+                    "type": "string",
+                    "description": "只看某个草稿（可选）",
+                },
+            },
+        },
+    ),
+    _tool(
         "mas_tickets",
         "List human escalation tickets.",
         {
@@ -560,6 +579,35 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         if run_id:
             rows = [row for row in rows if row.get("run_id") == run_id]
         return {"path": str(engine.ledger.path), "entries": rows}
+
+    if name == "mas_undos":
+        # The same answer the command line gives. An agent that asks
+        # "which approvals were wrong?" gets the same list a person
+        # gets - read from the audit chain, not from the draft's own
+        # state, which cannot hold it.
+        from mas.undos import draft_history, undo_report, workspace_rows
+
+        workspace = str(arguments.get("workspace") or "").strip()
+        base = pathlib.Path(workspace).expanduser() if workspace else _workspace_base(config, "")
+        rows = workspace_rows(base)
+        draft_id = str(arguments.get("draft_id") or "").strip()
+        if draft_id:
+            history = draft_history(rows, draft_id)
+            return {
+                "workspace": str(base),
+                "draft_id": draft_id,
+                "approvals": history.get("approvals"),
+                "undos": history.get("undos"),
+                "ever_undone": history.get("ever_undone"),
+                "records": history.get("records"),
+            }
+        report = undo_report(rows)
+        return {
+            "workspace": str(base),
+            "records": report.get("records"),
+            "unmatched": report.get("unmatched"),
+            "totals": report.get("totals"),
+        }
 
     if name == "mas_tickets":
         engine = _engine(config)

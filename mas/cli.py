@@ -707,6 +707,106 @@ def cmd_audit(args: argparse.Namespace) -> int:
         return 1
     print()
     print("审计链完好：每一条记录都还是写下去时的那一条，账本副本与链一致。")
+    # The audit is not only about *whether* the record is intact. It is
+    # also about what the record says. A chain that verifies and holds
+    # three taken-back approvals is intact - and has something to say
+    # about the human's decisions.
+    from mas.undos import format_undos, undo_report
+
+    undos = undo_report(rows)
+    if undos.get("records"):
+        print()
+        print(format_undos(undos))
+    return 0
+
+
+def cmd_undos(args: argparse.Namespace) -> int:
+    """Show the approvals that were taken back.
+
+    The ledger is a river of events. This command is the list a person
+    actually wants: *which of the things I approved had to be taken
+    back, and how much did each one take back?*
+
+    It reads the decision records - the ones the audit chain and the
+    main ledger both hold - and pairs each undo with the approval it
+    cancels. Nothing is guessed: an undo with no standing approval is
+    reported as unmatched rather than paired with a neighbour.
+    """
+    from mas.undos import format_undos, undo_report
+
+    config = load_config()
+    engine = _engine(config)
+    rows = engine.ledger.entries()
+
+    workspace = str(getattr(args, "workspace", "") or "").strip()
+    explicit = bool(workspace)
+    if not workspace:
+        base = pathlib.Path(
+            os.path.expanduser(os.path.expandvars(str(config.get("state_dir") or "")))
+        ) / "artifacts"
+    else:
+        base = pathlib.Path(workspace).expanduser()
+
+    draft_id = str(getattr(args, "draft_id", "") or "").strip()
+    # The chain is the authoritative record, so it is preferred - but
+    # the ledger holds the copies, and a machine that has the ledger
+    # but no chain (an older workspace) still has the answer.
+    from mas.undos import workspace_rows
+
+    chain_rows = workspace_rows(base)
+    if chain_rows:
+        rows = chain_rows
+    report = undo_report(rows)
+
+    if draft_id:
+        from mas.undos import draft_history
+
+        history = draft_history(rows, draft_id)
+        if getattr(args, "json", False):
+            _print(
+                {
+                    "workspace": str(base),
+                    "draft_id": draft_id,
+                    "approvals": history.get("approvals"),
+                    "undos": history.get("undos"),
+                    "ever_undone": history.get("ever_undone"),
+                    "records": history.get("records"),
+                },
+                True,
+            )
+            return 0
+        print("草稿 %s：批准 %d 次，撤销 %d 次" % (
+            draft_id, history.get("approvals", 0), history.get("undos", 0)))
+        if history.get("ever_undone"):
+            print("  这个草稿的批准被撤销过 —— 这一点只保存在审计记录里。")
+            print("  （草稿自身只记最新状态，所以第二次批准后文件上又写着“approved”。）")
+        else:
+            print("  这个草稿的批准没有被撤销过。")
+        for record in history.get("records") or []:
+            print("  批准：%s → 撤销：%s" % (
+                record.get("approve_ts") or "-", record.get("undo_ts") or "-"))
+            count = record.get("reverted_line_count")
+            if isinstance(count, (int, float)):
+                print("      这次撤销让 %d 行改动退回原样" % int(count))
+        return 0
+
+    if getattr(args, "json", False):
+        _print(
+            {
+                "workspace": str(base),
+                "records": report.get("records"),
+                "unmatched": report.get("unmatched"),
+                "totals": report.get("totals"),
+            },
+            True,
+        )
+        return 0
+
+    print(format_undos(report))
+    if not explicit:
+        print()
+        print(f"  工作区：{base}")
+    print("  提示：加 --json 可以拿到原始字段（脚本用）")
     return 0
 
 
@@ -724,10 +824,47 @@ def cmd_ledger(args: argparse.Namespace) -> int:
     rows = engine.ledger.tail(args.tail)
     if args.run_id:
         rows = [row for row in rows if row.get("run_id") == args.run_id]
+    # The filters answer the questions the plain listing cannot: which
+    # approvals were taken back, and what happened to one draft. They
+    # narrow what is shown - they never change what the ledger holds.
+    undos_only = bool(getattr(args, "undone", False))
+    draft_filter = str(getattr(args, "draft", "") or "").strip()
+    if undos_only or draft_filter:
+        from mas.undos import decision_rows, pair_decisions
+
+        decisions = decision_rows(rows)
+        if undos_only:
+            records, _unmatched = pair_decisions(decisions)
+            # The undo *events* are shown, so the reader sees the same
+            # rows the ledger holds - plus the approval each one
+            # cancels, which is the point of asking.
+            undo_ids = {str(record.get("undo_seq") or "") for record in records}
+            extra: List[Dict[str, Any]] = []
+            for record in records:
+                approve_seq = str(record.get("approve_seq") or "")
+                for row in decisions:
+                    if str(row.get("seq") or "") == approve_seq:
+                        extra.append(row)
+                        break
+            rows = [
+                row
+                for row in decisions
+                if str(row.get("seq") or "") in undo_ids
+            ] + extra
+        if draft_filter:
+            rows = [
+                row
+                for row in rows
+                if str(row.get("draft_id") or "") == draft_filter
+            ]
     if args.json:
         _print({"path": str(engine.ledger.path), "entries": rows}, True)
         return 0
     if not rows:
+        if undos_only:
+            print("没有被撤销的批准：目前每一次批准都还站着。")
+            print("  想看全部记录：mas ledger")
+            return 0
         print("账本还是空的：还没有任何一次循环记录。")
         print(f"  账本文件：{engine.ledger.path}")
         print("  先跑一次：mas run --goal \"你的任务\" --criteria \"contains:关键词\"")
@@ -748,6 +885,9 @@ def cmd_ledger(args: argparse.Namespace) -> int:
             # Printing "round 0" for it would be a lie - there was no
             # round - so the line shows the file instead.
             detail = str(row.get("path") or "")
+            draft_id = str(row.get("draft_id") or "")
+            if draft_id:
+                bits.append(draft_id)
             note = str(row.get("note") or "")
             if detail:
                 bits.append(detail)
@@ -1275,6 +1415,55 @@ def _draft_clash(draft: Dict[str, Any]) -> Dict[str, Any]:
     return clash if clash.get("conflict") else {}
 
 
+def _draft_histories(
+    roots: List[pathlib.Path],
+    rows: List[Dict[str, Any]],
+) -> Dict[str, Dict[str, Any]]:
+    """What the audit record says about each draft in a list.
+
+    The draft file holds only the newest state of a draft, so it
+    cannot say "this was approved and then taken back". The audit
+    chain can. This reads the chains of the workspaces the drafts
+    live in and answers, for every draft, how often it was approved
+    and how often that approval was taken back.
+
+    A missing chain is not an error - it only means this workspace
+    has no decisions yet.
+    """
+    from mas.undos import draft_history, workspace_rows
+
+    wanted = {str(row.get("id") or "") for row in rows if row.get("id")}
+    if not wanted:
+        return {}
+    histories: Dict[str, Dict[str, Any]] = {}
+    for root in roots:
+        try:
+            chain_rows = workspace_rows(root)
+        except Exception:  # noqa: BLE001 - a broken chain must not break the listing
+            continue
+        if not chain_rows:
+            continue
+        for draft_id in wanted:
+            if draft_id in histories:
+                continue
+            history = draft_history(chain_rows, draft_id)
+            if not history.get("approvals"):
+                continue
+            records = history.get("records") or []
+            reverted = None
+            if records:
+                counts = [
+                    record.get("reverted_line_count")
+                    for record in records
+                    if isinstance(record.get("reverted_line_count"), (int, float))
+                ]
+                if counts:
+                    reverted = sum(int(count) for count in counts)
+            history["reverted_line_count"] = reverted
+            histories[draft_id] = history
+    return histories
+
+
 def cmd_drafts(args: argparse.Namespace) -> int:
     """Show the drafts of a workspace, and approve or reject them.
 
@@ -1392,7 +1581,19 @@ def cmd_drafts(args: argparse.Namespace) -> int:
 
     if action in ("", "list"):
         rows = _all_drafts(roots, getattr(args, "state", None))
+        # What the draft's own state cannot hold. A draft that was
+        # approved, taken back, and approved again is "approved" -
+        # the fact that it was once wrong is only in the audit record.
+        # The list shows it, so the reader does not have to know that
+        # a second command exists.
+        histories = _draft_histories(roots, rows)
         if getattr(args, "json", False):
+            for row in rows:
+                history = histories.get(str(row.get("id") or "")) or {}
+                row["approvals"] = history.get("approvals", 0)
+                row["undos"] = history.get("undos", 0)
+                row["ever_undone"] = bool(history.get("ever_undone"))
+                row["reverted_line_count"] = history.get("reverted_line_count")
             _print(
                 {
                     "workspace": str(base),
@@ -1418,6 +1619,23 @@ def cmd_drafts(args: argparse.Namespace) -> int:
                 print(
                     "        （已撤销：文件已退回改动前的样子，"
                     "这个草稿还在，可以再次批准）"
+                )
+            history = histories.get(str(row.get("id") or "")) or {}
+            if history.get("ever_undone"):
+                # The state says "approved"; the history says it was
+                # wrong once. Both are true, and only the second one
+                # is invisible without this line.
+                reverted = history.get("reverted_line_count")
+                size = (
+                    "，这次撤销让 %d 行改动退回原样" % int(reverted)
+                    if isinstance(reverted, (int, float))
+                    else ""
+                )
+                print(
+                    "        ⚠ 这个草稿的批准被撤销过 %d 次%s"
+                    "（文件上的状态只记最新一次）" % (
+                        int(history.get("undos") or 0), size
+                    )
                 )
             clash = _draft_clash(row)
             if clash:
@@ -2333,8 +2551,36 @@ def build_parser() -> argparse.ArgumentParser:
     ledger = sub.add_parser("ledger", help="查看闭环账本")
     ledger.add_argument("--tail", type=int, default=30)
     ledger.add_argument("--run-id")
+    ledger.add_argument(
+        "--undone",
+        action="store_true",
+        help="只看被撤销的批准（以及它们撤销掉的那次批准）",
+    )
+    ledger.add_argument(
+        "--draft",
+        default="",
+        help="只看某个草稿的记录（用草稿编号）",
+    )
     add_json(ledger)
     ledger.set_defaults(func=cmd_ledger)
+
+    undos = sub.add_parser(
+        "undos",
+        help="哪些批准被撤销过：列出被推翻的人工批准",
+    )
+    undos.add_argument(
+        "draft_id",
+        nargs="?",
+        default="",
+        help="只看某个草稿（可选）",
+    )
+    undos.add_argument(
+        "--workspace",
+        default="",
+        help="工作区文件夹（默认本机 artifacts 目录）",
+    )
+    add_json(undos)
+    undos.set_defaults(func=cmd_undos)
 
     audit = sub.add_parser(
         "audit",

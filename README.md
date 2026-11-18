@@ -105,11 +105,11 @@ bash install.sh
 想装固定版本（而不是"最新版"）：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.84
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.85
 ```
 
 ```bash
-MAS_VERSION=0.7.84 bash install.sh
+MAS_VERSION=0.7.85 bash install.sh
 ```
 
 > 脚本默认会往 `PATH` 里加一条 `~/.mas/bin`（Windows 写当前用户的注册表）。
@@ -902,6 +902,8 @@ mas verify        # 跑一次真实闭环自检
 mas bench         # 离线基准测试
 mas status        # 本机状态
 mas ledger        # 闭环账本
+mas ledger --undone   # 只看被撤销过的那几条批准
+mas undos        # 哪些批准被撤回了：配对 + 改了多少行
 mas report        # 闭环复盘报告（Markdown）
 mas replay        # 回放运行轨迹
 mas export        # 导出账本为 Markdown 表格
@@ -912,7 +914,7 @@ mas doctor        # 安装自检
 mas selftest      # 隔失门禁：重复打磈易偶发的路径（离线）
 mas files        # 索引工作区：每个文件是什么格式、能读出什么
 mas preview FILE # 预览一个文件（PDF / Word / 文本…）
-mas drafts       # 待确认的草稿：list / show / approve / reject / token / ticket / conflict
+mas drafts       # 待确认的草稿：list / show / approve / reject / undo / token / ticket / conflict
 mas drafts token # 拿人类令牌：agent 提的草稿，agent 自己批不了
 mas drafts ticket D-ID --token <令牌>  # 签一张只管一个草稿、用一次就作废、15 分钟过期的票据
 mas serve         # 以 MCP stdio 服务运行
@@ -985,8 +987,31 @@ MIT © OpenLoop MAS contributors
 
 ## 门禁考古
 
-这个项目至今有 **24 道门禁**，每一道都是从一个**真实事故**里长出来的。
+这个项目至今有 **25 道门禁**，每一道都是从一个**真实事故**里长出来的。
 下面按门禁编号倒序记录它们各自的来历 —— 如果你只想用，直接跳过这一节就好。
+
+- **第 25 项门禁 `undo_visibility`** —— v0.7.77 让**撤销**能把文件逐字节退回去，
+  v0.7.78 让它留下一条**可验证的痕迹**。但这两样都还是**流水**：
+  账本是一道河，一行一行往下走；**审计需要的是一张清单**。
+  坐在屏幕前的人真正想知道的是那句 **「我批错过的那些东西是哪几件？」**
+  —— 以前他得自己读完整本账本、挑出撤销行、再用手工判断每次撤销**盖掉的是哪一次批准**。
+  工具该干的活，不该甩给人。
+  第二处缺口更安静，也更糟：一个草稿**批准 → 撤销 → 再批准**之后，
+  它的状态是 `approved` —— **「它曾经是错的」从草稿自己的状态里消失了**。
+  草稿文件只存最新状态，链子记得，但没人把这件事**端到读者面前**。
+  现在新增 **`mas undos`**：把每一次撤销**配对**到它撤销的那次批准
+  （**按栈配对** —— 撤销撤掉的是**当时还站着的最近一次批准**，
+  配对是**读出来的**，不是猜的），并给出**改动多大**
+  （批准写 `changed_line_count`，撤销写 `reverted_line_count`，
+  两端**必须对得上**）。`mas ledger --undone` / `mas ledger --draft <编号>`
+  可以筛出专门的那几条；`mas drafts list` 现在会直接标出
+  「⚠ 这个草稿的批准被撤销过 N 次」；`mas audit` 末尾附上被撤销批准摘要；
+  MCP 多了 **`mas_undos`**，**agent 问的和人问的是同一份答案**。
+  诚实边界：**配不上的撤销进 `unmatched`，不硬配邻居**；
+  旧记录缺 `reverted_line_count` 就**保留空缺**，**不猜** ——
+  「没写」和「零」是两件事，不合并。
+  这个缝是用**反证**查出来的：故意把配对改成「永远配最新一次批准」
+  （可能是**撤销之后**才发生的批准），门禁必须报红。
 
 - **第 24 项门禁 `packaged_docs`** —— 上一轮把发布出来的 wheel 装进
   一个**干净 home** 里跑，抓到一处真缺陷：`mas selftest --only

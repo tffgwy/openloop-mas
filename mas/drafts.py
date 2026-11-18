@@ -215,6 +215,26 @@ def audit_chain(workspace: Any) -> AuditChain:
     return AuditChain(drafts_dir(workspace) / AuditChain.AUDIT_FILENAME)
 
 
+def _changed_line_count(diff: Any) -> int:
+    """How many lines a diff changes.
+
+    The undo of an approval puts the file back the way it was, so the
+    number of lines that changed is the number of lines the undo took
+    back. The ``---`` and ``+++`` header lines are not changes and are
+    not counted.
+    """
+    if not isinstance(diff, (list, tuple)):
+        return 0
+    count = 0
+    for line in diff:
+        text = str(line)
+        if text.startswith(("+++", "---")):
+            continue
+        if text.startswith(("+", "-")):
+            count += 1
+    return count
+
+
 def record_decision(
     workspace: Any,
     event: str,
@@ -667,6 +687,10 @@ def approve_draft(
         note=str(note or ""),
         would_lose_count=0,
         forced=bool(force),
+        # How many lines this approval changed. The undo of it takes
+        # exactly these lines back, so the two numbers are the same
+        # fact seen from the two ends.
+        changed_line_count=_changed_line_count(draft.get("diff")),
     )
     return draft
 
@@ -871,6 +895,11 @@ def undo_draft(
         note=str(note or ""),
         would_lose_count=lost,
         forced=bool(force),
+        # How many lines this undo took back. It is the size of the
+        # change the undo cancels - and it is written *here*, on the
+        # undo, because the question a reader asks is "how much did
+        # this take back?", not "how big was the original change?".
+        reverted_line_count=_changed_line_count(draft.get("diff")),
     )
     return draft
 
