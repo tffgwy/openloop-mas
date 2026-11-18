@@ -180,28 +180,41 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          # The newest interpreter wins. Sorting the *paths* as text
-          # would put 3.9 above 3.12, so the version is parsed out of
-          # the folder name and compared as a version.
-          $candidates = Get-ChildItem -Path "$env:RUNNER_TOOL_CACHE\windows\Python" `
-            -Include "python.exe", "python3.exe" -Recurse -ErrorAction SilentlyContinue |
-            Where-Object { $_.FullName -match '\\x64\\python3?\.exe$' }
-          $best = $null
-          $bestVersion = $null
-          foreach ($item in $candidates) {
-            if ($item.FullName -notmatch 'Python(\\d+)\\.(\\d+)\\.') { continue }
-            $version = [version]("$($Matches[1]).$($Matches[2])")
-            if ($version -lt [version]"3.10") { continue }
-            if (-not $best -or $version -gt $bestVersion) {
-              $best = $item
-              $bestVersion = $version
-            }
+          # The interpreter has to be a *native* Windows path: the
+          # installer starts it as a process, and a POSIX spelling
+          # such as /c/hostedtoolcache/... is a file name that starts
+          # with a slash, not a path this shell can run.
+          #
+          # The runner images ship an interpreter on PATH. It is asked
+          # for by name - which is what a user would do - and the tool
+          # cache is only the fallback for an image that does not.
+          $command = $null
+          foreach ($name in @('python3.exe', 'python.exe')) {
+            $found = Get-Command $name -ErrorAction SilentlyContinue |
+              Where-Object { $_.Source -and $_.Source -notmatch 'WindowsApps' } |
+              Select-Object -First 1
+            if ($found) { $command = $found; break }
           }
-          if (-not $best) {
-            Write-Output "::error::no interpreter to stage the rehearsal with"
+          $path = $null
+          if ($command) {
+            $path = $command.Source
+          } else {
+            # The fallback spells the path out itself: a file from
+            # Get-ChildItem has no Source property, and an empty path
+            # would leave the rehearsal with no material at all.
+            $cached = Get-ChildItem `
+              -Path (Join-Path $env:RUNNER_TOOL_CACHE 'windows\Python') `
+              -Filter 'python.exe' -Recurse -ErrorAction SilentlyContinue |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1
+            if ($cached) { $path = $cached.FullName }
+          }
+          if (-not $path) {
+            Write-Output '::error::no interpreter to stage the rehearsal with'
             exit 1
           }
-          "MAS_PROBE_PYTHON=$($best.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "MAS_PROBE_PYTHON=$path" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Install on a machine that has no Python (Linux)
         if: runner.os != 'Windows'
