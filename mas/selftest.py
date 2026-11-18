@@ -57,6 +57,9 @@ from mas.selftest_onboarding import (
 from mas.selftest_packaged_docs import (
     check_the_documents_the_beginner_reads_travel_with_the_wheel,
 )
+from mas.selftest_seal import (
+    check_a_closure_is_sealed_to_the_bytes_it_decided_on,
+)
 from mas.selftest_shadow import (
     check_the_program_you_type_is_the_program_that_was_checked,
 )
@@ -5451,6 +5454,7 @@ CHECKS = (
     check_an_undo_is_visible_in_the_audit,
     check_the_one_click_install_survives_a_machine_without_python,
     check_the_bootstrap_path_is_executed_and_not_just_described,
+    check_a_closure_is_sealed_to_the_bytes_it_decided_on,
 )
 
 #: How many gates the suite is expected to hold.

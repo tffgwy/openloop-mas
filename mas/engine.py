@@ -1240,6 +1240,18 @@ class LoopEngine:
                 # see everything it produced.
                 "workspace": self._run_workspace_path(),
                 "files": list(self._written_files),
+                # What this closure was decided on: the criteria, the
+                # bytes of the deliverable, the bytes of every file the
+                # run wrote and the per-criterion verdicts. Without it
+                # the verdict could only be trusted - not recomputed.
+                "seal": self._seal_closure(
+                    run_id,
+                    crits,
+                    artifact,
+                    scores,
+                    "pass" if deliverable_ok else "fail",
+                    decision,
+                ),
                 "issues": list(issues),
                 "tokens_total": int(tokens),
             },
@@ -1627,17 +1639,29 @@ class LoopEngine:
         )
 
     def _record_written(self, written: List[Dict[str, Any]]) -> None:
-        """Remember the files this run wrote, for the ledger."""
+        """Remember the files this run wrote, for the ledger.
+
+        The *length* of a file is not enough to recognise it later: two
+        files of the same length are indistinguishable, so a file that
+        was edited after the run - even to the same length - would leave
+        no trace in the ledger. The content hash is therefore booked
+        here, at the moment the file was written, and the closure seal
+        (v0.7.88) is built on top of it.
+        """
+        from mas.seal import sha256_file
+
         for row in written or []:
             if not isinstance(row, dict):
                 continue
             if not row.get("written"):
                 continue
+            absolute = str(row.get("absolute") or "")
             self._written_files.append(
                 {
                     "path": str(row.get("path") or ""),
-                    "absolute": str(row.get("absolute") or ""),
+                    "absolute": absolute,
                     "bytes": int(row.get("bytes") or 0),
+                    "sha256": sha256_file(absolute) if absolute else "",
                 }
             )
 
@@ -2105,6 +2129,54 @@ class LoopEngine:
 
 
     # --------------------------------------------------------------- helpers
+    def _seal_closure(
+        self,
+        run_id: str,
+        crits: Any,
+        artifact: str,
+        scores: Any,
+        verdict: str,
+        decision: str,
+    ) -> Dict[str, Any]:
+        """Seal the closure to the bytes it was decided on.
+
+        A verdict that cannot be recomputed is a claim, not a proof. So
+        the moment the loop decides, it books *what it decided on*: the
+        acceptance criteria in full, the hash of the deliverable's
+        bytes, the hash of every file the run wrote, and the per-
+        criterion verdicts. Afterwards ``mas seal`` can re-run the
+        machine checks against the sealed criteria and say whether the
+        closure still holds - or whether somebody edited the files
+        afterwards.
+
+        The seal is only written for a run that *decided* something. A
+        run that died on the budget ceiling has no verdict to seal, and
+        a seal for it would be a claim about nothing.
+        """
+        from mas.seal import build_seal, sha256_bytes
+
+        return build_seal(
+            run_id=str(run_id or ""),
+            criteria=[criterion.to_dict() for criterion in crits or []],
+            artifact=artifact or "",
+            artifact_sha256=sha256_bytes((artifact or "").encode("utf-8")),
+            files=list(self._written_files),
+            scores=list(scores or []),
+            verdict=str(verdict or ""),
+            decision=str(decision or ""),
+            # The workspace the machine checks actually read. This is
+            # not always the run's own folder: a handback judges the
+            # files of the run that produced the ticket, and a folder
+            # handoff judges the folder the human edited. Sealing the
+            # run's own folder instead would seal a folder that was
+            # never checked - and the recomputation would then read
+            # the wrong files and report a drift that never happened.
+            workspace=str(
+                self._check_config.get("workspace")
+                or self._run_workspace_path()
+            ),
+        )
+
     def _save_artifact(self, run_id: str, artifact: str) -> str:
         """Write the final deliverable to disk and return its path.
 
@@ -2900,6 +2972,16 @@ class LoopEngine:
                 "title": str(payload.get("title") or payload.get("goal") or ""),
                 "artifact_chars": len(artifact),
                 "files": list(self._written_files),
+                # A handback is judged by the same standards as any
+                # other closure, so it is sealed the same way.
+                "seal": self._seal_closure(
+                    run_id,
+                    crits,
+                    artifact,
+                    scores,
+                    "pass" if deliverable_ok else "fail",
+                    "handback" if status == STATUS_CLOSED else "revise",
+                ),
                 # The run that produced the ticket this handback answers.
                 # Without it the report cannot say "this attempt came
                 # after that one" - the handback looks like a run of its
@@ -3204,6 +3286,17 @@ class LoopEngine:
                 "title": str(payload.get("title") or payload.get("goal") or ""),
                 "artifact_chars": len(artifact),
                 "files": written_files,
+                # The folder handoff is judged the same way and sealed
+                # the same way - the human's files are part of what the
+                # closure decided on.
+                "seal": self._seal_closure(
+                    run_id,
+                    crits,
+                    artifact,
+                    scores,
+                    "pass" if deliverable_ok else "fail",
+                    "handback" if status == STATUS_CLOSED else "revise",
+                ),
                 "parent_ticket_id": ticket_id,
                 "handback": True,
                 "human_note": note or str(ticket.get("note") or ""),

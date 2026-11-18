@@ -39,11 +39,11 @@ bash install.sh
 固定版本（默认装最新版）：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.87
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.88
 ```
 
 ```bash
-MAS_VERSION=0.7.87 bash install.sh
+MAS_VERSION=0.7.88 bash install.sh
 ```
 
 > 下载路径是「标准库优先、`curl` 兜底」，并会读 `HTTPS_PROXY` 与
@@ -317,6 +317,36 @@ T-20261115-050450-d643  [waiting_human]  不可能达成的目标
 | `loop_escalation` | 循环自己判定改不动了（停滞） | 给点人工意见，或者放宽标准 |
 | `budget_exhausted` | 预算用完了（迭代/时间/token） | 加预算：`mas init --max-iterations 12` |
 | `run_error` | 后端挂了（provider 报错） | 修 endpoint 或换模型 |
+
+### 5.4 闭环还成立吗：`mas seal`
+
+循环闭合时会给出一个结论。**结论应该能被重算，而不是只能被相信** ——
+所以每次闭合都会把「判定时依据的东西」封进账本：完整的验收标准、
+交付物的 sha256、每一个写出的文件的 sha256、逐条判定。
+
+```bash
+mas seal                 # 复核本机账本里的每一条闭环
+mas seal --run-id R-xxx  # 只看某一次运行
+mas seal --json          # 给别的程序读
+```
+
+复核会**重读磁盘、重跑机检、拿结果和封存的判定比对**：
+
+| 复核结果 | 意思 |
+| --- | --- |
+| `holds` | 结论仍然成立 |
+| `drifted` | 文件或交付物在闭环之后被改过 |
+| `tampered` | 封存本身被改过 |
+| `missing` | 这条闭环没有封存（跑在封存这一格补上之前） |
+| `unrecomputable` | 交付物已经不在，结论**无法重算** —— 不算通过 |
+| `unknown-version` | 这份封存的格式这个版本读不懂 |
+
+**不能重算的结论不算通过。** 只由模型判定、没有机检规则的标准会被标成
+`model-judged`，如实说清哪一部分是机器算的、哪一部分是模型说的 ——
+而不是把两者一起算成「通过」。
+
+封存是一份**记录**，不是**公证**：同时改掉封存和账本的人仍然能造出一份
+能通过复核的封存。它换来的是**一次普通的事后小改动会变得可见**。
 
 ### 5.0 一个问题就是一条线
 

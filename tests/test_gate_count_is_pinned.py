@@ -54,6 +54,7 @@ EXPECTED_GATE_NAMES = (
     "undo_visibility",
     "bootstrap_path",
     "bootstrap_execution",
+    "closure_seal",
 )
 
 

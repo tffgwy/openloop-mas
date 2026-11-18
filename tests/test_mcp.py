@@ -58,6 +58,10 @@ class TestMcpServer(unittest.TestCase):
         names = [tool["name"] for tool in response["result"]["tools"]]
         for expected in ("mas_run", "mas_status", "mas_ledger", "mas_tickets", "mas_doctor"):
             self.assertIn(expected, names)
+        # The seal tool is part of the public surface: a client that
+        # can run a loop must also be able to ask whether the loop's
+        # verdict still holds.
+        self.assertIn("mas_seal", names)
 
     def test_tools_call_run(self):
         response = mcp_server.handle_message(

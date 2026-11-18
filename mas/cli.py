@@ -720,6 +720,54 @@ def cmd_audit(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_seal(args: argparse.Namespace) -> int:
+    """Check whether the closed loops still hold.
+
+    Every closure is sealed to the bytes it was decided on: the
+    acceptance criteria, the hash of the deliverable, the hash of every
+    file the run wrote. This command re-derives the verdict from that
+    sealed evidence and says whether it still holds - or whether
+    somebody edited the files after the fact.
+
+    A verdict that cannot be recomputed is a claim, not a proof, and
+    this command is where that difference becomes visible.
+    """
+    from mas.seal import seal_report
+
+    config = load_config()
+    engine = _engine(config)
+    rows = engine.ledger.entries()
+    run_id = str(getattr(args, "run_id", "") or "").strip()
+    if run_id:
+        rows = [row for row in rows if str(row.get("run_id") or "") == run_id]
+    report = seal_report(rows)
+    if getattr(args, "json", False):
+        _print(report, True)
+        return 0 if report.get("ok") else 1
+    if not report.get("sealed"):
+        print("还没有任何封存：这份账本里的循环是在封存这一格补上之前跑的。")
+        print("  新跑的循环会带上封存；想看已有的闭环：mas report")
+        return 0
+    print(f"封存 {report['sealed']} 条，其中仍然成立 {report['holds']} 条。")
+    for item in report.get("results") or []:
+        state = str(item.get("state") or "")
+        mark = "OK " if item.get("ok") else "有变化"
+        print(f"  [{mark}] {item.get('run_id')}  {state}")
+        for problem in item.get("problems") or []:
+            print(f"        - {problem}")
+        for path in item.get("drifted_files") or []:
+            print(f"        - 文件被改过：{path}")
+        for path in item.get("missing_files") or []:
+            print(f"        - 文件不在原处：{path}")
+    if report.get("ok"):
+        print()
+        print("每一份封存都还成立：判定所依据的字节没有变过，结论可以重算。")
+        return 0
+    print()
+    print("有封存不再成立：判定之后有东西被改动了，或结论已经无法重算。")
+    return 1
+
+
 def cmd_undos(args: argparse.Namespace) -> int:
     """Show the approvals that were taken back.
 
@@ -2593,6 +2641,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_json(audit)
     audit.set_defaults(func=cmd_audit)
+
+    seal = sub.add_parser(
+        "seal",
+        help="复核闭环封存：结论还能不能按当初的字节重算",
+    )
+    seal.add_argument(
+        "--run-id",
+        default="",
+        help="只检查某一次运行（默认检查全部）",
+    )
+    add_json(seal)
+    seal.set_defaults(func=cmd_seal)
 
     tickets = sub.add_parser("tickets", help="查看人工工单")
     tickets.add_argument("--state", choices=["waiting_human", "resolved"])

@@ -140,11 +140,11 @@ server and the skills, and finishes with an offline self-check.
 Pin a specific release instead of "the latest":
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.87
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.88
 ```
 
 ```bash
-MAS_VERSION=0.7.87 bash install.sh
+MAS_VERSION=0.7.88 bash install.sh
 ```
 
 > The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
@@ -891,9 +891,46 @@ MIT © OpenLoop MAS contributors
 
 ## Gate archaeology
 
-This project now holds **27 gates**, and every one of them grew out of a
+This project now holds **28 gates**, and every one of them grew out of a
 **real incident**. They are listed below newest first - if you just want to
 use the tool, skip this section.
+
+- **The 28th gate `closure_seal`** - this project has always promised
+  one thing: **the same artifact and the same standard always produce the
+  same verdict**. That promise was only half kept.
+  The ledger recorded the hash of the deliverable's *text*, but the
+  acceptance criteria lived in the engine's memory only - so a reader
+  afterwards could not recompute the verdict, they could only trust it.
+  And the files a worker wrote were recorded by *length*, not by content:
+  somebody editing a file afterwards - even to the **same length** - left
+  no trace at all, and the run still reported `closed / pass`.
+  In other words: **the closure's verdict was not nailed to the bytes it
+  was decided on.**
+  Now the loop books *what it decided on* at the moment it decides: the
+  acceptance criteria in full, the sha256 of the deliverable, the sha256
+  of every file it wrote, and the per-criterion verdicts. Afterwards
+  `mas seal` re-derives the verdict from that seal alone: it re-reads the
+  disk, re-runs the machine checks and compares the result with the
+  sealed verdict. A file that was edited afterwards is reported as
+  edited. **A verdict that cannot be recomputed is not a pass**: a
+  criterion only a model judged is reported as `model-judged` instead of
+  being quietly counted as a pass.
+  The seal is a record, not a notarisation - somebody who rewrites the
+  seal and the ledger together can still produce a seal that verifies.
+  What it buys is that an **ordinary** edit afterwards becomes visible.
+  The gate caught **two real bugs** the moment it was written: the two
+  human-deliverable paths (`handback` and `handback_workspace`) passed a
+  variable that **did not exist** while sealing - the deliverable was
+  judged, the file was written, and the run then **crashed on its way to
+  the ledger**; and the seal recorded the **run's own folder** while the
+  machine checks read the **folder the human had edited** - so the
+  recomputation read a different folder's files and reported a drift that
+  never happened. Neither was pinned by a test, because **no test ever
+  asked a human path for a seal**.
+
+  ```bash
+  mas selftest --only closure_seal
+  ```
 
 - **The 27th gate `bootstrap_execution`** - v0.7.86 wrote "install a
   Python yourself when there is none" into the installers, and added the

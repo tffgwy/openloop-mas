@@ -386,6 +386,24 @@ TOOLS: List[Dict[str, Any]] = [
         },
     ),
     _tool(
+        "mas_seal",
+        "Check whether the closed loops still hold. Every closure is "
+        "sealed to the bytes it was decided on - the acceptance criteria, "
+        "the deliverable hash, the hash of every file the run wrote. This "
+        "re-derives the verdict from that sealed evidence and reports the "
+        "drift: files edited after the fact, or a verdict that can no "
+        "longer be recomputed.",
+        {
+            "type": "object",
+            "properties": {
+                "run_id": {
+                    "type": "string",
+                    "description": "只检查某一次运行（默认检查全部）",
+                },
+            },
+        },
+    ),
+    _tool(
         "mas_preview",
         "Show what one file holds, read from the file itself: the words "
         "of a PDF or a Word document, the facts of an image or a model. "
@@ -1032,6 +1050,15 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             "files": sum(int(i.get("count") or 0) for i in indexes),
             "summaries": [format_summary(i) for i in indexes],
         }
+
+    if name == "mas_seal":
+        from mas.seal import seal_report
+
+        rows = engine.ledger.entries()
+        run_id = str(arguments.get("run_id") or "").strip()
+        if run_id:
+            rows = [row for row in rows if str(row.get("run_id") or "") == run_id]
+        return seal_report(rows)
 
     if name == "mas_preview":
         from mas.resources import preview_file
