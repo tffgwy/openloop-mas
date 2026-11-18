@@ -71,7 +71,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List, Optional
 
 from mas.bootstrap import (
     MINIMUM_PYTHON,
@@ -267,16 +267,7 @@ def _shadow_path(path_value: str) -> str:
         ]
         return os.pathsep.join(kept)
 
-    entries: List[str] = []
-    for entry in path_value.split(os.pathsep):
-        if not entry:
-            continue
-        folder = pathlib.Path(entry)
-        if _folder_holds_interpreter(folder):
-            entries.append(str(_make_shadow(folder)))
-        else:
-            entries.append(entry)
-    return os.pathsep.join(entries)
+    return _path_without_interpreters(path_value)
 
 
 def _clean_shadows() -> None:
@@ -284,6 +275,50 @@ def _clean_shadows() -> None:
     while _SHADOWS:
         shadow = _SHADOWS.pop()
         shutil.rmtree(shadow, ignore_errors=True)
+
+
+def _path_without_interpreters(
+    path_value: str, keep: Optional[Iterable[pathlib.Path]] = None
+) -> str:
+    """Return a PATH in which every interpreter is out of sight.
+
+    A folder that holds an interpreter is replaced by a shadow of
+    itself: the same folder, with every tool in it, except the
+    interpreters. Every other folder is kept exactly as it was - and
+    so is every folder named in ``keep``, which is how the rehearsal
+    leaves one interpreter in place on purpose.
+
+    The folders that hold no interpreter are the reason this helper
+    exists at all. A shadow is a *copy* of a folder, and a copy of a
+    folder that holds nothing the machine needs is pure loss. The
+    earlier version of this gate dropped every such folder from PATH
+    - and on macOS that took ``/bin`` with it, so the observation died
+    with "bash: not found" and reported a failure of the installer
+    instead of a failure of the gate.
+    """
+    kept_dirs = set()
+    for folder in keep or ():
+        try:
+            kept_dirs.add(folder.resolve())
+        except OSError:
+            kept_dirs.add(folder)
+
+    entries: List[str] = []
+    for entry in path_value.split(os.pathsep):
+        if not entry:
+            continue
+        folder = pathlib.Path(entry)
+        try:
+            same = folder.resolve() in kept_dirs
+        except OSError:
+            same = False
+        if same:
+            entries.append(entry)
+        elif _folder_holds_interpreter(folder):
+            entries.append(str(_make_shadow(folder)))
+        else:
+            entries.append(entry)
+    return os.pathsep.join(entries)
 
 
 def _rehearsal_env(home: pathlib.Path, probe: pathlib.Path, interpreter: str) -> Dict[str, str]:
@@ -418,20 +453,9 @@ def _path_only_observation(root: pathlib.Path) -> Dict[str, Any]:
     # whole folder would take the shell and the coreutils with it on a
     # Linux runner, and the observation would die of "bash: not found"
     # instead of reporting what it went out to report.
-    kept: List[str] = []
-    for entry in env.get("PATH", "").split(os.pathsep):
-        if not entry:
-            continue
-        folder = pathlib.Path(entry)
-        try:
-            same = folder.resolve() == interpreter_dir
-        except OSError:
-            same = False
-        if same:
-            kept.append(str(folder))
-        elif _folder_holds_interpreter(folder):
-            kept.append(str(_make_shadow(folder)))
-    env["PATH"] = os.pathsep.join(kept)
+    env["PATH"] = _path_without_interpreters(
+        env.get("PATH", ""), keep=(interpreter_dir,)
+    )
     if _is_windows():
         result = _run_powershell(
             _windows_installer(),

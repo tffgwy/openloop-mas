@@ -184,6 +184,82 @@ class TheShadowPathTest(unittest.TestCase):
         self.assertTrue(gate_module._folder_holds_interpreter(folder))
 
 
+class ThePathWithoutInterpretersTest(unittest.TestCase):
+    """A folder that holds no interpreter stays on the PATH.
+
+    This is the defect the macOS runner found. The observation that
+    asks "can the installer find a Python that is only on PATH?"
+    rebuilt the PATH by keeping the interpreter's own folder and
+    shadowing every *other* folder that held an interpreter - and
+    dropping every folder that held none. On macOS ``/bin`` holds no
+    Python and holds ``bash``, so the shell was dropped along with it
+    and the observation died with "bash: not found". The gate then
+    reported a failure of the installer, which was a failure of the
+    gate.
+
+    A folder with nothing to hide has no reason to be touched.
+    """
+
+    def _two_folders(self):
+        import pathlib
+        import tempfile
+
+        clean = pathlib.Path(tempfile.mkdtemp(prefix="mas-path-clean-"))
+        (clean / "bash").write_text("a shell", encoding="utf-8")
+        self.addCleanup(_remove_tree, clean)
+
+        rich = pathlib.Path(tempfile.mkdtemp(prefix="mas-path-rich-"))
+        (rich / "python3").write_text("not an interpreter", encoding="utf-8")
+        (rich / "sed").write_text("a coreutil", encoding="utf-8")
+        self.addCleanup(_remove_tree, rich)
+
+        return clean, rich
+
+    def test_a_folder_without_an_interpreter_is_kept(self):
+        import os
+
+        import mas.selftest_bootstrap_execution as gate_module
+
+        clean, rich = self._two_folders()
+        path_value = os.pathsep.join([str(clean), str(rich)])
+
+        result = gate_module._path_without_interpreters(path_value)
+
+        entries = result.split(os.pathsep)
+        self.assertIn(str(clean), entries, "the shell's folder was dropped")
+
+    def test_a_folder_with_an_interpreter_is_shadowed(self):
+        import os
+
+        import mas.selftest_bootstrap_execution as gate_module
+
+        clean, rich = self._two_folders()
+        path_value = os.pathsep.join([str(clean), str(rich)])
+
+        result = gate_module._path_without_interpreters(path_value)
+        self.addCleanup(gate_module._clean_shadows)
+
+        entries = result.split(os.pathsep)
+        self.assertNotIn(str(rich), entries, "the interpreter's folder was kept")
+        self.assertEqual(len(entries), 2)
+
+    def test_the_kept_folder_is_left_exactly_as_it_is(self):
+        import os
+
+        import mas.selftest_bootstrap_execution as gate_module
+
+        clean, rich = self._two_folders()
+        path_value = os.pathsep.join([str(clean), str(rich)])
+
+        result = gate_module._path_without_interpreters(
+            path_value, keep=(rich,)
+        )
+        self.addCleanup(gate_module._clean_shadows)
+
+        entries = result.split(os.pathsep)
+        self.assertIn(str(rich), entries, "the folder to keep was not kept")
+
+
 def _remove_tree(folder):
     """Remove a folder the test made."""
     import shutil
