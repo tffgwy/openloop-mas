@@ -24,7 +24,8 @@ param(
     [switch]$InstallDshPlugin,
     [string]$DshProfile = "desktop",
     [string]$Version = "",
-    [string]$Wheel = ""
+    [string]$Wheel = "",
+    [switch]$NoBootstrap
 )
 
 $ErrorActionPreference = "Stop"
@@ -56,28 +57,143 @@ Write-Host ""
 
 # ---------------------------------------------------------------- python
 Write-Step "Locating Python 3.10+"
+# The rules below are a *copy* of the rules in mas/bootstrap.py, and the
+# twenty-sixth gate (bootstrap_path) is what keeps the copy honest: it
+# compares the two and fails the build if they drift apart. The copy has
+# to exist: at this point in the script there may be no Python on the
+# machine at all, so the module cannot be imported yet - the module is
+# the authority for everyone *after* the interpreter exists.
+$MAS_MIN_PYTHON = "3.10"
+$MAS_BOOTSTRAP_PYTHON = "3.12.8"
+$MAS_BOOTSTRAP_URL = "https://www.python.org/ftp/python/$MAS_BOOTSTRAP_PYTHON/python-$MAS_BOOTSTRAP_PYTHON-amd64.exe"
+
+function Test-MasPython {
+    # Ask the interpreter itself what version it is. A file called
+    # `python.exe` in an odd folder is not evidence of anything.
+    param([string]$Exe)
+    if (-not $Exe) { return $false }
+    if (-not (Test-Path -LiteralPath $Exe)) { return $false }
+    try {
+        & $Exe -c "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)" 2>$null | Out-Null
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    }
+}
+
+function Get-MasVersion {
+    param([string]$Exe)
+    try {
+        return ((& $Exe -c "import sys; print('%d.%d.%d' % sys.version_info[:3])") | Out-String).Trim()
+    } catch {
+        return ""
+    }
+}
+
+function Find-MasBootstrappedPython {
+    # The per-user install lands in %LOCALAPPDATA%\Programs\Python\Python3xx
+    # and is *not* on PATH (PrependPath=0), so the interpreter has to be
+    # looked up where the installer put it. The newest version wins: a
+    # machine that already had an old Python and then got a new one
+    # should keep the new one.
+    $root = Join-Path $env:LOCALAPPDATA "Programs\Python"
+    if (-not (Test-Path -LiteralPath $root)) { return $null }
+    $best = $null
+    $bestVersion = ""
+    foreach ($dir in (Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue)) {
+        $exe = Join-Path $dir.FullName "python.exe"
+        if (-not (Test-Path -LiteralPath $exe)) { continue }
+        if (-not (Test-MasPython $exe)) { continue }
+        $version = Get-MasVersion $exe
+        if (-not $version) { continue }
+        if (-not $best) { $best = $exe; $bestVersion = $version; continue }
+        if ([version]$version -gt [version]$bestVersion) { $best = $exe; $bestVersion = $version }
+    }
+    return $best
+}
 $pythonExe = $null
 if ($Python) {
     if (Test-Path $Python) { $pythonExe = (Resolve-Path $Python).Path }
 }
 if (-not $pythonExe) {
-    $candidates = @()
     foreach ($name in @("python3", "python", "py")) {
         $cmd = Get-Command $name -ErrorAction SilentlyContinue
-        if ($cmd) { $candidates += $cmd.Source }
-    }
-    foreach ($cand in $candidates) {
-        try {
-            $probe = & $cand -c "import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)" 2>$null
-            if ($LASTEXITCODE -eq 0) { $pythonExe = $cand; break }
-        } catch { }
+        if (-not $cmd) { continue }
+        if (Test-MasPython $cmd.Source) { $pythonExe = $cmd.Source; break }
     }
 }
 if (-not $pythonExe) {
-    Write-Fail "Python 3.10+ not found. Install Python from https://www.python.org/downloads/ and re-run."
+    if ($NoBootstrap) {
+        Write-Fail "Python 3.10+ not found, and -NoBootstrap was given. Install Python from https://www.python.org/downloads/ and re-run."
+        exit 1
+    }
+    Write-Step "No Python 3.10+ on this machine - installing one for you (per-user, no admin rights needed)"
+    $tmpExe = Join-Path ([System.IO.Path]::GetTempPath()) "mas-python-$MAS_BOOTSTRAP_PYTHON-amd64.exe"
+    $downloaded = $false
+    try {
+        # Invoke-WebRequest honours the Windows system proxy. The
+        # HTTPS_PROXY environment variable is *not* read by Windows
+        # PowerShell 5.1, so it is applied explicitly as a second try:
+        # a large share of users reach the internet only through a local
+        # proxy, and a download that fails there would send the user back
+        # to the manual step this bootstrap exists to remove.
+        try {
+            Invoke-WebRequest -Uri $MAS_BOOTSTRAP_URL -OutFile $tmpExe -UseBasicParsing -ErrorAction Stop | Out-Null
+            $downloaded = $true
+        } catch {
+            if ($env:HTTPS_PROXY -or $env:https_proxy) {
+                $proxyUrl = $env:HTTPS_PROXY
+                if (-not $proxyUrl) { $proxyUrl = $env:https_proxy }
+                Write-Step "Retrying the download through the proxy at $proxyUrl"
+                Invoke-WebRequest -Uri $MAS_BOOTSTRAP_URL -OutFile $tmpExe -UseBasicParsing -Proxy $proxyUrl -ErrorAction Stop | Out-Null
+                $downloaded = $true
+            } else {
+                throw
+            }
+        }
+    } catch {
+        Write-Fail "could not download the Python installer ($MAS_BOOTSTRAP_URL): $($_.Exception.Message)"
+        Write-Fail "install Python 3.10+ from https://www.python.org/downloads/ and re-run this script"
+        exit 1
+    }
+    if ($downloaded) {
+        Write-Ok "Python installer downloaded ($([math]::Round((Get-Item $tmpExe).Length / 1KB)) KB)"
+        # Quiet, per-user, no PATH change, no launcher, no file association:
+        # the installer changes as little of the machine as it can get away
+        # with, and the interpreter is found afterwards by path - not by
+        # hoping the registry noticed.
+        $installArgs = @(
+            "/quiet",
+            "InstallAllUsers=0",
+            "PrependPath=0",
+            "Include_launcher=0",
+            "Include_test=0",
+            "Include_doc=0",
+            "AssociateFiles=0",
+            "Shortcuts=0",
+            "TargetDir=$(Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312')"
+        )
+        try {
+            $proc = Start-Process -FilePath $tmpExe -ArgumentList $installArgs -Wait -PassThru
+            if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010) {
+                Write-Warn "the Python installer exited with code $($proc.ExitCode)"
+            }
+        } catch {
+            Write-Warn "could not run the Python installer: $($_.Exception.Message)"
+        }
+        Remove-Item -LiteralPath $tmpExe -Force -ErrorAction SilentlyContinue
+        $pythonExe = Find-MasBootstrappedPython
+        if ($pythonExe) {
+            Write-Ok "Python $(Get-MasVersion $pythonExe) installed at $pythonExe"
+        }
+    }
+}
+if (-not $pythonExe) {
+    Write-Fail "Python 3.10+ is still not available on this machine."
+    Write-Fail "install it from https://www.python.org/downloads/ and re-run this script"
     exit 1
 }
-$pyVersion = & $pythonExe -c "import sys; print('%d.%d.%d' % sys.version_info[:3])"
+$pyVersion = Get-MasVersion $pythonExe
 Write-Ok "Python $pyVersion at $pythonExe"
 
 # The interpreter path is normalised to an absolute Windows path *before*

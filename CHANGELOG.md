@@ -4,6 +4,68 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.86] - 2026-11-18
+
+### 没有 Python 的机器，一键安装也走得通
+
+README 一直写着「方式一：一条脚本（跨平台，**不需要 Python 环境准备**）」，
+两个安装器也这么写着。然后两个安装器的**第一步**都是找 Python 3.10+，
+找不到就 `exit 1`。
+
+一台全新的 Windows 笔记本、一台刚装好的 Linux 机器，
+**照着 README 走，第一步就撞墙**——撞出来的还是一句
+「去官网自己装一个 Python」。
+
+讽刺的是：**这一步之后的所有事情真的都是零依赖**——
+运行时是纯标准库，wheel 是手工解开的，不用 pip、不用 git、不用编译器。
+**只有自举这一步还在要人力**，而它正是「一键」这个承诺唯一没兑现的地方。
+
+### 新模块 `mas/bootstrap.py`
+
+自举规则只有一份，就放在这里：
+
+- 最低版本 **3.10**；
+- 自举版本 **3.12.8**，**钉死**而不是 "latest"——
+  一个解析到「当前最新」的自举，是**没人改代码也会变行为**的自举；
+- 固定版本的官方下载地址（`python-3.12.8-amd64.exe`）；
+- POSIX 上**可以直接复制**的那几条命令
+  （`brew install python@3.12` / `sudo apt install python3.12` / `sudo dnf install python3.12`）；
+- 解释器版本**问它自己**，不靠文件名猜——
+  读不出版本就当作**不支持**，不放过；
+- 自举后解释器**不在 `PATH`**，所以要回
+  `%LOCALAPPDATA%\Programs\Python\*` 去找，**取最高版本**。
+
+### 两个安装器都改了
+
+- `install.ps1`：找不到 Python 时不再 `exit 1`，而是下载官方安装包、
+  **按当前用户静默安装**（`InstallAllUsers=0 PrependPath=0 Include_launcher=0`），
+  然后**在自己放的位置**把解释器找回来继续装。
+  走 `Invoke-WebRequest`，并且**显式补一次 `HTTPS_PROXY`**——
+  Windows PowerShell 5.1 不读这个环境变量。
+- `install.sh`：POSIX 上走系统包管理器
+  （Homebrew / apt-get / dnf / yum）；**装不上就如实说装不上**，
+  并给出确切命令，**不假装成功**。
+
+两个安装器都支持**拒绝自举**：`-NoBootstrap`（Windows）、
+`MAS_NO_BOOTSTRAP=1`（shell）。
+
+### 第 26 项门禁 `bootstrap_path`
+
+规则存在**三份**（模块 + 两个安装器）——安装器在需要规则的那一刻
+**可能根本没有 Python**，所以**没法 import 模块**，副本必须存在；
+于是这道门禁**专门盯这三份副本会不会漂移**。
+
+它同时用**五个反证**证明自己真的会响：
+改了 Windows 自举版本、改了 POSIX 自举系列、
+把那句「去自己装 Python」放回来、删掉拒绝开关、删掉自举路径——
+**五个都必须报红**。
+
+### 顺手修掉一个真 bug
+
+`version_tuple` 只认字符串，而 `interpreter_version` 返回的是**元组**——
+`str((3, 14, 10))` 匹配不到版本正则，于是**每一个真实解释器都被判成不支持**。
+现在元组直接透传。这个 bug 是在写新测试时被它自己抓到的。
+
 ## [0.7.85] - 2026-11-18
 
 ### 「我批错过哪些东西」得能一眼看见

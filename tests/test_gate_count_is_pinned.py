@@ -52,6 +52,7 @@ EXPECTED_GATE_NAMES = (
     "onboarding_path",
     "packaged_docs",
     "undo_visibility",
+    "bootstrap_path",
 )
 
 

@@ -122,16 +122,29 @@ bash install.sh
 The script fetches the published wheel from the GitHub release, unpacks it
 with the standard library, installs it into `~/.mas/`, registers the MCP
 server and the skills, and finishes with an offline self-check.
-**All it needs is Python 3.10+ - no git, no pip, no compiler.**
+**No git, no pip, no compiler.**
+
+**No Python on the machine yet? The script installs one.**
+
+- Windows: it downloads the official Python installer and runs it
+  **silently for the current user** (no administrator rights, no `PATH`
+  change, no py launcher), then finds the interpreter where it just put
+  it and carries on.
+- macOS / Linux: it uses the system package manager (Homebrew / apt / dnf /
+  yum) to install Python 3.12. If that fails - no `sudo`, say - it says so
+  plainly and gives you the exact command to copy.
+
+> Prefer it not to touch your machine? Pass `-NoBootstrap` (Windows) or
+> `MAS_NO_BOOTSTRAP=1` (shell) and it will only check.
 
 Pin a specific release instead of "the latest":
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.85
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.86
 ```
 
 ```bash
-MAS_VERSION=0.7.85 bash install.sh
+MAS_VERSION=0.7.86 bash install.sh
 ```
 
 > The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
@@ -878,9 +891,40 @@ MIT © OpenLoop MAS contributors
 
 ## Gate archaeology
 
-This project now holds **25 gates**, and every one of them grew out of a
+This project now holds **26 gates**, and every one of them grew out of a
 **real incident**. They are listed below newest first - if you just want to
 use the tool, skip this section.
+
+- **The 26th gate `bootstrap_path`** - this version closes a gap that was
+  written into the README itself. The README said the first install path is
+  *"one script, cross-platform, no Python environment preparation"*, and both
+  installers said the same. Then the **first thing** both installers did was
+  look for Python 3.10+ and `exit 1` when they did not find it. A brand-new
+  Windows laptop or a freshly installed Linux box **hits that wall on step
+  one**, and the wall says "go and install a Python yourself".
+  The irony is that **everything after that step really is zero-dependency**:
+  the runtime is pure standard library, the wheel is unpacked by hand, no pip,
+  no git, no compiler. **Only the bootstrap still asked for human labour.**
+  Now there is exactly one set of bootstrap rules, in `mas/bootstrap.py`:
+  the minimum version 3.10, a **pinned** bootstrap version 3.12.8 (not
+  "latest" - a bootstrap that resolves to "whatever is newest now" is a
+  bootstrap whose behaviour changes without anyone changing the code), the
+  official download URL for that exact version, and the **copy-pasteable**
+  commands for POSIX. The Windows installer downloads the official installer
+  and runs it **silently for the current user** (no administrator rights, no
+  `PATH` change), then **finds the interpreter where it just put it** -
+  because a per-user install is *not* on `PATH`, and looking nowhere would
+  mean "not found" right after installing one. The POSIX installer uses the
+  system package manager, and if that fails it **says it failed** and gives
+  the exact command - it never pretends. The user can always refuse the
+  bootstrap (`-NoBootstrap` / `MAS_NO_BOOTSTRAP=1`).
+  The rules exist in **three** copies (the module and the two installers) -
+  the installers *cannot import* the module at the moment they need the
+  rules, because at that moment the machine may have no Python at all - so
+  this gate **watches the three copies for drift**, and proves it can fail
+  with **five counter-proofs** (a changed version, a changed series, the old
+  "install it yourself" message coming back, the opt-out flag removed, the
+  bootstrap path removed - all five have to go red).
 
 - **The 25th gate `undo_visibility`** - v0.7.77 made an undo put the file back
   byte for byte, and v0.7.78 made it leave a verifiable trace. Both of those

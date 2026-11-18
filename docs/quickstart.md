@@ -39,15 +39,23 @@ bash install.sh
 固定版本（默认装最新版）：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.85
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.86
 ```
 
 ```bash
-MAS_VERSION=0.7.85 bash install.sh
+MAS_VERSION=0.7.86 bash install.sh
 ```
 
 > 下载路径是「标准库优先、`curl` 兜底」，并会读 `HTTPS_PROXY` 与
 > Windows 系统代理设置——所以在公司网络或需要代理的机器上也能直接跑。
+
+> **机器上还没有 Python？** Windows 上脚本会下载官方安装包，
+> **按当前用户静默安装**（不要管理员权限、不改 `PATH`），
+> 然后在自己放的位置把解释器找回来；
+> macOS / Linux 上会调用系统包管理器（Homebrew / apt / dnf / yum），
+> **装不上会如实告诉你**，并给出可以直接复制的那条命令。
+> 不想让它动你的机器？加 `-NoBootstrap`（Windows）或
+> `MAS_NO_BOOTSTRAP=1`（shell）。
 
 ### 1.2 从源码安装（适合开发）
 

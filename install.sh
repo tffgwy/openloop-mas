@@ -36,7 +36,50 @@ if [ -z "$PYTHON_BIN" ]; then
     fi
   done
 fi
-[ -n "$PYTHON_BIN" ] || fail "Python 3.10+ not found. Install it, then re-run this script."
+if [ -z "$PYTHON_BIN" ]; then
+  if [ "${MAS_NO_BOOTSTRAP:-0}" = "1" ]; then
+    fail "Python 3.10+ not found, and MAS_NO_BOOTSTRAP=1 was given. Install it, then re-run this script."
+  fi
+  # No interpreter. This is the step the "one-click" promise was about,
+  # so the installer tries to get one itself instead of only complaining.
+  # On POSIX the package manager does it - and it may need root, so a
+  # failure here is reported honestly with the exact command to run.
+  step "No Python 3.10+ on this machine - trying to install one"
+  if command -v brew >/dev/null 2>&1; then
+    ok "installing Python with Homebrew"
+    brew install python@3.12 || warn "brew install python@3.12 failed"
+  elif command -v apt-get >/dev/null 2>&1; then
+    ok "installing Python with apt"
+    (sudo apt-get update && sudo apt-get install -y python3.12) || warn "apt install python3.12 failed"
+  elif command -v dnf >/dev/null 2>&1; then
+    ok "installing Python with dnf"
+    (sudo dnf install -y python3.12) || warn "dnf install python3.12 failed"
+  elif command -v yum >/dev/null 2>&1; then
+    ok "installing Python with yum"
+    (sudo yum install -y python3.12) || warn "yum install python3.12 failed"
+  else
+    warn "no known package manager was found (brew / apt-get / dnf / yum)"
+  fi
+  # The package manager may have installed a version that is not on PATH
+  # yet, or may have installed nothing at all. Either way the truth is
+  # checked, not assumed.
+  for cand in python3.12 python3 python; do
+    if command -v "$cand" >/dev/null 2>&1; then
+      if "$cand" -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)' >/dev/null 2>&1; then
+        PYTHON_BIN="$(command -v "$cand")"
+        break
+      fi
+    fi
+  done
+fi
+if [ -z "$PYTHON_BIN" ]; then
+  fail "Python 3.10+ is still not available on this machine."
+  fail "install it with one of these, then re-run this script:"
+  fail "  macOS: brew install python@3.12"
+  fail "  Debian/Ubuntu: sudo apt install python3.12"
+  fail "  Fedora: sudo dnf install python3.12"
+  fail "  or download it from https://www.python.org/downloads/"
+fi
 ok "Python $("$PYTHON_BIN" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])') at $PYTHON_BIN"
 
 # The interpreter path is normalised to an absolute path *before* it is
