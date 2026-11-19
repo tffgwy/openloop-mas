@@ -55,6 +55,7 @@ EXPECTED_GATE_NAMES = (
     "bootstrap_path",
     "bootstrap_execution",
     "closure_seal",
+    "report_seal",
 )
 
 

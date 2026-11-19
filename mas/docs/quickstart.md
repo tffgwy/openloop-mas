@@ -39,11 +39,11 @@ bash install.sh
 固定版本（默认装最新版）：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.88
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.89
 ```
 
 ```bash
-MAS_VERSION=0.7.88 bash install.sh
+MAS_VERSION=0.7.89 bash install.sh
 ```
 
 > 下载路径是「标准库优先、`curl` 兜底」，并会读 `HTTPS_PROXY` 与
@@ -347,6 +347,46 @@ mas seal --json          # 给别的程序读
 
 封存是一份**记录**，不是**公证**：同时改掉封存和账本的人仍然能造出一份
 能通过复核的封存。它换来的是**一次普通的事后小改动会变得可见**。
+
+### 5.5 报告也会看见漂移
+
+不只有 `mas seal` 能看。`mas report` 是你跑完任务后真正会打开的那个屏幕，
+**它也会重算每一条封存**，并把漂移直接写在摘要表里：
+
+```bash
+mas report
+```
+
+```
+问题概览
+
+| 问题              | 状态         | 尝试 | 轮数 | 工单     | token | 来源         |
+|---------------------|--------------|-------|------|----------|-------|--------------|
+| 写一份结论        | **结论已漂移**   | 1     | 1    | `-`      | 30    | ⚠ 结论已漂移 |
+```
+
+报告顶部也会先行给出总数：
+
+```
+封存复核：1 条封存中，1 条结论已漂移（判定之后有东西被改过）
+```
+
+每个运行的详情里会写明**哪个文件被改过**。
+
+如果你在 CI 里读报告，不用去拆 Markdown —— JSON 载荷里就有复核结果：
+
+```bash
+mas report --json
+```
+
+```json
+{
+  "seal": { "sealed": 1, "holds": 0, "drifted": 1, "ok": false }
+}
+```
+
+**没有封存的运行不被报成漂移**。封存是 v0.7.88 才加的，
+就算旧闭环没有封存，它也**不是被改过的**。
 
 ### 5.0 一个问题就是一条线
 

@@ -429,6 +429,15 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             }
         )
 
+    # Does the conclusion still hold on the bytes that are on the
+    # disk now? The seal was written at the moment of the decision,
+    # and the report is read long after it. A closure that was edited
+    # afterwards is not a closure any more - but the report used to
+    # say "closed" anyway, because it never looked. The verdict was
+    # sealed; now the report re-derives it.
+    seal = _seal_of(end)
+    seal_check = _seal_state(seal, str(end.get("artifact_path") or "") if end else "")
+
     return {
         "run_id": run_id,
         "status": status,
@@ -510,6 +519,21 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             "missing": (review or {}).get("missing"),
         },
         "errors": errors,
+        # Whether the sealed conclusion still holds on the disk as it
+        # stands now. ``None`` means the run carried no seal at all -
+        # a run from before the seal existed, or one that never
+        # decided anything. That is not the same as "the conclusion
+        # drifted".
+        "seal_state": seal_check.get("state") if seal else None,
+        "seal_ok": seal_check.get("ok") if seal else None,
+        "seal_problems": list(seal_check.get("problems") or []) if seal else [],
+        "seal_drifted_files": list(seal_check.get("drifted_files") or []) if seal else [],
+        "seal_missing_files": list(seal_check.get("missing_files") or []) if seal else [],
+        "seal_recomputed": list(seal_check.get("recomputed") or []) if seal else [],
+        "seal_model_judged": list(seal_check.get("model_judged") or []) if seal else [],
+        # The seal itself, so a reader of the JSON payload can do
+        # their own checking instead of trusting the summary.
+        "seal": seal,
         # Did a human write this deliverable? A run that a person
         # finished by hand has to be distinguishable from a run the
         # machine closed on its own - the reader is looking at the
@@ -603,9 +627,80 @@ def group_threads(runs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     (str(m.get("ticket_id") or "") for m in members if m.get("ticket_id")),
                     "",
                 ),
+                # Whether the conclusion of the *last* attempt still
+                # holds on the disk. A problem is closed by its last
+                # attempt, so that is the attempt whose seal decides
+                # whether the problem is really solved - or only was.
+                "seal_state": last.get("seal_state"),
+                "seal_ok": last.get("seal_ok"),
+                "seal_drifted_files": list(last.get("seal_drifted_files") or []),
+                "seal_missing_files": list(last.get("seal_missing_files") or []),
             }
         )
     return threads
+
+
+#: The states a seal can be in, in words. A seal that does not
+#: still hold is not a detail - it is the difference between "this
+#: loop closed" and "this loop closed on bytes that are still the
+#: ones it decided on".
+SEAL_READING: Dict[str, str] = {
+    "holds": "\u7ed3\u8bba\u4ecd\u7136\u6210\u7acb",
+    "drifted": "\u7ed3\u8bba\u5df2\u6f02\u79fb",
+    "tampered": "\u5c01\u5b58\u88ab\u6539\u8fc7",
+    "missing": "\u6ca1\u6709\u5c01\u5b58",
+    "unrecomputable": "\u7ed3\u8bba\u65e0\u6cd5\u91cd\u7b97",
+    "unknown-version": "\u5c01\u5b58\u683c\u5f0f\u8fc7\u65e7",
+    "unknown": "\u672a\u77e5",
+}
+
+
+def seal_reading(state: Any) -> str:
+    """The plain reading of a seal state, or the raw value."""
+    key = str(state or "").strip()
+    if not key:
+        return ""
+    return SEAL_READING.get(key, key)
+
+
+def _seal_of(row: Dict[str, Any] | None) -> Dict[str, Any]:
+    """The seal of one ledger row, or an empty dict.
+
+    A seal is a dict, and a dict that is not a dict is not a seal.
+    """
+    seal = (row or {}).get("seal")
+    return seal if isinstance(seal, dict) else {}
+
+
+def _seal_state(seal: Dict[str, Any], artifact_path: str) -> Dict[str, Any]:
+    """Check a sealed closure against the disk as it stands now.
+
+    The report is the screen a human reads *after* the run, so it has
+    to answer the question the run answered at the time: does the
+    verdict still hold on the bytes that are on the disk now? A run
+    that closed and was then edited underneath is not a closed run any
+    more, and a report that cannot see the difference reports a
+    result that no longer exists.
+
+    The artifact text is read back from the disk, because the seal
+    was taken over the bytes that were written there - re-computing
+    the verdict against the text in the ledger would check the wrong
+    thing.
+    """
+    if not seal:
+        return {"state": "missing", "ok": False, "problems": []}
+    from mas.seal import verify_seal
+
+    artifact = None
+    if artifact_path:
+        try:
+            artifact = pathlib.Path(artifact_path).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            artifact = None
+    outcome = verify_seal(seal, artifact)
+    outcome["state"] = str(outcome.get("state") or "unknown")
+    outcome["ok"] = bool(outcome.get("ok"))
+    return outcome
 
 
 def _run_source(run: Dict[str, Any]) -> str:
@@ -617,6 +712,9 @@ def _run_source(run: Dict[str, Any]) -> str:
     credit for a person's work. The word is short enough to sit in a
     table cell and honest enough to be worth sitting there.
     """
+    seal_state = str(run.get("seal_state") or "")
+    if seal_state and seal_state != "holds":
+        return "\u26a0 \u7ed3\u8bba\u5df2\u6f02\u79fb"
     if run.get("handback"):
         return "🤝 人工交付物"
     if run.get("closed"):
@@ -626,6 +724,9 @@ def _run_source(run: Dict[str, Any]) -> str:
 
 def _thread_source(thread: Dict[str, Any]) -> str:
     """Where the answer of one problem came from, in a word."""
+    seal_state = str(thread.get("seal_state") or "")
+    if seal_state and seal_state != "holds":
+        return "\u26a0 \u7ed3\u8bba\u5df2\u6f02\u79fb"
     if thread.get("handback"):
         return "🤝 人工完成"
     if thread.get("closed"):
@@ -640,9 +741,31 @@ def build_report(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     failed_runs = [r for r in runs if not r["closed"]]
     threads = group_threads(runs)
     open_threads = [t for t in threads if not t["closed"]]
+    # The sealed conclusions, checked against the disk as it stands
+    # now. A report that says "3 closed" and does not say whether
+    # those three conclusions still hold is a report about the past
+    # pretending to be a report about the present.
+    sealed_runs = [r for r in runs if r.get("seal_state")]
+    drifted_runs = [
+        r for r in sealed_runs if str(r.get("seal_state") or "") != "holds"
+    ]
     return {
         "generated_at": now_iso(),
         "runs": runs,
+        # The seal, reconciled against the disk. A JSON consumer
+        # asks the report for the facts; the seal reconciliation is
+        # a fact about the present, so it belongs here and not only
+        # in the rendered Markdown.
+        "seal": {
+            "sealed": len(sealed_runs),
+            "holds": len(sealed_runs) - len(drifted_runs),
+            "drifted": len(drifted_runs),
+            "ok": not drifted_runs,
+            "states": {
+                str(run.get("run_id") or ""): str(run.get("seal_state") or "")
+                for run in sealed_runs
+            },
+        },
         # The problems, as opposed to the attempts. One unfinished
         # problem that was resumed three times is one open problem and
         # four runs; a report that only counts runs makes the human
@@ -660,6 +783,11 @@ def build_report(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             "entries": len(rows),
             # The spend of every run in this report.
             "tokens": sum(int(run.get("tokens") or 0) for run in runs),
+            # How many closures carry a seal, and how many of those
+            # still hold on the disk as it stands now.
+            "sealed": len(sealed_runs),
+            "seal_holds": len(sealed_runs) - len(drifted_runs),
+            "seal_drifted": len(drifted_runs),
         },
     }
 
@@ -682,6 +810,21 @@ def render_markdown(report: Dict[str, Any]) -> str:
         f"{totals.get('problems_closed', 0)} 个已解决）"
     )
     lines.append(f"总花费：{int(totals.get('tokens', 0) or 0)} token")
+    # The seal, in the headline. A report that says "1 closed" and
+    # does not say whether that conclusion still holds leaves the
+    # reader to find out the hard way.
+    sealed = int(totals.get("sealed") or 0)
+    if sealed:
+        drifted = int(totals.get("seal_drifted") or 0)
+        if drifted:
+            lines.append(
+                f"封存复核：{sealed} 条封存中，"
+                f"{drifted} 条结论已漂移（判定之后有东西被改过）"
+            )
+        else:
+            lines.append(
+                f"封存复核：{sealed} 条封存全部仍然成立"
+            )
     lines.append("")
 
     runs = report.get("runs") or []
@@ -715,6 +858,14 @@ def render_markdown(report: Dict[str, Any]) -> str:
             label = str(thread.get("title") or thread.get("goal") or thread.get("thread_id"))
             label = label.replace("|", "\\|")[:40]
             state = "已解决" if thread.get("closed") else "待处理"
+            # A problem whose conclusion was edited underneath is not
+            # solved any more - it is "solved on paper". The overview
+            # table is the first thing a reader looks at, so the drift
+            # has to be visible *there*, not only in the detail of one
+            # run.
+            seal_state = str(thread.get("seal_state") or "")
+            if seal_state and seal_state != "holds":
+                state = "结论已漂移"
             ticket = str(thread.get("ticket_id") or "-")
             # Where the answer came from. A problem closed by a
             # human is not the same as a problem the loop closed
@@ -739,6 +890,14 @@ def render_markdown(report: Dict[str, Any]) -> str:
     for run in runs:
         status = str(run.get("status") or "-")
         icon = STATUS_ICON.get(status, "-")
+        # A conclusion that no longer holds is not an "OK". The run
+        # did close at the time - that is a fact about the past -
+        # but the result on the disk today is not the one that was
+        # judged, so the table must not put a green mark next to it.
+        seal_state = str(run.get("seal_state") or "")
+        drifted = bool(seal_state) and seal_state != "holds"
+        if drifted:
+            icon = "DRF"
         # The task the run was about. A table of run ids and hashes is
         # an audit log; a table that also says what was being done is
         # a report a human can read.
@@ -751,6 +910,10 @@ def render_markdown(report: Dict[str, Any]) -> str:
         status_cell = status_text if status_text == status else (
             f"{status_text}（{status}）" if status_text else status
         )
+        if drifted:
+            status_cell = (
+                f"结论已漂移（{status_cell}）"
+            )
         decision = str(run.get("decision") or "-")
         decision_text = decision_reading(decision)
         decision_cell = decision_text if decision_text == decision else (
@@ -1011,6 +1174,33 @@ def render_markdown(report: Dict[str, Any]) -> str:
             lines.append("- 错误：")
             for error in run["errors"]:
                 lines.append(f"  - {error}")
+        # Does the conclusion still hold? The seal was taken at the
+        # moment of the decision; this is the check that says whether
+        # the bytes it was decided on are still the bytes on the disk.
+        # A closure that was edited afterwards has not closed - it has
+        # only closed on paper - and the report has to say so here,
+        # where the reader decides whether to trust the result.
+        seal_state = str(run.get("seal_state") or "")
+        if seal_state == "holds":
+            lines.append(
+                "- 封存：✓ 结论仍然成立"
+                "（判定所依据的字节没有变过）"
+            )
+        elif seal_state:
+            reading = seal_reading(seal_state)
+            lines.append(f"- 封存：⚠ **{reading}**")
+            for problem in run.get("seal_problems") or []:
+                lines.append(f"  - {problem}")
+            for path in run.get("seal_drifted_files") or []:
+                lines.append(f"  - 文件被改过：`{path}`")
+            for path in run.get("seal_missing_files") or []:
+                lines.append(f"  - 文件不在原处：`{path}`")
+            model_judged = run.get("seal_model_judged") or []
+            if model_judged:
+                lines.append(
+                    "  - 以下标准只能由模型判定，无法重算："
+                    + "、".join(f"`{cid}`" for cid in model_judged)
+                )
         lines.append("")
 
     return "\n".join(lines) + "\n"

@@ -189,7 +189,11 @@ TOOLS: List[Dict[str, Any]] = [
     ),
     _tool(
         "mas_report",
-        "Render a Markdown closure report from the run ledger.",
+        "Render a Markdown closure report from the run ledger. The report "
+        "re-derives every sealed conclusion against the files on the disk, "
+        "so a closure that was edited afterwards is reported as drifted "
+        "instead of resolved - the JSON payload carries the same "
+        "reconciliation under \"seal\".",
         {
             "type": "object",
             "properties": {

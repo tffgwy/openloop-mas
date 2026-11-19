@@ -140,11 +140,11 @@ server and the skills, and finishes with an offline self-check.
 Pin a specific release instead of "the latest":
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.88
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.89
 ```
 
 ```bash
-MAS_VERSION=0.7.88 bash install.sh
+MAS_VERSION=0.7.89 bash install.sh
 ```
 
 > The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
@@ -891,9 +891,35 @@ MIT © OpenLoop MAS contributors
 
 ## Gate archaeology
 
-This project now holds **28 gates**, and every one of them grew out of a
+This project now holds **29 gates**, and every one of them grew out of a
 **real incident**. They are listed below newest first - if you just want to
 use the tool, skip this section.
+
+- **The 29th gate `report_seal`** - v0.7.88 gave every closure a *seal*, but the report never looked at it;
+  the acceptance criteria, the deliverable's sha256, the sha256 of every
+  file the run wrote. `mas seal` can re-derive the verdict from that
+  sealed evidence and say whether it still holds.
+
+  But the report never looked at the seal. The report is the screen a
+  human actually reads - it is where "did this work?" gets answered -
+  and it went on writing "resolved" and "machine-closed" for a closure
+  whose bytes had been edited underneath. A capability that can prove
+  drift but is not consumed by the main view is a capability nobody
+  has.
+
+  The report now re-derives the seal: a problem whose conclusion was
+  edited is no longer called "resolved" but "**conclusion drifted**";
+  the run overview stops giving it a green light; the detail of the run
+  names **which file was edited**; and the JSON payload carries the
+  same reconciliation, so CI and scripts do not have to parse Markdown.
+  The gate proves it can fail: the report's seal check is broken on
+  purpose - every seal is reported as holding - and the gate has to
+  notice that it can no longer tell a healthy closure from an edited
+  one.
+
+  ```bash
+  mas selftest --only report_seal
+  ```
 
 - **The 28th gate `closure_seal`** - this project has always promised
   one thing: **the same artifact and the same standard always produce the
