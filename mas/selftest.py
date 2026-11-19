@@ -51,6 +51,9 @@ from mas.selftest_bootstrap import (
 from mas.selftest_bootstrap_execution import (
     check_the_bootstrap_path_is_executed_and_not_just_described,
 )
+from mas.selftest_isolation import (
+    check_the_selftest_leaves_the_machine_alone,
+)
 from mas.selftest_onboarding import (
     check_a_beginner_can_walk_the_docs_and_close_a_loop,
 )
@@ -3480,6 +3483,8 @@ def check_a_draft_is_approved_before_it_is_written_back(
     """
     import tempfile
 
+    from mas.isolation import state_isolation
+
     failures: List[str] = []
     rounds = max(1, int(iterations))
     for round_index in range(rounds):
@@ -3487,14 +3492,22 @@ def check_a_draft_is_approved_before_it_is_written_back(
             root = pathlib.Path(tmp)
             existing = root / "notes.txt"
             existing.write_text("the human's own words", encoding="utf-8")
-            try:
-                seen = _draft_approval_observations(root)
-            except Exception as exc:  # noqa: BLE001 - the failure is the subject
-                failures.append(
-                    "round %d: the draft layer broke: %s: %s"
-                    % (round_index + 1, type(exc).__name__, exc)
-                )
-                continue
+            # Approving a draft is a human decision, and a human
+            # decision is written into the main ledger. A test that
+            # approves a draft must not write into the ledger of the
+            # machine it runs on - otherwise ``mas selftest`` fills
+            # the user's audit trail with decisions nobody made, and
+            # ``mas report`` later reports problems that have no
+            # cause.
+            with state_isolation(root):
+                try:
+                    seen = _draft_approval_observations(root)
+                except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                    failures.append(
+                        "round %d: the draft layer broke: %s: %s"
+                        % (round_index + 1, type(exc).__name__, exc)
+                    )
+                    continue
             for label in DRAFT_APPROVAL_OBSERVATIONS:
                 if label not in seen:
                     failures.append(
@@ -3532,7 +3545,8 @@ def check_a_draft_is_approved_before_it_is_written_back(
 
             LoopEngine._apply_writes = _overwrite
             try:
-                broken = _draft_approval_observations(root)
+                with state_isolation(root):
+                    broken = _draft_approval_observations(root)
             except Exception:  # noqa: BLE001 - a crash counts as "noticed"
                 broken = {}
             finally:
@@ -4450,6 +4464,25 @@ CONFLICT_OBSERVATIONS = (
 def _conflict_observations(root: Any) -> Dict[str, bool]:
     """Watch the lost-update guard, one thing at a time.
 
+    The MCP server reads the state directory from the configuration -
+    which the environment overrides. The observation points that at a
+    directory of its own, and puts it back on the way out: a gate that
+    leaves its environment changed silently re-points every gate that
+    runs after it, which hides the next leak.
+    """
+    previous_state = os.environ.get("MAS_STATE_DIR")
+    try:
+        return _conflict_observations_inner(root)
+    finally:
+        if previous_state is None:
+            os.environ.pop("MAS_STATE_DIR", None)
+        else:
+            os.environ["MAS_STATE_DIR"] = previous_state
+
+
+def _conflict_observations_inner(root: Any) -> Dict[str, bool]:
+    """The body of the conflict observation.
+
     Two agents editing one file is the most common accident of a
     team: the second write throws the first one away without saying
     so. The guard is *optimistic* - it notices the clash and refuses,
@@ -4710,20 +4743,30 @@ def check_a_draft_never_throws_away_newer_work(
     import shutil
     import tempfile
 
+    from mas.isolation import state_isolation
+
     failures: List[str] = []
     rounds = 0
     for round_index in range(max(1, int(iterations))):
         root = pathlib.Path(tempfile.mkdtemp(prefix="mas-conflict-"))
         rounds += 1
         try:
-            try:
-                facts = _conflict_observations(root)
-            except Exception as exc:  # noqa: BLE001 - the failure is the subject
-                failures.append(
-                    "round %d: the conflict guard broke: %s: %s"
-                    % (round_index + 1, type(exc).__name__, exc)
-                )
-                continue
+            # The conflict gate approves drafts through the MCP server,
+            # and the server reads the state directory from the
+            # configuration - which the environment overrides. The
+            # observation sets that variable itself, but it never put
+            # it back: a gate that leaves its environment changed
+            # silently re-points every gate that runs after it, so a
+            # later leak goes unnoticed. The isolation puts it back.
+            with state_isolation(root):
+                try:
+                    facts = _conflict_observations(root)
+                except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                    failures.append(
+                        "round %d: the conflict guard broke: %s: %s"
+                        % (round_index + 1, type(exc).__name__, exc)
+                    )
+                    continue
             seen = _conflict_verdicts(facts)
             independent = _conflict_verdicts_independent(facts)
             for label in CONFLICT_OBSERVATIONS:
@@ -5348,20 +5391,27 @@ def check_an_approved_change_can_be_taken_back(
     import shutil
     import tempfile
 
+    from mas.isolation import state_isolation
+
     failures: List[str] = []
     rounds = 0
     for round_index in range(max(1, int(iterations))):
         root = pathlib.Path(tempfile.mkdtemp(prefix="mas-undo-"))
         rounds += 1
         try:
-            try:
-                facts = _undo_observations(root)
-            except Exception as exc:  # noqa: BLE001 - the failure is the subject
-                failures.append(
-                    "round %d: the undo broke: %s: %s"
-                    % (round_index + 1, type(exc).__name__, exc)
-                )
-                facts = {}
+            # An approval and an undo are both human decisions, and a
+            # human decision is written into the main ledger. The gate
+            # has to prove it *can* undo - but it has to do it in a
+            # ledger of its own, not in the ledger of the machine.
+            with state_isolation(root):
+                try:
+                    facts = _undo_observations(root)
+                except Exception as exc:  # noqa: BLE001 - the failure is the subject
+                    failures.append(
+                        "round %d: the undo broke: %s: %s"
+                        % (round_index + 1, type(exc).__name__, exc)
+                    )
+                    facts = {}
             verdicts = _undo_verdicts(facts)
             independent = _undo_verdicts_independent(facts)
             for label in UNDO_OBSERVATIONS:
@@ -5404,7 +5454,8 @@ def check_an_approved_change_can_be_taken_back(
                 drafts_module.undo_draft = _undo_to_the_wrong_bytes
                 broken = {}
                 try:
-                    broken = _undo_verdicts(_undo_observations(root))
+                    with state_isolation(root):
+                        broken = _undo_verdicts(_undo_observations(root))
                 except Exception:  # noqa: BLE001 - a crash counts as "noticed"
                     broken = {}
             finally:
@@ -5467,6 +5518,7 @@ CHECKS = (
     check_the_report_sees_the_drift,
     check_the_report_says_which_approvals_were_wrong,
     check_the_report_reads_the_decision_chains,
+    check_the_selftest_leaves_the_machine_alone,
 )
 
 #: How many gates the suite is expected to hold.
@@ -5482,6 +5534,26 @@ CHECKS = (
 EXPECTED_CHECKS = len(CHECKS)
 
 
+def _machine_snapshot() -> Dict[str, Any]:
+    """A picture of the state directory of the machine running the suite.
+
+    The state directory comes from the configuration, the way every
+    other part of the runtime finds it. When the environment overrides
+    it - which is what CI and the test suite do - the override is what
+    is watched, because that is where the writes would land.
+    """
+    from mas.config import load_config
+    from mas.isolation import snapshot_state
+
+    try:
+        config = load_config()
+    except Exception:  # noqa: BLE001 - a broken config is the gate's problem
+        config = {}
+    raw = str(config.get("state_dir") or "~/.mas")
+    state = pathlib.Path(os.path.expanduser(os.path.expandvars(raw)))
+    return snapshot_state(state)
+
+
 def run_selftest(
     iterations: int = DEFAULT_ITERATIONS,
     only: Optional[List[str]] = None,
@@ -5493,6 +5565,15 @@ def run_selftest(
         selected = [c for c in selected if c.__name__ in wanted or _check_name(c) in wanted]
         if not selected:
             raise ValueError("\u6ca1\u6709\u5339\u914d\u7684\u81ea\u68c0\u9879\uff1a%s" % ", ".join(sorted(wanted)))
+
+    # The suite watches the machine it runs on. A gate that writes a
+    # decision into the user's ledger is a side effect with an exit
+    # code, so the whole run is compared before and after: whatever
+    # the gates changed outside of their own temporary folders is
+    # reported, not tolerated.
+    from mas.isolation import diff_snapshots
+
+    machine_before = _machine_snapshot()
 
     results: List[Dict[str, Any]] = []
     for check in selected:
@@ -5520,12 +5601,25 @@ def run_selftest(
         results.append(row)
     failed = [row["name"] for row in results if not row.get("ok")]
     skipped = [row["name"] for row in results if row.get("skipped")]
+
+    # The machine is compared with itself. Anything the suite changed
+    # outside of its own temporary folders is named here - and it makes
+    # the suite fail, because a self-test that dirties the machine is
+    # not a self-test.
+    machine_problems = diff_snapshots(machine_before, _machine_snapshot())
+    if machine_problems:
+        failed = [*failed, "machine_state"]
+
     return {
         "ok": not failed,
         "iterations": int(iterations),
         "checks": results,
         "failed": failed,
         "skipped": skipped,
+        "machine_state": {
+            "state_dir": machine_before.get("state_dir", ""),
+            "problems": machine_problems,
+        },
         "passed": [
             row["name"]
             for row in results

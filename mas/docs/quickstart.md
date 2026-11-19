@@ -39,11 +39,11 @@ bash install.sh
 固定版本（默认装最新版）：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.91
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.92
 ```
 
 ```bash
-MAS_VERSION=0.7.91 bash install.sh
+MAS_VERSION=0.7.92 bash install.sh
 ```
 
 > 下载路径是「标准库优先、`curl` 兜底」，并会读 `HTTPS_PROXY` 与
@@ -474,6 +474,46 @@ CI 里读 JSON 载荷就行，不用拆 Markdown：
 
 **注意**：`mas report` 仍然以 0 退出 —— 报告是给人看的，
 **报警的出口是 `mas audit` 和 `mas seal`**。
+
+### 4.11 自检不会往你的账本里写东西
+
+`mas selftest` 要证明「撤销真的能把文件退回去」，
+所以它**必须真的批准一次草稿、真的撤销一次**。
+而「批准」是一次**人工决定** —— 人工决定要记进**主账本**。
+
+在 v0.7.92 之前，每跑一次自检，你的
+`~/.mas/ledgers/runs.jsonl` 就会多出几行，
+指向一个**当场就被删掉的临时目录**。
+行留下了，链没了 —— 于是 `mas report` 会报出
+**几百个审计问题**，而那几百个「批准」**是测试自己批的**。
+
+现在不会了：
+
+```bash
+mas selftest --only selftest_isolation
+```
+
+这道门禁盯三件事：
+
+- 你的账本**一行不多、一行不少**；
+- **环境变量原样还原**；
+- 自检自己的决定**仍然记在它自己的账本里**
+  （隔离不是遗忘 —— 记录要留下，只是留在测试自己的地方）。
+
+整套自检还有一道**兜底**：跑完前后对比机器的状态目录，
+任何落在临时目录之外的改动都会被点名，并**让整轮自检失败**。
+
+> 如果你在旧版本上跑过很多次自检，账本里可能还留着那些
+> 指向临时目录的旧行 —— 它们会让 `mas report` 报出并不存在的问题。
+> 一键清理（先备份，再删）：
+
+```bash
+mas clean --selftest-ledger --dry-run   # 先看会删掉多少行
+mas clean --selftest-ledger             # 真删（自动备份）
+```
+
+> 它只删“事件是草稿批准/撤销**且**工作区指向临时目录”的行，
+> 真实决定一行不动。详见 [docs/cleanup-selftest-ledger.md](cleanup-selftest-ledger.md)。
 
 ### 5.0 一个问题就是一条线
 

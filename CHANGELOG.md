@@ -4,6 +4,107 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.92] - 2026-11-19
+
+### 自检在自己检查的那台机器上留下了痕迹
+
+`mas selftest` 要证明「撤销真的能把文件退回去」，
+所以它**必须真的批准一次草稿、真的撤销一次**。
+而「批准」是一次**人工决定** —— 人工决定要记进**主账本**。
+
+问题在于：自检没有把状态目录隔离开。
+于是每跑一次自检，`~/.mas/ledgers/runs.jsonl` 就多出几行，
+指向一个**当场就被删掉的临时目录**。
+
+**行留下了，链没了。**
+
+本机实测（686 行的账本）：**485 行是自检留下的污染**，
+其中 471 行 `draft_approve`、14 行 `draft_undo`。
+于是 `mas report` 报出了 **458 个根本不存在的审计问题** ——
+那些「批准」是**测试自己批的**。
+
+一个会改变被检查对象的测试不是测试，
+是一个带退出码的副作用。
+
+### 污染链
+
+`mas.drafts.record_decision()` → `append_ledger_copy()` →
+`load_config()` → 读 `state_dir` → 写 `<state_dir>/ledgers/runs.jsonl`。
+
+环境变量 `MAS_STATE_DIR` 的优先级**高于**配置文件，
+所以隔离点就是它 —— 前提是它得被**还原**。
+
+原来的 `_conflict_observations` 设了 `MAS_STATE_DIR` 之后**没有还原**，
+反过来把后面门禁的泄漏给**遮住了**。
+所以是三处一起坏：
+
+| 门禁 | 每轮泄漏量 | 原因 |
+| --- | --- | --- |
+| `draft_approval` | +1 行 | 无 `MAS_STATE_DIR` 隔离 |
+| `undo_guard` | +7 行 | 同上 |
+| `conflict_guard` | 环境变量泄漏 | 设了不还原，掩盖了后续门禁 |
+
+### 第十个不变量
+
+> **自检不得污染被它检查的那台机器。**
+
+* 新增 `mas/isolation.py`：
+  * `state_isolation(root)` —— 上下文管理器，指向 `<root>/state`，
+    `finally` 还原原环境变量（**原本没有就 `pop` 掉**，
+    不能让后来的读者分不清「从来没设过」和「设成了默认值」）；
+  * `snapshot_state()` / `diff_snapshots()` —— 目录全文件 sha256 + 账本行数快照，
+    把「自检什么也没改」从一句**要相信的话**变成一条**能查的话**。
+* `mas/selftest.py`：三处门禁各自套上隔离；
+  `_conflict_observations` 拆成外层包装（负责设/还原）+ `_conflict_observations_inner`（原本体内）。
+* **套件级兜底**：`run_selftest()` 前后对比机器的状态目录，
+  任何落在临时目录之外的改动都会被点名，并**让整轮自检失败**。
+
+### 第 32 项门禁 `selftest_isolation`
+
+它盯三件事：
+
+* 你的账本**一行不多、一行不少**；
+* **环境变量原样还原**；
+* 自检自己的决定**仍然记在它自己的账本里**
+  —— 隔离不是遗忘，记录要留下，只是留在测试自己的地方。
+
+双读法（两种独立实现读同一件事），并且**能自证会失败**：
+把 `mas.isolation.state_isolation` 打成 `_no_isolation`，
+「机器的账本原样未动」这条观察必须翻红。
+
+### 一键清理已经留下的旧行
+
+v0.7.92 修的是**以后**。已经在旧版本上跑过很多次自检的机器，
+账本里还留着那些行。新增：
+
+```bash
+mas clean --selftest-ledger --dry-run   # 只看会删多少
+mas clean --selftest-ledger             # 真删（先自动备份）
+```
+
+它**只**删除同时满足两个条件的行：事件是 `draft_approve` / `draft_undo`，
+**且**工作区指向临时目录。真实工作区里的批准记录**一行不动**，
+读不懂的行也保留 —— 读不懂的东西不允许被销毁。
+
+清理前自动备份成 `runs.jsonl.bak-<时间戳>`，反悔改回原名即可。
+
+详见 [docs/cleanup-selftest-ledger.md](docs/cleanup-selftest-ledger.md)。
+
+### 本机账本修复
+
+* 备份：`~/.mas/ledgers/runs.jsonl.bak-20261119-202636`（637898 bytes）
+* 清理：693 → **202 行**（删掉 493 行自检污染）
+* `mas report` 恢复：`audit ok: True, chains: 0, entries: 0, problems: 0`
+
+### 验证
+
+* 逐门禁**独立子进程**扫描：31 项全部 `ok`，`LEAKS: []`
+* `mas selftest --iterations 5 --json`：32 门禁全绿，账本 202 → 202
+* `mas selftest --iterations 20 --json`：32 门禁全绿，`machine_state.problems: []`
+* 自证失败注入：注入后「机器的账本原样未动」正确翻红
+* `python -m unittest tests.test_selftest_isolation_892`：13 tests OK
+* `python -m unittest tests.test_cleanup_ledger_892`：11 tests OK
+
 ## [0.7.91] - 2026-11-19
 
 ### 复盘的主视图，也没在消费“人工决定的审计链”

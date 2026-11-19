@@ -118,11 +118,11 @@ bash install.sh
 想装固定版本（而不是"最新版"）：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.91
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.92
 ```
 
 ```bash
-MAS_VERSION=0.7.91 bash install.sh
+MAS_VERSION=0.7.92 bash install.sh
 ```
 
 > 脚本默认会往 `PATH` 里加一条 `~/.mas/bin`（Windows 写当前用户的注册表）。
@@ -925,6 +925,7 @@ mas resume ID     # 带人工意见继续
 mas teams         # 团队模板
 mas doctor        # 安装自检
 mas selftest      # 隔失门禁：重复打磈易偶发的路径（离线）
+mas clean --selftest-ledger   # 清理旧版自检留下的账本污染（先 --dry-run 看）
 mas files        # 索引工作区：每个文件是什么格式、能读出什么
 mas preview FILE # 预览一个文件（PDF / Word / 文本…）
 mas drafts       # 待确认的草稿：list / show / approve / reject / undo / token / ticket / conflict
@@ -1000,8 +1001,48 @@ MIT © OpenLoop MAS contributors
 
 ## 门禁考古
 
-这个项目至今有 **31 道门禁**，每一道都是从一个**真实事故**里长出来的。
+这个项目至今有 **32 道门禁**，每一道都是从一个**真实事故**里长出来的。
 下面按门禁编号倒序记录它们各自的来历 —— 如果你只想用，直接跳过这一节就好。
+
+- **第 32 项门禁 `selftest_isolation`** —— 自检本身也是一个程序，
+  它会**批准草稿**、**撤销**、**写文件**。
+  而「批准」是一次**人工决定**，人工决定要记进主账本。
+  于是每次跑 `mas selftest`，用户的
+  `~/.mas/ledgers/runs.jsonl` 里就会多出几行，
+  指向一个**当场就被删掉的临时目录**。
+  行留下了，链没了。
+
+  后果不是「多几行噪声」，而是**报告开始说谎**：
+  `mas report` 报出**几百个审计问题**，
+  因为账本说「人批准过什么」，链说「没有这条链」——
+  而那几百个「批准」是**测试自己批的**。
+  用户跑过一次自检，
+  这台机器就会**永远**报几百个问题，
+  而且**分不出**哪个是真问题、哪个是测试留下的。
+
+  一次会改变被测机器状态的自检，
+  不是自检，**它是一个带退出码的副作用**。
+
+  这道门禁盯三件事：
+
+  - 自检做完之后，用户账本**一行不多、一行不少**（不是「差不多」，是行数与字节都一致）；
+  - **环境变量原样还原** —— 有一道门禁把 `MAS_STATE_DIR`
+    改了却没改回去，于是它**悄悄重指向了后面所有门禁**，
+    下一个泄漏就被它盖住了；
+  - 自检自己的决定**仍然记在它自己的账本里** ——
+    如果隔离顺手把记录也丢了，
+    那几道证明「审计链有效」的门禁就等于什么都没证明。
+
+  同时给套件加了一道**兜底**：整轮跑完前后对比机器的状态目录，
+  任何落在临时目录之外的改动都会被点名，
+  并且**让整轮自检失败**。
+
+  这道门禁**自证能失败**：把隔离打坏成「什么都不隔离」，
+  门禁必须发现它已经分不出「干净的一轮」和「脏的一轮」。
+
+  ```bash
+  mas selftest --only selftest_isolation
+  ```
 
 - **第 31 项门禁 `report_audit`** —— v0.7.76 让每一次人工决定（起草、批准、撤销）
   都在工作区旁边留下一条哈希链，并在主账本里留一份副本；

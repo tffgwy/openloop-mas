@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from mas import __version__
 from mas.bench import format_bench, run_bench
+from mas.cleanup import clean_selftest_ledger
 from mas.config import load_config, load_persisted_config, save_config
 from mas.demo import run_scenarios
 from mas.doctor import format_doctor, run_doctor, summarize, verdict
@@ -2382,6 +2383,29 @@ def cmd_export(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_clean(args: argparse.Namespace) -> int:
+    """Remove the rows the old self-test left in the ledger."""
+    config = load_config()
+    state_dir = os.path.expanduser(
+        os.path.expandvars(str(config.get("state_dir") or ""))
+    )
+    dry_run = bool(getattr(args, "dry_run", False))
+    result = clean_selftest_ledger(state_dir, dry_run=dry_run)
+    if args.json:
+        _print(result, True)
+        return 0
+    message = result.get("message") or ""
+    if result.get("error"):
+        print("错误：%s" % result["error"], file=sys.stderr)
+        return 1
+    print(message)
+    if result.get("backup"):
+        print("  备份：%s" % result["backup"])
+    if not dry_run and result.get("dropped_count"):
+        print("  接下来可以跑 mas report 看看账本是不是已经干净了。")
+    return 0
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
     """Run a real closed loop and report whether it closes."""
     config = load_config()
@@ -2801,6 +2825,23 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--out", help="写入指定文件")
     add_json(export)
     export.set_defaults(func=cmd_export)
+
+    clean = sub.add_parser(
+        "clean",
+        help="清理账本里的满外行（默认只清理自检泄漏）",
+    )
+    clean.add_argument(
+        "--selftest-ledger",
+        action="store_true",
+        help="删除账本里指向临时目录的自检行（默认动作）",
+    )
+    clean.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只告诉你会删掉什么，不真的删",
+    )
+    add_json(clean)
+    clean.set_defaults(func=cmd_clean)
 
     verify = sub.add_parser("verify", help="跑一次真实闭环自检")
     add_json(verify)

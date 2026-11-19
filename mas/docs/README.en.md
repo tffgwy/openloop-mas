@@ -140,11 +140,11 @@ server and the skills, and finishes with an offline self-check.
 Pin a specific release instead of "the latest":
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.91
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.92
 ```
 
 ```bash
-MAS_VERSION=0.7.91 bash install.sh
+MAS_VERSION=0.7.92 bash install.sh
 ```
 
 > The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
@@ -828,6 +828,7 @@ mas resume ID     # continue with a human note
 mas teams         # team templates
 mas doctor        # installation self-check
 mas selftest      # the flaky-bug gate: hammer the paths that used to fail at random (offline)
+mas clean --selftest-ledger   # remove the rows the old self-test left in the ledger
 mas serve         # run as an MCP stdio server
 mas http          # run as an HTTP + SSE server
 mas relay         # OpenAI-compatible relay for clients that insist on an API key (127.0.0.1:8766)
@@ -891,9 +892,54 @@ MIT © OpenLoop MAS contributors
 
 ## Gate archaeology
 
-This project now holds **31 gates**, and every one of them grew out of a
+This project now holds **32 gates**, and every one of them grew out of a
 **real incident**. They are listed below newest first - if you just want to
 use the tool, skip this section.
+
+- **The 32nd gate `selftest_isolation`** - the self-test is a program too,
+  and it **approves drafts**, **undoes** them, **writes files**. Approving is
+  a **human decision**, and a human decision has to be written into the main
+  ledger.
+
+  So every run of `mas selftest` left rows in the user's
+  `~/.mas/ledgers/runs.jsonl` pointing at a **temporary directory that was
+  deleted a moment later**. The rows stayed. The chains they pointed at did
+  not.
+
+  The consequence was not "a few rows of noise". It was **the report began
+  to lie**: `mas report` reported **hundreds of audit problems**, because the
+  ledger said "the human approved something" and the chain said "there is no
+  such chain" - and those hundreds of approvals were **the test's own**.
+  A user who ran the self-test once was left with a machine that reported
+  hundreds of problems for ever, and **no way to tell** a real problem from
+  a leftover.
+
+  A self-test that changes the state of the machine it runs on is not a
+  self-test. **It is a side effect with an exit code.**
+
+  This gate watches three things:
+
+  - after the self-test, the user's ledger is **exactly as it was found** -
+    not "roughly the same", but the same number of rows and the same bytes;
+  - the **environment is put back** - one gate re-pointed `MAS_STATE_DIR`
+    and never put it back, which silently **re-pointed every gate that ran
+    after it**, hiding the next leak;
+  - the decisions the self-test makes are **still recorded** - in a state
+    directory of the test's own. Isolation that threw the records away would
+    be isolation by amnesia, and the gates that prove the audit trail works
+    would be proving nothing.
+
+  The suite also carries a **safety net**: the whole run compares the
+  machine's state directory before and after, so anything that changed
+  outside the temporary folders is named and **fails the whole suite**.
+
+  The gate **proves it can fail**: the isolation is broken on purpose - it
+  isolates nothing at all - and the gate has to notice that it can no longer
+  tell a clean run from a dirty one.
+
+  ```bash
+  mas selftest --only selftest_isolation
+  ```
 
 - **The 31st gate `report_audit`** - v0.7.76 made every human decision
   (the proposal, the approval, the undo) leave a hash-linked entry next to the
