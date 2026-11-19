@@ -58,6 +58,7 @@ EXPECTED_GATE_NAMES = (
     "report_seal",
     "report_undo",
     "report_audit",
+    "report_tickets",
     "selftest_isolation",
 )
 

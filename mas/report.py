@@ -10,7 +10,7 @@ from __future__ import annotations
 import pathlib
 from typing import Any, Dict, List, Optional
 
-from mas.reason_text import reason_hint, reason_text
+from mas.reason_text import continuation_command, reason_hint, reason_text
 from mas.util import now_iso
 from mas.verdict_text import (
     decision_reading,
@@ -908,8 +908,188 @@ def audit_reading(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
-def build_report(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Build the full report payload for a set of ledger rows."""
+def ticket_reading(
+    rows: List[Dict[str, Any]],
+    tickets: Optional[List[Dict[str, Any]]] = None,
+    ledger_complete: bool = True,
+) -> Dict[str, Any]:
+    """The human ticket queue, reconciled against the ledger.
+
+    The gap this closes
+    ------------------
+    `mas tickets` shows the queue and `mas status` counts it, but
+    the *report* - the screen a human reads after the fact - never
+    looked at it. A ticket is the machine's way of saying "this needs
+    a person", so a report that does not read the queue reports a
+    machine that looks busy while problems sit waiting for a human.
+
+    That is the fourth hole of the same family - after the seal in
+    v0.7.89, the taken-back approval in v0.7.90 and the decision chain
+    in v0.7.91: a capability that exists, and a main view that does
+    not consume it.
+
+    What is reconciled
+    ------------------
+    The ledger says which problem a run belonged to (`ticket_id`);
+    the queue says whether that problem is still waiting. The two are
+    read independently and then compared, so three kinds of hole can
+    be named:
+
+    * a run points at a ticket that is **not in the queue** - the
+      record of the escalation is gone;
+    * a ticket in the queue points at **no run in the ledger** - the
+      human is being asked about a problem the ledger never recorded;
+    * a ticket is still **waiting** although every run it covers
+      **closed** - the queue asks a human for work that is already
+      done.
+
+    The third one is the dangerous direction: it is the queue that
+    keeps the reader from trusting the queue.
+    """
+    queue = [t for t in (tickets or []) if isinstance(t, dict)]
+    runs = [run_summary(group["run_id"], group["rows"]) for group in group_runs(rows or [])]
+    closed_runs = {
+        str(run.get("run_id") or ""): bool(run.get("closed")) for run in runs
+    }
+    known = {str(t.get("id") or "") for t in queue if str(t.get("id") or "")}
+
+    # Which tickets the ledger talks about, and which runs cover them.
+    ledger_tickets: Dict[str, List[str]] = {}
+    for row in rows or []:
+        ticket_id = str(row.get("ticket_id") or "")
+        if not ticket_id:
+            continue
+        run_id = str(row.get("run_id") or "")
+        bucket = ledger_tickets.setdefault(ticket_id, [])
+        if run_id and run_id not in bucket:
+            bucket.append(run_id)
+
+    problems: List[str] = []
+    entries: List[Dict[str, Any]] = []
+    waiting_ids: List[str] = []
+    resolved_ids: List[str] = []
+
+    for ticket in queue:
+        ticket_id = str(ticket.get("id") or "")
+        payload = ticket.get("payload") or {}
+        state = str(ticket.get("state") or "")
+        if state == "waiting_human":
+            waiting_ids.append(ticket_id)
+        elif state == "resolved":
+            resolved_ids.append(ticket_id)
+        # The runs this ticket covers: the ones the ledger records for
+        # it, plus the ones the ticket itself remembers. A ticket that
+        # was resumed lists every attempt.
+        covered = list(ledger_tickets.get(ticket_id) or [])
+        for run_id in payload.get("runs") or []:
+            run_id = str(run_id or "")
+            if run_id and run_id not in covered:
+                covered.append(run_id)
+        if payload.get("run_id"):
+            run_id = str(payload.get("run_id") or "")
+            if run_id and run_id not in covered:
+                covered.append(run_id)
+        # Whether the problem is actually done. Only the runs that are
+        # in *this* ledger can answer that.
+        seen = [r for r in covered if r in closed_runs]
+        all_closed = bool(seen) and all(closed_runs.get(r) for r in seen)
+        reason = str(payload.get("reason") or "")
+        entries.append(
+            {
+                "id": ticket_id,
+                "kind": str(ticket.get("kind") or ""),
+                "state": state,
+                "title": str(payload.get("title") or payload.get("goal") or ""),
+                "goal": str(payload.get("goal") or ""),
+                "reason": reason,
+                "reason_text": reason_text(reason),
+                "hint": reason_hint(reason),
+                "attempts": int(payload.get("attempts") or 0),
+                "iterations_total": int(payload.get("iterations_total") or 0),
+                "runs": covered,
+                "run_count": len(covered),
+                "created_at": str(ticket.get("created_at") or ""),
+                "resolved_at": str(ticket.get("resolved_at") or ""),
+                "decision": str(ticket.get("decision") or ""),
+                "note": str(ticket.get("note") or ""),
+                "workspace": str(payload.get("workspace") or ""),
+                "closed_run_id": str(payload.get("closed_run_id") or ""),
+                # The command that continues the ticket. A ticket that
+                # is waiting and does not say what to do next is a
+                # ticket that waits for ever.
+                "continuation": continuation_command(
+                    ticket_id, reason, payload.get("budget")
+                ),
+                # Whether every attempt on this problem closed.
+                "all_closed": all_closed,
+                "in_ledger": bool(ledger_tickets.get(ticket_id)),
+            }
+        )
+
+    # A run that escalated points at a ticket. If the ticket is not in
+    # the queue, the record of the escalation is gone.
+    for ticket_id in sorted(ledger_tickets):
+        if ticket_id not in known:
+            problems.append(
+                "\u5de5\u5355 %s \u4e0d\u89c1\u4e86\uff1a\u8d26\u672c\u91cc\u8fd9\u6b21\u8fd0\u884c\u6307\u5411\u5b83\uff0c"
+                "\u4f46\u5de5\u5355\u961f\u5217\u91cc\u5df2\u7ecf\u6ca1\u6709\u5b83\u4e86" % ticket_id
+            )
+    # A ticket in the queue that the ledger never mentions: the human
+    # is being asked about a problem the ledger does not hold. The
+    # ticket may name no run at all, or name runs the ledger has
+    # never heard of - both mean the same thing: the queue is asking
+    # about work the ledger cannot account for.
+    for entry in entries:
+        if entry["in_ledger"]:
+            continue
+        if not ledger_complete:
+            continue
+        if not entry["runs"]:
+            problems.append(
+                "\u5de5\u5355 %s \u4e0d\u5728\u8d26\u672c\u91cc\uff1a\u961f\u5217\u91cc\u6709\u5b83\uff0c"
+                "\u4f46\u8d26\u672c\u91cc\u6ca1\u6709\u5b83\u5bf9\u5e94\u7684\u4efb\u4f55\u8fd0\u884c" % entry["id"]
+            )
+            continue
+        # It names runs - but none of them is in this ledger.
+        named = ", ".join(entry["runs"][:3])
+        problems.append(
+            "\u5de5\u5355 %s \u6307\u5411\u7684\u8fd0\u884c\u4e0d\u5728\u8d26\u672c\u91cc\uff1a%s\uff08\u961f\u5217\u5728\u95ee\u4e00\u4e2a"
+            "\u8d26\u672c\u4e0d\u8bb0\u5f97\u7684\u95ee\u9898\uff09" % (entry["id"], named)
+        )
+    # A ticket that is still waiting although everything it covers
+    # closed: the queue asks for work that is already done.
+    for entry in entries:
+        if entry["state"] != "waiting_human" or not entry["all_closed"]:
+            continue
+        problems.append(
+            "\u5de5\u5355 %s \u8fd8\u5728\u7b49\u4eba\u63a5\uff0c\u4f46\u5b83\u8986\u76d6\u7684\u8fd0\u884c\u5df2\u7ecf\u95ed\u73af\u4e86"
+            "\uff08\u961f\u5217\u5728\u8981\u4eba\u505a\u5df2\u7ecf\u505a\u5b8c\u7684\u4e8b\uff09" % entry["id"]
+        )
+    return {
+        "tickets": entries,
+        "ticket_count": len(entries),
+        "waiting": waiting_ids,
+        "resolved": resolved_ids,
+        "waiting_count": len(waiting_ids),
+        "resolved_count": len(resolved_ids),
+        "problems": problems,
+        "problem_count": len(problems),
+        "ok": not problems,
+    }
+
+
+def build_report(
+    rows: List[Dict[str, Any]],
+    tickets: Optional[List[Dict[str, Any]]] = None,
+    ledger_complete: bool = True,
+) -> Dict[str, Any]:
+    """Build the full report payload for a set of ledger rows.
+
+    The ticket queue is read as well when it is handed in. The ledger
+    says what the machine did; the queue says what is still waiting for
+    a person. A report that reads only the ledger cannot tell the
+    reader that a problem is sitting in the human queue.
+    """
     runs = [run_summary(run["run_id"], run["rows"]) for run in group_runs(rows)]
     closed = [r for r in runs if r["closed"]]
     failed_runs = [r for r in runs if not r["closed"]]
@@ -932,6 +1112,11 @@ def build_report(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     # if the report does not read it, a decision that *was* changed
     # quietly looks exactly like one that was not.
     audit = audit_reading(rows)
+    # The human ticket queue, and what it says that the ledger does
+    # not. A ticket is the machine's way of saying "this needs a
+    # person", so a report that never reads the queue reports a busy
+    # machine while problems wait.
+    queue = ticket_reading(rows, tickets, ledger_complete=ledger_complete)
     return {
         "generated_at": now_iso(),
         "runs": runs,
@@ -956,6 +1141,10 @@ def build_report(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         # was changed on the disk is a fact about the present, so it
         # belongs in the payload and not only in the rendered Markdown.
         "audit": audit,
+        # The human ticket queue, reconciled against the ledger. The
+        # queue is what is waiting for a person, so it belongs in the
+        # payload and not only in the rendered Markdown.
+        "tickets": queue,
         # The problems, as opposed to the attempts. One unfinished
         # problem that was resumed three times is one open problem and
         # four runs; a report that only counts runs makes the human
@@ -995,6 +1184,13 @@ def build_report(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             "audit_chains": int(audit.get("chain_count") or 0),
             "audit_entries": int(audit.get("entries") or 0),
             "audit_problems": int(audit.get("problem_count") or 0),
+            # The human queue. A report that counts the runs but never
+            # the tickets that are waiting for a person reports a
+            # machine that is busier than it is.
+            "tickets": int(queue.get("ticket_count") or 0),
+            "tickets_waiting": int(queue.get("waiting_count") or 0),
+            "tickets_resolved": int(queue.get("resolved_count") or 0),
+            "ticket_problems": int(queue.get("problem_count") or 0),
         },
     }
 
@@ -1096,6 +1292,75 @@ def _audit_section_lines(report: Dict[str, Any]) -> List[str]:
     return lines
 
 
+def _ticket_section_lines(report: Dict[str, Any]) -> List[str]:
+    """The section that names the tickets waiting for a human.
+
+    It is a section of its own because it is a different kind of fact:
+    not a run, not a problem, but a *request*. A ticket says "this
+    needs a person" - and a report that only shows runs and problems
+    leaves the reader with work that is waiting and no sign of it.
+    """
+    lines: List[str] = []
+    queue = report.get("tickets") or {}
+    entries = list(queue.get("tickets") or [])
+    problems = list(queue.get("problems") or [])
+    waiting = int(queue.get("waiting_count") or 0)
+    resolved = int(queue.get("resolved_count") or 0)
+    if not entries and not problems:
+        return lines
+    lines.append("## 人工工单")
+    lines.append("")
+    if entries:
+        lines.append(
+            "%d 张工单，其中 %d 张在等人接、%d 张已解决。"
+            "工单是机器交给人的活 —— 它必须出现在复盘里，"
+            "否则人看到的是一台忙着跑、却没人接活的机器。"
+            % (len(entries), waiting, resolved)
+        )
+        lines.append("")
+        lines.append("| 工单 | 状态 | 问题 | 原因 | 尝试 | 关联运行 | 接着干 |")
+        lines.append("|---|---|---|---|---|---|---|")
+        for entry in entries:
+            label = str(entry.get("title") or entry.get("goal") or "")
+            label = label.replace("|", "\\|")[:40]
+            state = str(entry.get("state") or "")
+            if state == "waiting_human":
+                state_text = "等人接"
+            elif state == "resolved":
+                state_text = "已解决"
+            else:
+                state_text = state or "-"
+            why = str(entry.get("reason_text") or entry.get("reason") or "")
+            why = why.replace("|", "\\|")[:60]
+            runs = entry.get("runs") or []
+            runs_text = "%d 次" % len(runs) if runs else "-"
+            command = (
+                str(entry.get("continuation") or "")
+                if state == "waiting_human"
+                else "-"
+            )
+            lines.append(
+                "| %s | %s | %s | %s | %s | %s | %s |"
+                % (
+                    entry.get("id") or "-",
+                    state_text,
+                    label or "-",
+                    why or "-",
+                    int(entry.get("attempts") or 0),
+                    runs_text,
+                    command or "-",
+                )
+            )
+        lines.append("")
+    if problems:
+        lines.append("队列和账本对不上，下面这些问题需要人看一眼：")
+        lines.append("")
+        for problem in problems:
+            lines.append("- %s" % problem)
+        lines.append("")
+    return lines
+
+
 def render_markdown(report: Dict[str, Any]) -> str:
     """Render the report as Markdown."""
     totals = report.get("totals") or {}
@@ -1114,6 +1379,15 @@ def render_markdown(report: Dict[str, Any]) -> str:
         f"{totals.get('problems_closed', 0)} 个已解决）"
     )
     lines.append(f"总花费：{int(totals.get('tokens', 0) or 0)} token")
+    # The human queue, in the headline. The report says how much the
+    # machine did; it has to say how much is still waiting for a
+    # person, or the reader thinks the machine finished everything.
+    waiting_tickets = int(totals.get("tickets_waiting") or 0)
+    if waiting_tickets:
+        lines.append(
+            "人工工单：%d 张等人接（共 %d 张）"
+            % (waiting_tickets, int(totals.get("tickets") or 0))
+        )
     # The seal, in the headline. A report that says "1 closed" and
     # does not say whether that conclusion still holds leaves the
     # reader to find out the hard way.
@@ -1186,7 +1460,10 @@ def render_markdown(report: Dict[str, Any]) -> str:
             or undos_only.get("unmatched")
             or int((report.get("totals") or {}).get("audit_chains") or 0)
             or int((report.get("totals") or {}).get("audit_problems") or 0)
+            or int((report.get("totals") or {}).get("tickets") or 0)
+            or int((report.get("totals") or {}).get("ticket_problems") or 0)
         ):
+            lines.extend(_ticket_section_lines(report))
             lines.extend(_undo_section_lines(report))
             lines.extend(_audit_section_lines(report))
             lines.append("这台机器上还没有跑过任何一次闭环，但账本里记着人工的决定。")
@@ -1244,6 +1521,7 @@ def render_markdown(report: Dict[str, Any]) -> str:
             )
         lines.append("")
 
+    lines.extend(_ticket_section_lines(report))
     lines.extend(_undo_section_lines(report))
     lines.extend(_audit_section_lines(report))
     lines.append("## 运行概览")

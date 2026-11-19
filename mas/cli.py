@@ -2201,7 +2201,21 @@ def cmd_report(args: argparse.Namespace) -> int:
     rows, missing = _rows_for_run(rows, args.run_id)
     if missing:
         return _report_missing(missing, args, None)
-    report = build_report(rows)
+    # The human ticket queue is read as well. The ledger says what
+    # the machine did; the queue says what is still waiting for a
+    # person - and a report that only reads the ledger leaves the
+    # reader with work they cannot see.
+    tickets = engine.tickets.list()
+    if args.run_id:
+        # A report about one run must not drag in the whole queue.
+        # Only the tickets this run is part of are shown.
+        wanted = {
+            str(row.get("ticket_id") or "")
+            for row in rows
+            if str(row.get("ticket_id") or "")
+        }
+        tickets = [t for t in tickets if str(t.get("id") or "") in wanted]
+    report = build_report(rows, tickets)
     markdown = render_markdown(report)
     if args.out:
         path = pathlib.Path(args.out).expanduser()

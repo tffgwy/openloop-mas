@@ -686,7 +686,7 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         run_id = arguments.get("run_id")
         if run_id:
             rows = [row for row in rows if row.get("run_id") == run_id]
-        report = build_report(rows)
+        report = build_report(rows, engine.tickets.list())
         if arguments.get("as_markdown", True):
             return {"markdown": render_markdown(report), "totals": report["totals"]}
         return report

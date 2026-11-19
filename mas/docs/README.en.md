@@ -140,11 +140,11 @@ server and the skills, and finishes with an offline self-check.
 Pin a specific release instead of "the latest":
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.92
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.93
 ```
 
 ```bash
-MAS_VERSION=0.7.92 bash install.sh
+MAS_VERSION=0.7.93 bash install.sh
 ```
 
 > The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
@@ -939,6 +939,48 @@ use the tool, skip this section.
 
   ```bash
   mas selftest --only selftest_isolation
+  ```
+
+- **The 33rd gate `report_tickets`** - the engine opens a **human ticket**
+  whenever a loop cannot close itself; `mas tickets` shows the queue and
+  `mas status` counts it. But **`mas report` never looked at it** -
+  `mas/report.py` reads the ledger and nothing else, and the ledger only
+  remembers *that* a run escalated, not **whether the problem is still
+  waiting for a person**.
+
+  The consequence is concrete: three tickets sit in the human queue, and
+  the report reads like a machine that **already finished its work** - three
+  runs, one closure, a 33% closure rate, every number green, and not one
+  word about the three things a person still has to do. A capability that
+  lets a human see *which work is waiting*, but is not consumed by the
+  main view, is a capability nobody has. This is the **fourth hole of the
+  same family**: v0.7.89 was the report not looking at the seal, v0.7.90
+  the report not looking at the undo, v0.7.91 the report not looking at the
+  audit chain, v0.7.93 the report not looking at the ticket queue.
+
+  The report now says it: a headline line reads "N tickets waiting for a
+  person (M in total)"; a section of its own - "human tickets" - names
+  **the ticket id**, **the state**, **what the problem is**, **why it
+  stopped** (read as a sentence, not the engine's
+  `budget: reached max_iterations=3`), **how many attempts** it took,
+  **which runs** belong to it, and **the continuation command you can
+  paste**; and the JSON payload carries the same numbers, so CI and
+  scripts never have to parse Markdown.
+
+  More important, the **queue and the ledger check each other**, and all
+  three kinds of gap are named: a ticket the ledger points at that is **not
+  in the queue** (the escalation record is gone), a ticket in the queue the
+  **ledger never mentions** (a human is being asked about a problem the
+  ledger does not hold), and a ticket that **is still waiting** although
+  **every run it covers closed** (the queue is asking for work that is
+  already done).
+
+  The gate proves it can fail: the report's ticket reading is broken on
+  purpose - the queue is reported as empty - and the gate has to notice
+  that it can no longer tell a waiting ticket from no ticket at all.
+
+  ```bash
+  mas selftest --only report_tickets
   ```
 
 - **The 31st gate `report_audit`** - v0.7.76 made every human decision

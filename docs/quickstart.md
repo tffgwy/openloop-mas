@@ -39,11 +39,11 @@ bash install.sh
 固定版本（默认装最新版）：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.92
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.93
 ```
 
 ```bash
-MAS_VERSION=0.7.92 bash install.sh
+MAS_VERSION=0.7.93 bash install.sh
 ```
 
 > 下载路径是「标准库优先、`curl` 兜底」，并会读 `HTTPS_PROXY` 与
@@ -481,7 +481,7 @@ CI 里读 JSON 载荷就行，不用拆 Markdown：
 所以它**必须真的批准一次草稿、真的撤销一次**。
 而「批准」是一次**人工决定** —— 人工决定要记进**主账本**。
 
-在 v0.7.92 之前，每跑一次自检，你的
+在 v0.7.93 之前，每跑一次自检，你的
 `~/.mas/ledgers/runs.jsonl` 就会多出几行，
 指向一个**当场就被删掉的临时目录**。
 行留下了，链没了 —— 于是 `mas report` 会报出

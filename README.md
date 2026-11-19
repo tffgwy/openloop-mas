@@ -118,11 +118,11 @@ bash install.sh
 想装固定版本（而不是"最新版"）：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.92
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.93
 ```
 
 ```bash
-MAS_VERSION=0.7.92 bash install.sh
+MAS_VERSION=0.7.93 bash install.sh
 ```
 
 > 脚本默认会往 `PATH` 里加一条 `~/.mas/bin`（Windows 写当前用户的注册表）。
@@ -1042,6 +1042,39 @@ MIT © OpenLoop MAS contributors
 
   ```bash
   mas selftest --only selftest_isolation
+  ```
+
+- **第 33 项门禁 `report_tickets`** —— 引擎在循环闭不上的时候会**开一张人工工单**，
+  `mas tickets` 展示队列，`mas status` 统计队列。
+  但 **`mas report` 从来没看过它** ——
+  `mas/report.py` 只读账本，而账本只记得「这次运行升级了」，
+  **不记得这个问题是不是还在等人**。
+  结果很具体：三张工单躺在人工队列里，
+  复盘报告读起来像一台**已经干完活**的机器 ——
+  运行 3 次、闭环 1 次、闭环率 33%，数字全绿，
+  没有一个字提到还有三件事要人做。
+  **能让人看见「哪些活等着人」的能力，却没有被主视图消费** ——
+  那就等于没有。这是**同型洞的第四个**：
+  v0.7.89 是报告不看封存，v0.7.90 是报告不看撤销，
+  v0.7.91 是报告不看审计链，v0.7.93 是报告不看工单队列。
+  现在报告会把它说出来：
+  顶部一行说「人工工单：N 张等人接（共 M 张）」；
+  报告里新增一节「人工工单」，逐条点名**工单号**、**状态**、
+  **是什么问题**、**为什么停**（读成人话，不是引擎的
+  `budget: reached max_iterations=3`）、**试了几次**、
+  **关联哪些运行**，以及**能直接粘的续跑命令**；
+  JSON 载荷里也带上了这组数字，CI 和脚本不用拆 Markdown。
+  更要紧的是**队列和账本互相核对**，三种缺口都会点名：
+  账本指向的工单**不在队列里**（升级记录没了）、
+  队列里的工单**账本不记得**（人在被问一个账本没有的问题）、
+  工单**还在等人**但它覆盖的运行**全部闭环**
+  （队列在要人做已经做完的事）。
+  这道门禁**自证能失败**：把报告的工单读数打坏成
+  「队列是空的」，门禁必须发现它已经分不出
+  「有工单在等人」和「没有工单」。
+
+  ```bash
+  mas selftest --only report_tickets
   ```
 
 - **第 31 项门禁 `report_audit`** —— v0.7.76 让每一次人工决定（起草、批准、撤销）

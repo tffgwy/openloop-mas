@@ -66,6 +66,9 @@ from mas.selftest_report_audit import (
 from mas.selftest_report_seal import (
     check_the_report_sees_the_drift,
 )
+from mas.selftest_report_tickets import (
+    check_the_report_reads_the_human_tickets,
+)
 from mas.selftest_report_undo import (
     check_the_report_says_which_approvals_were_wrong,
 )
@@ -5518,6 +5521,7 @@ CHECKS = (
     check_the_report_sees_the_drift,
     check_the_report_says_which_approvals_were_wrong,
     check_the_report_reads_the_decision_chains,
+    check_the_report_reads_the_human_tickets,
     check_the_selftest_leaves_the_machine_alone,
 )
 
