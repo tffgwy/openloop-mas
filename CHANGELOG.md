@@ -4,6 +4,69 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.91] - 2026-11-19
+
+### 复盘的主视图，也没在消费“人工决定的审计链”
+
+v0.7.76 让每一次人工决定（起草、批准、撤销）都在工作区旁边
+留下一条哈希链，并在主账本里留一份副本。
+`mas audit` 能查这些链，`mas status` 会把结果显示出来。
+
+但 `mas report` **从来没看过它们**。
+翻遍 `mas/report.py`，`import` 里连 `mas.audit` 都没有 ——
+报告是复盘时人真正会看的那个屏幕，
+而它对“决策记录在磁盘上被改过”这件事**完全沉默**。
+
+后果很具体：账本行写着「已批准」，链里写着另一回事，
+报告两边都不说。**能证明记录被篡改的能力，
+却没有被主视图消费** —— 那就等于没有。
+这是**同型洞的第三个**：v0.7.89 是报告不看封存，
+v0.7.90 是报告不看撤销，v0.7.91 是报告不看审计链。
+
+### 第 31 项门禁 `report_audit`
+
+报告现在说得出这件事：
+
+* **顶部一行**：「审计链复核：N 条链、M 条记录，K 个问题」
+  —— 没有问题时是「全部完好」。
+* **单独一节**「审计链复核」：逐条点名**哪个链**、
+  **哪一条记录被改过**、**哪条链整个不见了**。
+* **JSON 载荷**：顶层多出 `audit: {workspaces, chains, chain_count,
+  entries, problems, problem_count, ok}`，totals 里多出
+  `audit_chains` / `audit_entries` / `audit_problems`。
+
+### 报告怎么找到要查的链
+
+**从账本行自己反推，而不是猜目录。**
+每一行带着 `workspace` 字段的记录都知道自己属于哪个工作区，
+报告就查**写下那些决定的那几条链** —— 不多不少。
+`mas status` 是猜 `<state_dir>/artifacts` 的；
+报告若也这么猜，就会漏掉那些自带工作区的运行，
+也会去读不属于任何人的链。**报告比 status 更精确。**
+
+### 链整个不见了，怎么发现
+
+一条被**整体删掉**的链，读它是读不出问题的 ——
+没有内容可读。但**账本里还留着那个决定**，
+所以报告会把「账本记着 N 条人工决定，审计链不见了」
+当成一个**记录缺口**点出来。
+**缺失也必须被说出来**，否则删链就成了最省事的掩盖办法。
+
+### 报告的退出码语义不变
+
+`mas report` 仍然以 0 退出 ——
+报告是给人看的，**报警的出口是 `mas audit` 和 `mas seal`**。
+这与 v0.7.89 / v0.7.90 的既定做法一致：
+主视图说清楚，专用命令负责失败。
+
+### 验证
+
+* `mas selftest --only report_audit --iterations 5` → 通过
+* 破坏注入实验（把 `audit_reading` 打成恒「完好」的桩）→
+  5 条观察全部翻红，门禁**如实失败**
+* `python -m unittest discover -s tests` → 全绿
+* `ruff check .` → All checks passed
+
 ## [0.7.90] - 2026-11-19
 
 ### 复盘的主视图，也一直没在消费“被撤销的批准”

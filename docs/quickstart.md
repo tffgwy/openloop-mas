@@ -39,11 +39,11 @@ bash install.sh
 固定版本（默认装最新版）：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.90
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.91
 ```
 
 ```bash
-MAS_VERSION=0.7.90 bash install.sh
+MAS_VERSION=0.7.91 bash install.sh
 ```
 
 > 下载路径是「标准库优先、`curl` 兜底」，并会读 `HTTPS_PROXY` 与
@@ -433,6 +433,47 @@ mas report --json
 
 **只有人工决定、还没有任何一次运行的账本，不会被写成「账本为空」。**
 那句话是假的：账本里满是错批准。
+
+### 4.10 报告里能看见「决策记录有没有被改过」
+
+每一次人工决定（起草、批准、撤销）都会在工作区旁边留下一条
+**哈希相连**的记录，账本里另存一份副本。
+`mas audit` 能查它们，而 `mas report` 现在也会**把它们读进复盘主视图**：
+
+```text
+审计链复核：1 条链、4 条记录全部完好
+```
+
+如果有人改过链里的一条记录，或者把整条链删掉了，
+报告会**点名说出来**：
+
+```text
+审计链复核：1 条链、3 条记录，3 个问题（人工决定的记录不可信）
+
+## 审计链复核
+
+- ...\.mas-drafts\audit.jsonl: 第 2 条的内容被改过
+- ...\.mas-drafts\audit.jsonl: 账本与审计链不一致：D-abc 的 note
+- 工作区 ... 的账本记着 2 条人工决定，但审计链不见了
+```
+
+**链被整个删掉也会被发现**：删掉的链读出来是空的，
+但账本里还留着那个决定 —— 报告会把这件事当成**记录缺口**点出来。
+
+CI 里读 JSON 载荷就行，不用拆 Markdown：
+
+```json
+{
+  "totals": {
+    "audit_chains": 1,
+    "audit_entries": 4,
+    "audit_problems": 0
+  }
+}
+```
+
+**注意**：`mas report` 仍然以 0 退出 —— 报告是给人看的，
+**报警的出口是 `mas audit` 和 `mas seal`**。
 
 ### 5.0 一个问题就是一条线
 

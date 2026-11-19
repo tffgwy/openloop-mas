@@ -57,6 +57,7 @@ EXPECTED_GATE_NAMES = (
     "closure_seal",
     "report_seal",
     "report_undo",
+    "report_audit",
 )
 
 

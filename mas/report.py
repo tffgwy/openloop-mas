@@ -829,6 +829,85 @@ def undone_approvals(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def audit_reading(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """The audit chains of the decisions in this ledger - and their state.
+
+    The gap this closes
+    ------------------
+    ``mas audit`` can check a chain, and ``mas status`` shows the
+    result. The *report* - the screen a human reads after the fact -
+    never looked at the chains at all. So a decision record that had
+    been edited underneath was invisible in the main view: the ledger
+    row said "approved", the chain said something else, and nothing in
+    the report said so.
+
+    That is the third hole of the same family - after the seal in
+    v0.7.89 and the taken-back approval in v0.7.90: a capability that
+    exists, and a main view that does not consume it.
+
+    Which chains are looked at
+    --------------------------
+    The chains are found through the *rows themselves*: every row that
+    knows its workspace carries it, so the report looks at exactly the
+    chains that wrote those decisions - no more and no fewer.
+    ``mas status`` guesses a folder instead (``<state_dir>/artifacts``);
+    a report that only covered the default folder would miss a run
+    that was given a workspace of its own, and a report that covered
+    every folder would read chains that belong to nobody.
+
+    The chain that is *missing*
+    --------------------------
+    A chain that was deleted whole leaves nothing to read: no problem
+    is found by reading it. The ledger still holds the decision, so
+    the report compares the two - a decision row whose workspace has
+    no chain at all is a hole in the record, and it is named as one.
+    """
+    from mas.audit import audit_report
+
+    workspaces: List[str] = []
+    decisions: Dict[str, int] = {}
+    for row in rows or []:
+        workspace = str(row.get("workspace") or "").strip()
+        if not workspace:
+            continue
+        if workspace not in workspaces:
+            workspaces.append(workspace)
+        if str(row.get("role") or "") in DRAFT_DECISION_ROLES:
+            decisions[workspace] = decisions.get(workspace, 0) + 1
+
+    chains: List[Dict[str, Any]] = []
+    problems: List[str] = []
+    entries = 0
+    for workspace in workspaces:
+        try:
+            outcome = audit_report(workspace, rows)
+        except Exception as exc:  # noqa: BLE001 - a finding, not a crash
+            problems.append(
+                "\u5de5\u4f5c\u533a %s \u7684\u5ba1\u8ba1\u94fe\u8bfb\u4e0d\u51fa\u6765\uff1a%s: %s"
+                % (workspace, type(exc).__name__, exc)
+            )
+            continue
+        for chain in outcome.get("chains") or []:
+            chains.append(chain)
+            entries += int(chain.get("entries") or 0)
+        problems.extend(str(item) for item in (outcome.get("problems") or []))
+        held = int(decisions.get(workspace) or 0)
+        if held and not int(outcome.get("chain_count") or 0):
+            problems.append(
+                "\u5de5\u4f5c\u533a %s \u7684\u8d26\u672c\u8bb0\u7740 %d \u6761\u4eba\u5de5\u51b3\u5b9a\uff0c\u4f46\u5ba1\u8ba1\u94fe\u4e0d\u89c1\u4e86"
+                % (workspace, held)
+            )
+    return {
+        "workspaces": workspaces,
+        "chains": chains,
+        "chain_count": len(chains),
+        "entries": entries,
+        "problems": problems,
+        "problem_count": len(problems),
+        "ok": not problems,
+    }
+
+
 def build_report(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Build the full report payload for a set of ledger rows."""
     runs = [run_summary(run["run_id"], run["rows"]) for run in group_runs(rows)]
@@ -848,6 +927,11 @@ def build_report(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     # report does not mention is a wrong approval the reader has to
     # find in the audit chain by hand.
     undos = undone_approvals(rows)
+    # The audit chains of the decisions. The chain is the record that
+    # says a decision was written once and cannot be changed quietly;
+    # if the report does not read it, a decision that *was* changed
+    # quietly looks exactly like one that was not.
+    audit = audit_reading(rows)
     return {
         "generated_at": now_iso(),
         "runs": runs,
@@ -868,6 +952,10 @@ def build_report(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
         # The approvals that were taken back. The ledger and the audit
         # chain both remember them; this is where the report says so.
         "undos": undos,
+        # The audit chains, and whether they still verify. A chain that
+        # was changed on the disk is a fact about the present, so it
+        # belongs in the payload and not only in the rendered Markdown.
+        "audit": audit,
         # The problems, as opposed to the attempts. One unfinished
         # problem that was resumed three times is one open problem and
         # four runs; a report that only counts runs makes the human
@@ -901,6 +989,12 @@ def build_report(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             # That is a hole in the record, and it is counted rather
             # than hidden.
             "undos_unmatched": len(undos.get("unmatched") or []),
+            # The decision chains, and what is wrong with them. A
+            # record that was changed quietly is a fact the reader
+            # needs, not a detail of the implementation.
+            "audit_chains": int(audit.get("chain_count") or 0),
+            "audit_entries": int(audit.get("entries") or 0),
+            "audit_problems": int(audit.get("problem_count") or 0),
         },
     }
 
@@ -966,6 +1060,42 @@ def _undo_section_lines(report: Dict[str, Any]) -> List[str]:
     return lines
 
 
+def _audit_section_lines(report: Dict[str, Any]) -> List[str]:
+    """The section that names what is wrong with the decision chains.
+
+    It is a section of its own because it is about the *record* and
+    not about a run: a chain that no longer verifies means a decision
+    a person made can no longer be trusted to be the decision they
+    made. That is worth its own heading, not a footnote.
+    """
+    lines: List[str] = []
+    audit = report.get("audit") or {}
+    problems = list(audit.get("problems") or [])
+    chains = int(audit.get("chain_count") or 0)
+    entries = int(audit.get("entries") or 0)
+    if not chains and not problems:
+        return lines
+    lines.append("## 审计链复核")
+    lines.append("")
+    if problems:
+        lines.append(
+            "审计链是人工决定的不可篡改记录。下面这些问题说明"
+            "记录与链已经对不上，或链本身被改过："
+        )
+        lines.append("")
+        for problem in problems:
+            lines.append("- %s" % problem)
+        lines.append("")
+    else:
+        lines.append(
+            "%d 条审计链、%d 条记录全部完好："
+            "每一条人工决定都还是写下去时的那一条。"
+            % (chains, entries)
+        )
+        lines.append("")
+    return lines
+
+
 def render_markdown(report: Dict[str, Any]) -> str:
     """Render the report as Markdown."""
     totals = report.get("totals") or {}
@@ -1023,6 +1153,25 @@ def render_markdown(report: Dict[str, Any]) -> str:
             f"撤销配对：{unmatched} 次撤销找不到"
             f"对应的批准（记录有缺口）"
         )
+    # The decision chains, in the headline. A report that says "3
+    # closed" and never says "one of your decisions was changed on
+    # disk" hands the reader a clean-looking history that is not the
+    # one on the disk.
+    chains = int(totals.get("audit_chains") or 0)
+    audit_problems = int(totals.get("audit_problems") or 0)
+    if chains or audit_problems:
+        entries = int(totals.get("audit_entries") or 0)
+        if audit_problems:
+            lines.append(
+                f"\u5ba1\u8ba1\u94fe\u590d\u6838\uff1a{chains} \u6761\u94fe\u3001"
+                f"{entries} \u6761\u8bb0\u5f55\uff0c"
+                f"{audit_problems} \u4e2a\u95ee\u9898\uff08\u4eba\u5de5\u51b3\u5b9a\u7684\u8bb0\u5f55\u4e0d\u53ef\u4fe1\uff09"
+            )
+        else:
+            lines.append(
+                f"\u5ba1\u8ba1\u94fe\u590d\u6838\uff1a{chains} \u6761\u94fe\u3001"
+                f"{entries} \u6761\u8bb0\u5f55\u5168\u90e8\u5b8c\u597d"
+            )
     lines.append("")
 
     runs = report.get("runs") or []
@@ -1032,8 +1181,14 @@ def render_markdown(report: Dict[str, Any]) -> str:
         # "the ledger is empty" would be a false statement: the ledger
         # is full of approvals that turned out to be wrong.
         undos_only = report.get("undos") or {}
-        if undos_only.get("drafts") or undos_only.get("unmatched"):
+        if (
+            undos_only.get("drafts")
+            or undos_only.get("unmatched")
+            or int((report.get("totals") or {}).get("audit_chains") or 0)
+            or int((report.get("totals") or {}).get("audit_problems") or 0)
+        ):
             lines.extend(_undo_section_lines(report))
+            lines.extend(_audit_section_lines(report))
             lines.append("这台机器上还没有跑过任何一次闭环，但账本里记着人工的决定。")
             lines.append("  看这些决定：mas undos")
             lines.append("  先跑一个真任务：mas run --goal \"你的任务\" --criteria \"contains:关键词\"")
@@ -1090,6 +1245,7 @@ def render_markdown(report: Dict[str, Any]) -> str:
         lines.append("")
 
     lines.extend(_undo_section_lines(report))
+    lines.extend(_audit_section_lines(report))
     lines.append("## 运行概览")
     lines.append("")
     lines.append(

@@ -140,11 +140,11 @@ server and the skills, and finishes with an offline self-check.
 Pin a specific release instead of "the latest":
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.90
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.91
 ```
 
 ```bash
-MAS_VERSION=0.7.90 bash install.sh
+MAS_VERSION=0.7.91 bash install.sh
 ```
 
 > The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
@@ -891,9 +891,44 @@ MIT © OpenLoop MAS contributors
 
 ## Gate archaeology
 
-This project now holds **30 gates**, and every one of them grew out of a
+This project now holds **31 gates**, and every one of them grew out of a
 **real incident**. They are listed below newest first - if you just want to
 use the tool, skip this section.
+
+- **The 31st gate `report_audit`** - v0.7.76 made every human decision
+  (the proposal, the approval, the undo) leave a hash-linked entry next to the
+  workspace it belongs to, with a copy in the main ledger; `mas audit` can
+  check those chains and `mas status` shows the result. But **`mas report`
+  never looked at them** - there was not even an `import mas.audit` in
+  `mas/report.py`.
+
+  The consequence is concrete: the ledger row says "approved", the chain says
+  something else, and the report says neither. A capability that can prove a
+  record was changed on the disk, but is not consumed by the main view, is a
+  capability nobody has. This is the **third hole of the same family**:
+  v0.7.89 was the report not looking at the seal, v0.7.90 the report not
+  looking at the undo, v0.7.91 the report not looking at the audit chain.
+
+  The report now says it: a headline line reads "N chains, M entries, K
+  problems" (or "all intact" when there are none); a section of its own -
+  "audit chain review" - names **which chain**, **which entry was changed**
+  and **which chain is gone entirely**; and the JSON payload carries the same
+  numbers. The chains are found **by reading the rows themselves** rather
+  than by guessing a folder (which is what `mas status` does): a row that
+  knows its workspace says which workspace it belongs to, so the report looks
+  at exactly the chains that wrote those decisions. A chain that was deleted
+  **whole** reads as nothing, but the ledger still holds the decision - so the
+  report names "the ledger holds N human decisions, but the audit chain is
+  gone" as a **gap in the record**. The exit code does not change (the report
+  still exits 0; `mas audit` and `mas seal` are the alarms).
+
+  The gate proves it can fail: the report's audit reading is broken on
+  purpose - every chain is reported as intact - and the gate has to notice
+  that it can no longer tell a healthy chain from a changed one.
+
+  ```bash
+  mas selftest --only report_audit
+  ```
 
 - **The 30th gate `report_undo`** - v0.7.78 made an undo leave a trace in the ledger, and
   v0.7.85 gave `mas undos` a way to list *which approvals were taken back*; but

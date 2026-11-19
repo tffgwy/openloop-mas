@@ -57,6 +57,9 @@ from mas.selftest_onboarding import (
 from mas.selftest_packaged_docs import (
     check_the_documents_the_beginner_reads_travel_with_the_wheel,
 )
+from mas.selftest_report_audit import (
+    check_the_report_reads_the_decision_chains,
+)
 from mas.selftest_report_seal import (
     check_the_report_sees_the_drift,
 )
@@ -5463,6 +5466,7 @@ CHECKS = (
     check_a_closure_is_sealed_to_the_bytes_it_decided_on,
     check_the_report_sees_the_drift,
     check_the_report_says_which_approvals_were_wrong,
+    check_the_report_reads_the_decision_chains,
 )
 
 #: How many gates the suite is expected to hold.
