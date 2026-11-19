@@ -39,11 +39,11 @@ bash install.sh
 固定版本（默认装最新版）：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.89
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.90
 ```
 
 ```bash
-MAS_VERSION=0.7.89 bash install.sh
+MAS_VERSION=0.7.90 bash install.sh
 ```
 
 > 下载路径是「标准库优先、`curl` 兜底」，并会读 `HTTPS_PROXY` 与
@@ -387,6 +387,52 @@ mas report --json
 
 **没有封存的运行不被报成漂移**。封存是 v0.7.88 才加的，
 就算旧闭环没有封存，它也**不是被改过的**。
+
+### 4.9 报告里能看见「哪些批准被撤销过」
+
+如果你撤回过一次批准，那个批准**就是错的**。
+这一点会记在账本里，而 `mas report` 会把它说出来：
+
+```text
+撤销回收：1 次批准被撤销（1 个草稿，退回 3 行）
+```
+
+报告里还会多一节「被撤销的批准」，逐条点名
+**哪个草稿**、**哪个文件**、被撤了几次、退回了多少行：
+
+```text
+## 被撤销的批准
+
+| 草稿 | 文件 | 被撤销次数 | 退回行数 | 强制 | 最后一次撤销 |
+|---|---|---|---|---|---|
+| `D-20261119-abc` | notes.txt | 1 | 3 | 否 | 2026-11-19T00:01:00Z |
+```
+
+要看更细的清单（时间戳、理由、是否强制），用：
+
+```bash
+mas undos
+```
+
+如果你在 CI 里读报告，JSON 载荷里就有数字，不用拆 Markdown：
+
+```bash
+mas report --json
+```
+
+```json
+{
+  "totals": {
+    "approvals_taken_back": 1,
+    "drafts_taken_back": 1,
+    "lines_reverted": 3,
+    "undos_unmatched": 0
+  }
+}
+```
+
+**只有人工决定、还没有任何一次运行的账本，不会被写成「账本为空」。**
+那句话是假的：账本里满是错批准。
 
 ### 5.0 一个问题就是一条线
 

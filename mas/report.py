@@ -734,6 +734,101 @@ def _thread_source(thread: Dict[str, Any]) -> str:
     return "—"
 
 
+#: The states an undo can leave a draft in, in words. A draft whose
+#: approval was taken back is not "approved" any more - the newest
+#: fact about it is that it was wrong once.
+UNDO_STATE_READING: Dict[str, str] = {
+    "undone": "撤销过",
+    "approved": "已批准",
+    "pending": "待批准",
+    "rejected": "已拒绝",
+}
+
+
+def undo_reading(state: Any) -> str:
+    """The plain reading of a draft state, or the raw value."""
+    key = str(state or "").strip()
+    if not key:
+        return ""
+    return UNDO_STATE_READING.get(key, key)
+
+
+def undone_approvals(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """The approvals that were taken back - and the drafts they hit.
+
+    The gap this closes
+    ------------------
+    The audit chain and the ledger both remember that an approval was
+    taken back. ``mas undos`` can list them. But the *report* - the
+    screen a human reads after the fact - said nothing about them:
+    ``run_summary`` never even looked at the ``draft_approve`` and
+    ``draft_undo`` rows, because a human decision about a draft is
+    not a run.
+
+    So a wrong approval was invisible in the main view. The ledger
+    kept the truth; the report did not show it. That is the same
+    shape of hole as v0.7.89's: a capability that exists and is not
+    consumed by the view people actually read.
+
+    How the pairing works
+    ---------------------
+    The pairing itself is **not** re-implemented here. ``mas.undos``
+    already does it correctly - positionally, off a stack, with an
+    undo that has nothing standing to cancel reported as unmatched
+    rather than paired with a neighbour. This module only *reads*
+    that answer.
+
+    The records live in the workspace, not in a run
+    ----------------------------------------------
+    A draft belongs to a workspace, not to a run: the same draft id
+    can be approved, taken back and approved again without any run
+    being involved. So these are reported at the **workspace**
+    level, next to the seal review, rather than attached to a run
+    that never saw them.
+    """
+    from mas.undos import pair_decisions, undo_totals
+
+    records, unmatched = pair_decisions(rows)
+    totals = undo_totals(records)
+    drafts: Dict[str, Dict[str, Any]] = {}
+    for record in records:
+        draft_id = str(record.get("draft_id") or "")
+        if not draft_id:
+            continue
+        entry = drafts.setdefault(
+            draft_id,
+            {
+                "draft_id": draft_id,
+                "path": str(record.get("path") or ""),
+                "workspace": str(record.get("workspace") or ""),
+                "taken_back": 0,
+                "reverted_lines": 0,
+                "forced": False,
+                # The newest fact about the draft. A draft that was
+                # taken back and then approved again is approved *now*
+                # - and it was still wrong once.
+                "state": "undone",
+                "last_undo_ts": "",
+            },
+        )
+        entry["taken_back"] = int(entry.get("taken_back") or 0) + 1
+        reverted = record.get("reverted_line_count")
+        if isinstance(reverted, (int, float)):
+            entry["reverted_lines"] = int(entry.get("reverted_lines") or 0) + int(reverted)
+        if record.get("forced"):
+            entry["forced"] = True
+        undo_ts = str(record.get("undo_ts") or "")
+        if undo_ts >= str(entry.get("last_undo_ts") or ""):
+            entry["last_undo_ts"] = undo_ts
+    return {
+        "records": records,
+        "unmatched": unmatched,
+        "totals": totals,
+        "drafts": list(drafts.values()),
+        "draft_count": len(drafts),
+    }
+
+
 def build_report(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Build the full report payload for a set of ledger rows."""
     runs = [run_summary(run["run_id"], run["rows"]) for run in group_runs(rows)]
@@ -749,6 +844,10 @@ def build_report(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     drifted_runs = [
         r for r in sealed_runs if str(r.get("seal_state") or "") != "holds"
     ]
+    # The approvals that were taken back. A wrong approval that the
+    # report does not mention is a wrong approval the reader has to
+    # find in the audit chain by hand.
+    undos = undone_approvals(rows)
     return {
         "generated_at": now_iso(),
         "runs": runs,
@@ -766,6 +865,9 @@ def build_report(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
                 for run in sealed_runs
             },
         },
+        # The approvals that were taken back. The ledger and the audit
+        # chain both remember them; this is where the report says so.
+        "undos": undos,
         # The problems, as opposed to the attempts. One unfinished
         # problem that was resumed three times is one open problem and
         # four runs; a report that only counts runs makes the human
@@ -788,8 +890,80 @@ def build_report(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             "sealed": len(sealed_runs),
             "seal_holds": len(sealed_runs) - len(drifted_runs),
             "seal_drifted": len(drifted_runs),
+            # How many human approvals were taken back, and how many
+            # drafts that touched. These are counts of *wrong
+            # decisions*, not of runs - a wrong approval does not
+            # belong to any run, so it is counted here.
+            "approvals_taken_back": int(undos.get("totals", {}).get("undone") or 0),
+            "drafts_taken_back": int(undos.get("draft_count") or 0),
+            "lines_reverted": int(undos.get("totals", {}).get("reverted_lines") or 0),
+            # An undo with no standing approval cannot be paired.
+            # That is a hole in the record, and it is counted rather
+            # than hidden.
+            "undos_unmatched": len(undos.get("unmatched") or []),
         },
     }
+
+
+def _undo_section_lines(report: Dict[str, Any]) -> List[str]:
+    """The section that names the approvals that were taken back.
+
+    It is a section of its own because it is a different kind of
+    fact: not a run, not a problem, but a *human decision that
+    turned out to be wrong*. It belongs next to the problems, not
+    buried in the run table.
+
+    A ledger that holds nothing but decisions has no runs at all,
+    and the report still has to say this - otherwise it would tell
+    the reader "the ledger is empty" while the ledger is full of
+    approvals that turned out to be wrong.
+    """
+    lines: List[str] = []
+    undos = report.get("undos") or {}
+    undone_drafts = undos.get("drafts") or []
+    unmatched = undos.get("unmatched") or []
+    # A section with only unmatched undos is still a section: the
+    # record holds decisions, and saying nothing about it would be
+    # saying nothing about a hole in the record.
+    if not undone_drafts and not unmatched:
+        return lines
+    lines.append("## 被撤销的批准")
+    lines.append("")
+    if undone_drafts:
+        lines.append(
+            "这些是被人撤回去的批准 —— "
+            "它们曾经错误，现在这一点被记下来了。"
+        )
+        lines.append("")
+    if undone_drafts:
+        lines.append(
+            "| 草稿 | 文件 | 被撤销次数 | "
+            "退回行数 | 强制 | 最后一次撤销 |"
+        )
+        lines.append("|---|---|---|---|---|---|")
+    for entry in undone_drafts:
+        draft_id = str(entry.get("draft_id") or "-")
+        path = str(entry.get("path") or "-").replace("|", "\\|")
+        reverted = int(entry.get("reverted_lines") or 0)
+        lines.append(
+            "| `%s` | %s | %d | %s | %s | %s |" % (
+                draft_id,
+                path,
+                int(entry.get("taken_back") or 0),
+                str(reverted) if reverted else "-",
+                "是" if entry.get("forced") else "否",
+                str(entry.get("last_undo_ts") or "-"),
+            )
+        )
+    lines.append("")
+    if unmatched:
+        lines.append(
+            "另有 %d 次撤销找不到对应的批准 "
+            "—— 记录里有撤销，但没有能配对的批准，"
+            "它们不被计入上表。" % len(unmatched)
+        )
+        lines.append("")
+    return lines
 
 
 def render_markdown(report: Dict[str, Any]) -> str:
@@ -825,10 +999,45 @@ def render_markdown(report: Dict[str, Any]) -> str:
             lines.append(
                 f"封存复核：{sealed} 条封存全部仍然成立"
             )
+    # The approvals that were taken back, in the headline. A report
+    # that says "3 closed" and never says "2 of your approvals were
+    # wrong" leaves the reader with a clean-looking machine and a
+    # wrong history.
+    taken_back = int(totals.get("approvals_taken_back") or 0)
+    if taken_back:
+        drafts_back = int(totals.get("drafts_taken_back") or 0)
+        reverted = int(totals.get("lines_reverted") or 0)
+        lines.append(
+            f"撤销回收：{taken_back} 次批准被撤销"
+            f"（{drafts_back} 个草稿"
+            + (f"，退回 {reverted} 行" if reverted else "")
+            + "）"
+        )
+    # An undo that could not be paired is a hole in the record. It is
+    # reported next to the headline even when nothing could be paired
+    # at all - a ledger of only unmatched undos must not read like a
+    # ledger with nothing in it.
+    unmatched = int(totals.get("undos_unmatched") or 0)
+    if unmatched:
+        lines.append(
+            f"撤销配对：{unmatched} 次撤销找不到"
+            f"对应的批准（记录有缺口）"
+        )
     lines.append("")
 
     runs = report.get("runs") or []
     if not runs:
+        # A ledger that holds only human decisions has no runs in it.
+        # The report must still say what it *does* hold, because
+        # "the ledger is empty" would be a false statement: the ledger
+        # is full of approvals that turned out to be wrong.
+        undos_only = report.get("undos") or {}
+        if undos_only.get("drafts") or undos_only.get("unmatched"):
+            lines.extend(_undo_section_lines(report))
+            lines.append("这台机器上还没有跑过任何一次闭环，但账本里记着人工的决定。")
+            lines.append("  看这些决定：mas undos")
+            lines.append("  先跑一个真任务：mas run --goal \"你的任务\" --criteria \"contains:关键词\"")
+            return "\n".join(lines) + "\n"
         # "账本为空，暂无运行记录。" is true but leaves the reader stuck:
         # it does not say whether the tool is broken or simply has not
         # been used yet, and it names no next step. The report is the
@@ -880,6 +1089,7 @@ def render_markdown(report: Dict[str, Any]) -> str:
             )
         lines.append("")
 
+    lines.extend(_undo_section_lines(report))
     lines.append("## 运行概览")
     lines.append("")
     lines.append(

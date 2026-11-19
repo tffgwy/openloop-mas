@@ -60,6 +60,9 @@ from mas.selftest_packaged_docs import (
 from mas.selftest_report_seal import (
     check_the_report_sees_the_drift,
 )
+from mas.selftest_report_undo import (
+    check_the_report_says_which_approvals_were_wrong,
+)
 from mas.selftest_seal import (
     check_a_closure_is_sealed_to_the_bytes_it_decided_on,
 )
@@ -5459,6 +5462,7 @@ CHECKS = (
     check_the_bootstrap_path_is_executed_and_not_just_described,
     check_a_closure_is_sealed_to_the_bytes_it_decided_on,
     check_the_report_sees_the_drift,
+    check_the_report_says_which_approvals_were_wrong,
 )
 
 #: How many gates the suite is expected to hold.

@@ -140,11 +140,11 @@ server and the skills, and finishes with an offline self-check.
 Pin a specific release instead of "the latest":
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.89
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.90
 ```
 
 ```bash
-MAS_VERSION=0.7.89 bash install.sh
+MAS_VERSION=0.7.90 bash install.sh
 ```
 
 > The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
@@ -891,9 +891,40 @@ MIT © OpenLoop MAS contributors
 
 ## Gate archaeology
 
-This project now holds **29 gates**, and every one of them grew out of a
+This project now holds **30 gates**, and every one of them grew out of a
 **real incident**. They are listed below newest first - if you just want to
 use the tool, skip this section.
+
+- **The 30th gate `report_undo`** - v0.7.78 made an undo leave a trace in the ledger, and
+  v0.7.85 gave `mas undos` a way to list *which approvals were taken back*; but
+  **`mas report` never looked at either of them**. `run_summary()` does not read
+  the `draft_approve` / `draft_undo` rows at all, because a human decision about a
+  draft is not a run.
+
+  The consequence is concrete: the approvals you took back three weeks ago sit
+  in the ledger, while the report in front of you says "resolved - machine-closed".
+  A capability that can say *which approvals were wrong*, but is not consumed by
+  the main view, is a capability nobody has.
+
+  The report now says it: a headline line reads "N approvals were taken back";
+  a section of its own - "taken-back approvals" - names **which draft** and
+  **which file**, how many times it was taken back and how many lines went back;
+  and the JSON payload carries the same numbers, so CI and scripts do not have to
+  parse Markdown. It also fixes a **false statement**: a ledger that holds only
+  human decisions and no runs used to be described as "the ledger is empty" -
+  which is not true. It now says "this machine has not run a single closure yet,
+  but the ledger holds human decisions" and points at `mas undos`.
+
+  The pairing is **not re-implemented**: it reuses the positional stack pairing in
+  `mas.undos`, so an undo that cannot be paired is **counted rather than hidden**
+  and is never guessed at. The gate proves it can fail: the report's undo
+  counting is broken on purpose - every approval is reported as standing - and
+  the gate has to notice that it can no longer tell a wrong approval from a
+  right one.
+
+  ```bash
+  mas selftest --only report_undo
+  ```
 
 - **The 29th gate `report_seal`** - v0.7.88 gave every closure a *seal*, but the report never looked at it;
   the acceptance criteria, the deliverable's sha256, the sha256 of every
