@@ -20,7 +20,9 @@ from mas.engine import LoopEngine
 from mas.report import (
     artifact_rows,
     build_report,
+    closure_verdict_for,
     format_artifacts,
+    format_closure,
     ledger_markdown,
     render_markdown,
     replay_trace,
@@ -415,6 +417,26 @@ TOOLS: List[Dict[str, Any]] = [
         },
     ),
     _tool(
+        "mas_closure",
+        "Judge whether the work is actually closed. The report shows every "
+        "number - runs, threads, tickets, drafts, seals, audit chains - but "
+        "a reader holding the report still has to work out the verdict "
+        "themselves. This computes it: closed means nothing is left waiting "
+        "(no unclosed run, no open problem, no ticket waiting for a person, "
+        "no pending draft, no drifted seal, no broken decision chain), and "
+        "when it is not closed it names exactly which part is open. It "
+        "reads the existing records; it never runs a new loop.",
+        {
+            "type": "object",
+            "properties": {
+                "run_id": {
+                    "type": "string",
+                    "description": "只判定某一次运行（默认判定整个工作区）",
+                },
+            },
+        },
+    ),
+    _tool(
         "mas_seal",
         "Check whether the closed loops still hold. Every closure is "
         "sealed to the bytes it was decided on - the acceptance criteria, "
@@ -464,83 +486,25 @@ def _state_dir(config: Dict[str, Any]) -> pathlib.Path:
     return pathlib.Path(os.path.expanduser(os.path.expandvars(raw)))
 
 
-def _workspaces_of_draft_rows(rows: List[Dict[str, Any]]) -> List[pathlib.Path]:
-    """The workspaces the ledger says hold drafts.
-
-    A draft row names the file the loop wanted to change and the
-    absolute path of that file; the workspace is the folder the file
-    sits in. The workspace is not part of the saved configuration - it
-    belongs to the run - so the ledger is the only place that knows
-    where to look.
-    """
-    workspaces: List[pathlib.Path] = []
-    for row in rows or []:
-        if not isinstance(row, dict):
-            continue
-        if str(row.get("role") or "") != "draft":
-            continue
-        for item in row.get("drafts") or []:
-            if not isinstance(item, dict):
-                continue
-            absolute = str(item.get("absolute") or "").strip()
-            relative = str(item.get("path") or "").strip().replace("\\", "/")
-            if not absolute:
-                continue
-            depth = len([p for p in relative.split("/") if p]) or 1
-            parents = list(pathlib.Path(absolute).parents)
-            if len(parents) < depth:
-                continue
-            workspace = parents[depth - 1]
-            if workspace not in workspaces:
-                workspaces.append(workspace)
-    return workspaces
 
 
-def _all_drafts_of_machine(
+def drafts_of_machine(
     config: Dict[str, Any], ledger_rows: Optional[List[Dict[str, Any]]] = None
 ) -> List[Dict[str, Any]]:
     """Every draft of every workspace this machine owns.
 
-    The report has to see the drafts of *all* the workspaces, not
-    only one of them, so the helper walks the artifacts root and its
-    sub-folders. A broken folder is skipped rather than fatal: a
-    report that cannot be produced is worse than a report that
-    misses one queue.
-
-    A run that was given a workspace of its own puts its drafts
-    there, and that folder is not part of the saved configuration -
-    it belongs to the run. So the ledger is asked as well: a draft
-    row names the file the loop wanted to change, and the folder of
-    that file is the workspace. Without this the report of such a run
-    says "no drafts" while a change waits on the disk.
+    The walk lives in ``mas.drafts`` - one implementation, shared with
+    the CLI, so the two surfaces cannot drift apart on which drafts are
+    waiting. A report that says "no drafts" while a change waits on
+    the disk is the exact failure this project keeps fixing.
     """
-    from mas.drafts import drafts_in
+    from mas.drafts import all_drafts_of_machine
 
-    drafts_found: List[Dict[str, Any]] = []
-    seen = set()
-
-    def _scan(root: pathlib.Path) -> None:
-        if not root.exists():
-            return
-        try:
-            found = drafts_in(root)
-        except Exception:  # noqa: BLE001 - a broken folder must not break the report
-            return
-        for draft in found:
-            key = str(draft.get("id") or "")
-            if key and key in seen:
-                continue
-            if key:
-                seen.add(key)
-            drafts_found.append(draft)
-
-    _scan(_state_dir(config) / "artifacts")
-    named = str(config.get("workspace") or "").strip()
-    if named:
-        _scan(pathlib.Path(os.path.expanduser(os.path.expandvars(named))))
-    for workspace in _workspaces_of_draft_rows(ledger_rows):
-        _scan(workspace)
-    return drafts_found
+    return all_drafts_of_machine(
+        _state_dir(config),
+        config.get("workspace"),
+        ledger_rows,
+    )
 
 
 def _workspace_base(config: Dict[str, Any], workspace: Any) -> pathlib.Path:
@@ -794,7 +758,7 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         # reads it: a run that proposed a change instead of making it
         # leaves a draft behind, and a report that never reads it says
         # "closed" while the file on the disk is still the old one.
-        drafts = _all_drafts_of_machine(config, rows)
+        drafts = drafts_of_machine(config, rows)
         if run_id:
             wanted = {
                 str(item.get("id") or "")
@@ -1188,6 +1152,41 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             "missing": len([item for item in items if not item.get("exists")]),
             "reading": format_artifacts(items),
         }
+
+    if name == "mas_closure":
+        engine = _engine(config)
+        rows = engine.ledger.entries()
+        run_id = str(arguments.get("run_id") or "").strip()
+        if run_id:
+            rows = [row for row in rows if row.get("run_id") == run_id]
+        tickets = engine.tickets.list()
+        if run_id:
+            wanted = {
+                str(row.get("ticket_id") or "")
+                for row in rows
+                if str(row.get("ticket_id") or "")
+            }
+            tickets = [t for t in tickets if str(t.get("id") or "") in wanted]
+        drafts = drafts_of_machine(config, rows)
+        if run_id:
+            wanted_drafts = {
+                str(item.get("id") or "")
+                for row in rows
+                if str(row.get("role") or "") == "draft"
+                for item in (row.get("drafts") or [])
+                if isinstance(item, dict)
+            }
+            drafts = [d for d in drafts if str(d.get("id") or "") in wanted_drafts]
+        verdict = closure_verdict_for(rows, tickets, drafts=drafts)
+        if arguments.get("as_markdown", True):
+            return {
+                "markdown": format_closure(verdict),
+                "ok": verdict["ok"],
+                "empty": verdict["empty"],
+                "reasons": verdict["reasons"],
+                "counts": verdict["counts"],
+            }
+        return verdict
 
     if name == "mas_seal":
         from mas.seal import seal_report

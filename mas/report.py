@@ -2573,3 +2573,175 @@ def format_artifacts(items: List[Dict[str, Any]]) -> str:
             "⚠ 有 %d 份交付物文件已不在原处（可能被人删了或换了目录）。" % len(missing)
         )
     return "\n".join(lines)
+
+
+def closure_verdict(report: Dict[str, Any]) -> Dict[str, Any]:
+    """Answer one question about a report: does this close, and if not, why.
+
+    The gap this closes
+    ------------------
+    A report shows everything - the runs, the threads, the queue, the
+    drafts, the seal, the audit chains. But a reader holding a report
+    still has to *judge* it: is this closed? Which part is open? The
+    reader has to know the rules to read the facts, and the rules
+    lived only in the head of whoever wrote the report.
+
+    So "closed" was a thing you could show and not a thing you could
+    ask. An MCP caller - an agent holding the tools - could read every
+    number in the report and still not be able to say whether the work
+    is done, because the verdict was never computed anywhere.
+
+    This function is that computation, in one place. Both surfaces call
+    it, so the CLI and the MCP server cannot answer differently.
+
+    What "closed" means here
+    -----------------------
+    Not "the runs succeeded". A loop is closed when *nothing is left
+    waiting*: every run closed, no problem thread is open, no ticket is
+    waiting for a person, no draft is pending, no seal has drifted, and
+    no decision chain is broken.
+
+    Every one of those is reported separately, with its own count, so a
+    reader who disagrees with the verdict can see which part they
+    disagree with. The reasons are the point - a bare "not closed"
+    sends the reader hunting; "3 drafts are pending a human" tells them
+    exactly what to do.
+
+    The verdict never hides the work it did not count. An empty ledger
+    is not "closed" - it is "nothing has run yet", and that is said
+    plainly, because an empty ledger is the one state where claiming
+    closure would be a lie.
+    """
+    totals = report.get("totals") or {}
+    threads = report.get("threads") or []
+    drafts = report.get("drafts") or {}
+
+    reasons: List[Dict[str, Any]] = []
+
+    def reason(key: str, count: int, detail: str, level: str = "fail") -> None:
+        if count:
+            reasons.append({"reason": key, "count": int(count), "detail": detail, "level": level})
+
+    runs = int(totals.get("runs") or 0)
+    not_closed = int(totals.get("not_closed") or 0)
+    open_problems = int(totals.get("problems_open") or 0)
+    waiting = int(totals.get("tickets_waiting") or 0)
+    pending_drafts = int(drafts.get("pending_count") or 0)
+    drifted = int(totals.get("seal_drifted") or 0)
+    audit_problems = int(totals.get("audit_problems") or 0)
+    unmatched_undos = int(totals.get("undos_unmatched") or 0)
+
+    reason("runs_not_closed", not_closed, "有 %d 次运行没有闭合" % not_closed)
+    reason("problems_open", open_problems, "有 %d 条问题线索还开着" % open_problems)
+    reason("tickets_waiting", waiting, "有 %d 张工单在等人" % waiting)
+    reason("drafts_pending", pending_drafts, "有 %d 份草稿等人批准" % pending_drafts)
+    reason("seal_drifted", drifted, "有 %d 份封存结论已经和磁盘对不上" % drifted)
+    reason("audit_problems", audit_problems, "有 %d 条决策链验不过" % audit_problems)
+    reason(
+        "undos_unmatched",
+        unmatched_undos,
+        "有 %d 次撤销配不上对应的批准" % unmatched_undos,
+        "warn",
+    )
+
+    # An empty ledger is not a closed loop. It is a loop that never ran,
+    # and the two must never be spelled the same way.
+    empty = runs == 0
+    ok = not empty and not any(r["level"] == "fail" for r in reasons)
+
+    if empty:
+        headline = "还没有任何运行记录，无法判定闭合。"
+    elif ok:
+        headline = "闭合：没有留下任何待办。"
+    else:
+        headline = "未闭合：%s。" % "；".join(r["detail"] for r in reasons if r["level"] == "fail")
+
+    return {
+        "ok": ok,
+        "empty": empty,
+        "headline": headline,
+        "reasons": reasons,
+        "counts": {
+            "runs": runs,
+            "closed": int(totals.get("closed") or 0),
+            "not_closed": not_closed,
+            "problems_open": open_problems,
+            "tickets_waiting": waiting,
+            "drafts_pending": pending_drafts,
+            "seal_drifted": drifted,
+            "audit_problems": audit_problems,
+            "undos_unmatched": unmatched_undos,
+        },
+        "closure_rate": float(totals.get("closure_rate") or 0.0),
+        "open_threads": [
+            {
+                "thread_id": str(thread.get("thread_id") or thread.get("id") or ""),
+                "title": str(thread.get("title") or thread.get("goal") or ""),
+                "closed": bool(thread.get("closed")),
+            }
+            for thread in threads
+            if not thread.get("closed")
+        ],
+    }
+
+
+def format_closure(verdict: Dict[str, Any]) -> str:
+    """Say whether the work is closed, in words a person can act on."""
+    lines: List[str] = []
+    counts = verdict.get("counts") or {}
+    lines.append("闭环判定")
+    lines.append("-" * 40)
+    if verdict.get("empty"):
+        lines.append("[注意] 账本里还没有任何运行记录，无法判定闭合。")
+        lines.append("       跑一次 `mas run` 之后再来问。")
+        lines.append("-" * 40)
+        return "\n".join(lines)
+
+    ok = bool(verdict.get("ok"))
+    lines.append("[通过] %s" % verdict.get("headline") if ok else "[未闭] %s" % verdict.get("headline"))
+    lines.append(
+        "       运行 %d 次（闭合 %d / 未闭合 %d），闭合率 %.0f%%"
+        % (
+            int(counts.get("runs") or 0),
+            int(counts.get("closed") or 0),
+            int(counts.get("not_closed") or 0),
+            float(verdict.get("closure_rate") or 0.0) * 100,
+        )
+    )
+    for reason in verdict.get("reasons") or []:
+        lines.append("       - %s" % reason.get("detail"))
+    for thread in verdict.get("open_threads") or []:
+        lines.append("       * %s  %s" % (thread.get("thread_id") or "", thread.get("title") or "-"))
+    lines.append("-" * 40)
+    lines.append("结论：%s" % ("已闭合，没有留下待办。" if ok else "还有事情没做完。"))
+    return "\n".join(lines)
+
+
+def closure_verdict_for(
+    rows: List[Dict[str, Any]],
+    tickets: Optional[List[Dict[str, Any]]] = None,
+    drafts: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """The closure verdict for a set of ledger rows, in one place.
+
+    The gap this closes
+    ------------------
+    The verdict is only useful if every surface that can be asked
+    gives the same answer. Assembling the report and judging it is
+    two steps, and the second step had no shared home - so the CLI
+    and the MCP server each grew their own way of asking, and the
+    two were free to drift apart.
+
+    They do not drift any more. This is the one function that turns
+    ledger rows into a verdict; both surfaces call it.
+
+    It reads. It never writes, and it never starts a loop: the caller
+    brings the records, and the verdict is computed from them.
+    """
+    report = build_report(rows, tickets, drafts=drafts)
+    verdict = closure_verdict(report)
+    verdict["report"] = {
+        "totals": report.get("totals") or {},
+        "seal": report.get("seal") or {},
+    }
+    return verdict

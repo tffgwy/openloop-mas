@@ -118,11 +118,11 @@ bash install.sh
 想装固定版本（而不是"最新版"）：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.96
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.97
 ```
 
 ```bash
-MAS_VERSION=0.7.96 bash install.sh
+MAS_VERSION=0.7.97 bash install.sh
 ```
 
 > 脚本默认会往 `PATH` 里加一条 `~/.mas/bin`（Windows 写当前用户的注册表）。
@@ -1189,6 +1189,32 @@ MIT © OpenLoop MAS contributors
   mas selftest --only mcp_artifacts
   ```
 
+- **第 38 项门禁 `closure_verdict`** —— 这是这个项目**自己的命题**：
+  「这套系统闭不闭合？」
+  `mas doctor` 只体检配置，`mas run` 只跑一次任务，
+  **MCP 里没有任何一个工具能回答这个问题**。
+  报告能展示所有数字——跑了几次、闭合率多少、几张工单在等人、
+  几份草稿没批——但**「闭合」的判定规则从来没被写下来
+  放到读者够得着的地方**。
+  拿着整套 MCP 工具的智能体读完报告的所有数字，
+  仍然得**自己**在脑子里把这几格拼起来才能回答「这活儿干完了吗」，
+  而不同的人拼法不一样。
+  现在判定住在 `mas/report.py`（`closure_verdict()` / `format_closure()` /
+  `closure_verdict_for()`），命令行和 MCP **共用同一份**；
+  MCP 多出 `mas_closure` 工具，命令行多出 `mas closure`。
+  闭合**不是**「跑成功了」，而是**没有任何东西在等**：
+  没有未闭合的运行、没有开着的问题线索、没有等人工接手的工单、
+  没有等人批准的草稿、没有对不上的封存、没有验不过的决策链。
+  **每一格单独报数、单独给理由**——只说「没闭合」是把读者撵去自己找，
+  说「3 份草稿等人批准」才告诉他该干什么。
+  **空账本不算闭合**：账本是空的不是「闭环完美」，是「还没跑过」，
+  这两种情况必须用不同的措辞，冒充就是撒谎。
+  判定**只读**：它读账本、工单队列、草稿队列，**不启动任何一次运行**。
+  门禁**独立实现两遍判定**并**自证能失败**：
+  把共享判定替换成「永远说闭合」，门禁必须报警。
+  ```bash
+  mas selftest --only closure_verdict
+  ```
 - **第 31 项门禁 `report_audit`** —— v0.7.76 让每一次人工决定（起草、批准、撤销）
   都在工作区旁边留下一条哈希链，并在主账本里留一份副本；
   `mas audit` 能查这些链，`mas status` 会把结果显示出来。

@@ -140,11 +140,11 @@ server and the skills, and finishes with an offline self-check.
 Pin a specific release instead of "the latest":
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.96
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.97
 ```
 
 ```bash
-MAS_VERSION=0.7.96 bash install.sh
+MAS_VERSION=0.7.97 bash install.sh
 ```
 
 > The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
@@ -1124,6 +1124,40 @@ use the tool, skip this section.
   mas selftest --only mcp_artifacts
   ```
 
+- **The thirty-eighth gate `closure_verdict`** - this is the project's
+  **own question**: "is this system closed?"
+  `mas doctor` only inspects the configuration, `mas run` only runs one
+  task, and **no tool in MCP could answer it**.
+  The report can show every number - how many runs, what closure rate,
+  how many tickets are waiting for a person, how many drafts are
+  unapproved - but **the rule that decides "closed" was never written
+  down anywhere the reader could reach it**.
+  An agent holding the whole MCP toolkit could read every number in
+  the report and still have to *assemble the pieces in its own head* to
+  answer "is the work done?", and different readers assemble them
+  differently.
+  Now the verdict lives in `mas/report.py` (`closure_verdict()` /
+  `format_closure()` / `closure_verdict_for()`) and **both surfaces call
+  the same one**; MCP gains a `mas_closure` tool, the CLI gains
+  `mas closure`.
+  Closed is **not** "the runs succeeded", it is **nothing is waiting**:
+  no unclosed run, no open problem thread, no ticket waiting for a
+  person, no draft waiting for approval, no drifted seal, no broken
+  decision chain.
+  **Every cell is counted and explained on its own** - a bare "not
+  closed" sends the reader hunting; "3 drafts are pending a human" tells
+  them what to do.
+  **An empty ledger is not closed**: an empty ledger is not "a perfect
+  loop", it is "nothing has run yet", and the two must never be spelled
+  the same way.
+  The verdict **only reads**: it reads the ledger, the ticket queue and
+  the draft queue, and **it starts no run**.
+  The gate **implements the verdict twice, independently**, and
+  **proves it can fail**: the shared verdict is replaced with one that
+  always says closed, and the gate has to notice.
+  ```bash
+  mas selftest --only closure_verdict
+  ```
 - **The 31st gate `report_audit`** - v0.7.76 made every human decision
   (the proposal, the approval, the undo) leave a hash-linked entry next to the
   workspace it belongs to, with a copy in the main ledger; `mas audit` can

@@ -1214,3 +1214,93 @@ def verify_human_token(state_dir: Any, token: Any) -> bool:
     if not expected or not given:
         return False
     return secrets.compare_digest(expected, given)
+
+
+def workspaces_of_draft_rows(rows: Any) -> List[pathlib.Path]:
+    """The workspaces the ledger says hold drafts.
+
+    A draft row names the file the loop wanted to change and the
+    absolute path of that file; the workspace is the folder the file
+    sits in. The workspace is not part of the saved configuration - it
+    belongs to the run - so the ledger is the only place that knows
+    where to look.
+    """
+    workspaces: List[pathlib.Path] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("role") or "") != "draft":
+            continue
+        for item in row.get("drafts") or []:
+            if not isinstance(item, dict):
+                continue
+            absolute = str(item.get("absolute") or "").strip()
+            relative = str(item.get("path") or "").strip().replace("\\", "/")
+            if not absolute:
+                continue
+            depth = len([p for p in relative.split("/") if p]) or 1
+            parents = list(pathlib.Path(absolute).parents)
+            if len(parents) < depth:
+                continue
+            workspace = parents[depth - 1]
+            if workspace not in workspaces:
+                workspaces.append(workspace)
+    return workspaces
+
+
+def all_drafts_of_machine(
+    state_dir: Any,
+    workspace: Any = None,
+    ledger_rows: Any = None,
+) -> List[Dict[str, Any]]:
+    """Every draft of every workspace this machine owns.
+
+    The gap this closes
+    ------------------
+    The CLI and the MCP server each had their own copy of this walk.
+    They agreed today - they were written from the same notes - but
+    two copies of one rule are one copy away from disagreeing, and a
+    report that says "no drafts" while a change waits on the disk is
+    the exact failure this project keeps fixing.
+
+    So the walk lives here, once. Both surfaces call it.
+
+    Which folders are scanned
+    -------------------------
+    Three places, and all three matter:
+
+    1. ``<state_dir>/artifacts`` - where a run puts its workspace.
+    2. The configured workspace - when the user named one.
+    3. The workspaces the *ledger* names - a run given a workspace of
+       its own puts its drafts there, and that folder is not part of
+       the saved configuration.
+
+    A broken folder is skipped rather than fatal: a report that cannot
+    be produced is worse than a report that misses one queue.
+    """
+    drafts_found: List[Dict[str, Any]] = []
+    seen = set()
+
+    def _scan(root: pathlib.Path) -> None:
+        if not root.exists():
+            return
+        try:
+            found = drafts_in(root)
+        except Exception:  # noqa: BLE001 - a broken folder must not break the report
+            return
+        for draft in found:
+            key = str(draft.get("id") or "")
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            drafts_found.append(draft)
+
+    if state_dir:
+        _scan(pathlib.Path(state_dir) / "artifacts")
+    named = str(workspace or "").strip()
+    if named:
+        _scan(pathlib.Path(os.path.expanduser(os.path.expandvars(named))))
+    for ws in workspaces_of_draft_rows(ledger_rows):
+        _scan(ws)
+    return drafts_found

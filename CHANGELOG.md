@@ -4,6 +4,58 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.97] - 2026-11-21
+
+### 闭合这件事终于有人能回答了
+
+`mas doctor` 只体检配置（provider、端点、指令），`mas run` 只跑一次任务。**MCP 里没有任何一个工具能回答「这套系统闭不闭合」**——而这恰恰是 LoopEngineering 的核心命题。
+
+报告能展示所有数字：跑了多少次、闭合率多少、有几张工单在等人、有几份草稿没批。可**「闭合」的判定规则从来没被写下来放到读者够得着的地方**。拿着整套 MCP 工具的智能体读完报告的所有数字，仍然得**自己**在脑子里把这几格拼起来，才能回答「这活儿干完了吗」——而不同的人拼法不一样。
+
+这是同一族的**第八个洞**。前七个是：v0.7.89 封存、v0.7.90 撤销、v0.7.91 审计链、v0.7.93 工单队列、v0.7.94 草稿队列、v0.7.95 账本行、v0.7.96 交付物清单。前七个的形状是「能力在账本里，主视图不读它」或「能力在一个界面里，另一个界面看不见」。这一次的形状是：**判定规则只存在于人的脑子里，两个界面都没有它。**
+
+### 第十六个不变量
+
+> **闭合的判定必须同时到达命令行和 MCP，而且两边给的是同一份答案。**
+
+判定住在 `mas/report.py`：`closure_verdict()` 从报告算出结论，`format_closure()` 渲染成话，`closure_verdict_for()` 是两个界面共用的唯一入口。
+
+* 闭合**不是**「跑成功了」。闭合 = 没有任何东西在等：
+  * 没有未闭合的运行；
+  * 没有开着的问题线索；
+  * 没有等人工接手的工单；
+  * 没有等人批准的草稿；
+  * 没有和磁盘对不上的封存结论；
+  * 没有验不过的决策链。
+* **每一格都单独报数、单独给理由。**只说「没闭合」是把读者撵去自己找；说「3 份草稿等人批准」才告诉他该干什么。
+* **空账本不算闭合。**账本是空的不是「闭环完美」，是「还没跑过」——这两种情况必须用不同的措辞，冒充就是撒谎。
+* **只读，绝不跑闭环。**判定读账本、读工单队列、读草稿队列；它不启动任何一次运行。
+
+新工具：`mas_closure`（MCP）。新命令：`mas closure`（命令行，未闭合时退出码 2）。
+
+顺带修掉一个**已存在的漂移隐患**：CLI 和 MCP 各自写了一份「收集本机全部草稿」的遍历逻辑。现在统一提取到 `mas/drafts.py:all_drafts_of_machine`，两个界面共用。报告说「没有草稿」而磁盘上还躺着一份等你批的改动——这正是这个项目一直在修的那类失败。
+
+### 第 38 项门禁 `closure_verdict`
+
+门禁要求：
+
+* `mas_closure` 在 MCP 目录里**被公布**；
+* 干净的闭合运行**判为闭合**；
+* 留给人做的工作**判为未闭合，并且点名是哪一格**；
+* 空账本**不算闭合**；
+* **MCP 和命令行的答案完全一致**；
+* 原因以**数据**返回，不是让人去解析的散文。
+
+门禁**独立实现两遍判定**（`_closure_verdicts` 与 `_closure_verdicts_independent`），并**自证能失败**：把共享判定替换成「永远说闭合」，门禁必须报警。
+
+### 验证
+
+* `mas selftest --only closure_verdict` → 通过
+* `pytest tests/test_closure_verdict_797.py` → 16 项通过
+* `pytest tests` → 1638 passed / 5 skipped / 95 subtests
+* `ruff check .` → All checks passed
+* 端到端：真实 mock 闭环 + 手工改账本 + 真实 `TicketStore` + 真实 `stage_draft`；MCP 与 CLI 的 `reasons`/`counts`/`headline` 逐字相同；空账本 `ok=False, empty=True`；escalated 场景精确列出 `runs_not_closed` / `problems_open` / `tickets_waiting`；待批草稿列出 `drafts_pending`
+
 ## [0.7.96] - 2026-11-20
 
 ### 交付物清单到了 MCP 调用者手里
