@@ -17,7 +17,14 @@ from mas import __version__
 from mas.config import load_config, load_persisted_config, save_config
 from mas.doctor import run_doctor, summarize
 from mas.engine import LoopEngine
-from mas.report import build_report, ledger_markdown, render_markdown, replay_trace
+from mas.report import (
+    artifact_rows,
+    build_report,
+    format_artifacts,
+    ledger_markdown,
+    render_markdown,
+    replay_trace,
+)
 from mas.teams import list_teams, load_team
 from mas.util import force_utf8_output
 
@@ -385,6 +392,24 @@ TOOLS: List[Dict[str, Any]] = [
                 "workspace": {
                     "type": "string",
                     "description": "要索引的工作区文件夹（与 path 二选一）",
+                },
+            },
+        },
+    ),
+    _tool(
+        "mas_artifacts",
+        "List the deliverables this machine has produced. The ledger is a "
+        "log of calls and the report is a review of a run - neither "
+        "answers the question that matters a week later: what did I "
+        "actually get? This lists every deliverable with the task it "
+        "came from, where it sits, how big it is, and whether the file "
+        "is still there.",
+        {
+            "type": "object",
+            "properties": {
+                "run_id": {
+                    "type": "string",
+                    "description": "只看某一次运行（默认列出全部）",
                 },
             },
         },
@@ -1146,6 +1171,22 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             "count": len(indexes),
             "files": sum(int(i.get("count") or 0) for i in indexes),
             "summaries": [format_summary(i) for i in indexes],
+        }
+
+    if name == "mas_artifacts":
+        engine = _engine(config)
+        rows = engine.ledger.entries()
+        run_id = arguments.get("run_id")
+        if run_id:
+            rows = [row for row in rows if row.get("run_id") == run_id]
+        # The same implementation the CLI uses, so the two can never
+        # tell the user two different stories about what was produced.
+        items = artifact_rows(rows)
+        return {
+            "artifacts": items,
+            "count": len(items),
+            "missing": len([item for item in items if not item.get("exists")]),
+            "reading": format_artifacts(items),
         }
 
     if name == "mas_seal":

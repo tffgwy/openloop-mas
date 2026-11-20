@@ -140,11 +140,11 @@ server and the skills, and finishes with an offline self-check.
 Pin a specific release instead of "the latest":
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.95
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.96
 ```
 
 ```bash
-MAS_VERSION=0.7.95 bash install.sh
+MAS_VERSION=0.7.96 bash install.sh
 ```
 
 > The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
@@ -1094,6 +1094,34 @@ use the tool, skip this section.
 
   ```bash
   mas selftest --only report_trace_roles
+  ```
+
+- **The thirty-seventh gate `mcp_artifacts`** - the main road into this
+  project is MCP: an agent holding the MCP tools (Claude, GPT, Kimi) can
+  run a loop, read the report, replay the ledger, audit the decisions and
+  list every file it wrote. It could **not answer "what did I actually
+  get?"**.
+  `mas artifacts` could answer that - but **only on the terminal**. The
+  listing lived inside the CLI command, where MCP could not reach it. So
+  an agent that had just closed a loop, holding the whole toolkit, still
+  had to *guess* where the deliverable was.
+  Worse: there was **one** implementation, so the moment a second one was
+  written the two would drift, and the CLI and the MCP would tell two
+  different stories about what this machine produced.
+  Now the listing lives in `mas/report.py` (`artifact_rows()` /
+  `format_artifacts()`) and **both surfaces call the same one**; MCP gains
+  a `mas_artifacts` tool that answers with **data** (the task, the path,
+  the size, the rounds, whether the file is still there) rather than
+  Markdown the caller has to parse.
+  **A deliverable that was deleted afterwards is still listed, and
+  flagged as missing** - "the file is gone" is a fact the reader needs;
+  hiding it is the problem.
+  The gate **proves it can fail**: the shared listing is broken on purpose
+  - it returns nothing - and the gate has to notice that the MCP caller
+  can no longer tell a finished job from no job at all.
+
+  ```bash
+  mas selftest --only mcp_artifacts
   ```
 
 - **The 31st gate `report_audit`** - v0.7.76 made every human decision

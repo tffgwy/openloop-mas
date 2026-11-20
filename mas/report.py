@@ -2472,3 +2472,104 @@ def ledger_markdown(rows: List[Dict[str, Any]]) -> str:
             f"{_short_detail(row).replace('|', '/')} |"
         )
     return "\n".join(lines) + "\n"
+
+def artifact_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The deliverables this machine has produced, one row each.
+
+    The gap this closes
+    ------------------
+    ``mas artifacts`` could list what the loop produced, and nothing
+    else could. That command answered the only question that matters
+    a week later - "what did I actually get?" - and it answered it on
+    the terminal only.
+
+    MCP is the main road into this project: an agent driving Claude,
+    GPT or Kimi holds the MCP tools, not the CLI. Before this function
+    had a home, such an agent could run a loop, read the report, replay
+    the ledger and audit the decisions - and still could not ask
+    "where is the file I asked for?".
+
+    So the listing was written twice in the wrong direction: once as a
+    command that only a terminal could reach. This module is the one
+    implementation, and both surfaces call it.
+
+    What a row holds
+    ----------------
+    Not just a path. A path alone is not a list a person can act on -
+    they would have to open each file to find out which problem it
+    solved. So a row names the task, the status, the size, the folder
+    the run worked in and the other files it produced.
+
+    A row that is *missing* is said so. A deliverable that was deleted
+    or moved afterwards still appears, flagged - because "the file is
+    gone" is a fact the reader needs, and dropping the row would hide
+    it.
+    """
+    items: List[Dict[str, Any]] = []
+    for group in group_runs(rows):
+        summary = run_summary(group["run_id"], group["rows"])
+        path = str(summary.get("artifact_path") or "")
+        if not path:
+            # A run that produced no deliverable is not a deliverable.
+            # Listing it would put a row in the list that has nothing
+            # in it, and the reader would look for a file that was
+            # never written.
+            continue
+        target = pathlib.Path(path)
+        items.append(
+            {
+                "run_id": summary["run_id"],
+                "title": summary.get("title") or "",
+                "goal": summary.get("goal") or "",
+                "status": summary["status"],
+                "path": path,
+                "exists": target.exists(),
+                "chars": int(summary.get("artifact_chars") or 0),
+                "tokens": int(summary.get("tokens") or 0),
+                "iterations": int(summary.get("iterations") or 0),
+                "finished_at": summary.get("finished_at") or "",
+                "workspace": str(summary.get("workspace") or ""),
+                "files": list(summary.get("files") or []),
+            }
+        )
+    return items
+
+
+def format_artifacts(items: List[Dict[str, Any]]) -> str:
+    """Say what the machine produced, in words a person can act on."""
+    if not items:
+        return "还没有任何交付物。跑一次 `mas run` 就会生成。"
+
+    lines: List[str] = []
+    lines.append("共 %d 份交付物：" % len(items))
+    for item in items:
+        flag = "OK " if item.get("exists") else "缺失"
+        # The task first: the path is long and the task is short, and
+        # the task is what the reader is looking for.
+        label = item.get("title") or item.get("goal") or "-"
+        status = str(item.get("status") or "")
+        lines.append(
+            "  [%s] %s  %s  %6d 字  %d 轮"
+            % (
+                flag,
+                label,
+                _both(status, status_reading(status)),
+                int(item.get("chars") or 0),
+                int(item.get("iterations") or 0),
+            )
+        )
+        lines.append("        %s  %s" % (item.get("run_id") or "", item.get("path") or ""))
+        files = item.get("files") or []
+        if files:
+            names = "、".join(
+                str(row.get("path") or "") for row in files if row.get("path")
+            )
+            if names:
+                lines.append("        另外生成：%s" % names)
+    missing = [item for item in items if not item.get("exists")]
+    if missing:
+        lines.append("")
+        lines.append(
+            "⚠ 有 %d 份交付物文件已不在原处（可能被人删了或换了目录）。" % len(missing)
+        )
+    return "\n".join(lines)

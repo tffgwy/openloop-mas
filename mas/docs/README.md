@@ -118,11 +118,11 @@ bash install.sh
 想装固定版本（而不是"最新版"）：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.95
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.96
 ```
 
 ```bash
-MAS_VERSION=0.7.95 bash install.sh
+MAS_VERSION=0.7.96 bash install.sh
 ```
 
 > 脚本默认会往 `PATH` 里加一条 `~/.mas/bin`（Windows 写当前用户的注册表）。
@@ -1163,6 +1163,30 @@ MIT © OpenLoop MAS contributors
 
   ```bash
   mas selftest --only report_trace_roles
+  ```
+
+- **第 37 项门禁 `mcp_artifacts`** —— 这个项目的主打通路是 MCP：
+  拿着 MCP 工具的智能体（接 Claude、GPT、Kimi）能跑闭环、
+  能读报告、能回放账本、能审人工决定、能列它写过的每个文件。
+  但它**答不出「我到底得到了什么」**。
+  `mas artifacts` 能答 —— 但**只在终端上**。
+  清单写在 CLI 命令的内部，MCP 够不着它。
+  于是刚跑完一次闭环的智能体，握着一整套工具，
+  仍然得**猜**交付物在哪儿，或者请人自己去看看。
+  更麻烦的是：清单**只有一份实现**，所以将来写出第二份时，
+  两份必然漂移，CLI 和 MCP 会就「这台机器产出了什么」
+  讲两个不同的故事。
+  现在清单住进 `mas/report.py`（`artifact_rows()` / `format_artifacts()`），
+  两个界面**共用同一份**；MCP 多出 `mas_artifacts` 工具，
+  答的是**数据**（任务名、路径、字数、轮次、文件还在不在），
+  不是让人去解析的 Markdown。
+  **文件被人删掉的交付物仍然列出来，并被标成「缺失」** ——
+  「文件没了」是读者需要知道的事实，藏起来才是问题。
+  门禁**自证能失败**：把共享清单打坏成返回空，
+  门禁必须发现 MCP 调用者已经分不出「干完了」和「什么都没干」。
+
+  ```bash
+  mas selftest --only mcp_artifacts
   ```
 
 - **第 31 项门禁 `report_audit`** —— v0.7.76 让每一次人工决定（起草、批准、撤销）

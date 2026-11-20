@@ -57,6 +57,9 @@ from mas.selftest_doc_text import (
 from mas.selftest_isolation import (
     check_the_selftest_leaves_the_machine_alone,
 )
+from mas.selftest_mcp_artifacts import (
+    check_the_deliverables_reach_the_mcp_caller,
+)
 from mas.selftest_onboarding import (
     check_a_beginner_can_walk_the_docs_and_close_a_loop,
 )
@@ -5533,6 +5536,7 @@ CHECKS = (
     check_the_report_reads_the_human_tickets,
     check_the_report_reads_the_drafts,
     check_the_report_reads_every_ledger_row,
+    check_the_deliverables_reach_the_mcp_caller,
     check_the_documents_are_still_text,
     check_the_selftest_leaves_the_machine_alone,
 )

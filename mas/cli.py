@@ -29,7 +29,9 @@ from mas.orchestration import CANDIDATE_ANGLES
 from mas.reason_text import continuation_command, reason_hint, reason_text
 from mas.relay import serve_relay
 from mas.report import (
+    artifact_rows,
     build_report,
+    format_artifacts,
     group_runs,
     group_threads,
     ledger_markdown,
@@ -2154,62 +2156,13 @@ def cmd_artifacts(args: argparse.Namespace) -> int:
     rows, missing = _rows_for_run(rows, args.run_id)
     if missing:
         return _report_missing(missing, args, None)
-    items = []
-    for group in group_runs(rows):
-        summary = run_summary(group["run_id"], group["rows"])
-        path = str(summary.get("artifact_path") or "")
-        if not path:
-            continue
-        target = pathlib.Path(path)
-        items.append(
-            {
-                "run_id": summary["run_id"],
-                # The task this deliverable came from. A list of run
-                # ids and paths is not a list the user can act on: they
-                # would have to open each file to find out what it is.
-                "title": summary.get("title") or "",
-                "goal": summary.get("goal") or "",
-                "status": summary["status"],
-                "path": path,
-                "exists": target.exists(),
-                "chars": int(summary.get("artifact_chars") or 0),
-                "tokens": int(summary.get("tokens") or 0),
-                "iterations": int(summary.get("iterations") or 0),
-                "finished_at": summary.get("finished_at") or "",
-                # The folder the run worked in, and the files it
-                # wrote. Without them the list showed the deliverable
-                # only, and the rest of the output was invisible.
-                "workspace": str(summary.get("workspace") or ""),
-                "files": list(summary.get("files") or []),
-            }
-        )
+    # The listing itself lives in ``mas.report``, because the MCP
+    # surface needs the same answer and the two must never drift.
+    items = artifact_rows(rows)
     if args.json:
         _print({"artifacts": items, "count": len(items)}, True)
         return 0
-    if not items:
-        print("还没有任何交付物。跑一次 `mas run` 就会生成。")
-        return 0
-    print(f"共 {len(items)} 份交付物：")
-    for item in items:
-        flag = "OK " if item["exists"] else "缺失"
-        # The task first: the path is long and the task is short, and
-        # the task is what the reader is looking for.
-        label = item["title"] or item["goal"] or "-"
-        print(
-            f"  [{flag}] {label}  {_both(item['status'], status_reading(item['status']))}  "
-            f"{item['chars']:>6} 字  {item['iterations']} 轮"
-        )
-        print(f"        {item['run_id']}  {item['path']}")
-        files = item.get("files") or []
-        if files:
-            names = "、".join(
-                str(row.get("path") or "") for row in files if row.get("path")
-            )
-            print(f"        另外生成：{names}")
-    missing = [i for i in items if not i["exists"]]
-    if missing:
-        print()
-        print(f"⚠ 有 {len(missing)} 份交付物文件已不在原处（可能被人删了或换了目录）。")
+    print(format_artifacts(items))
     return 0
 
 
