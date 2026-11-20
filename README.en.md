@@ -140,11 +140,11 @@ server and the skills, and finishes with an offline self-check.
 Pin a specific release instead of "the latest":
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.94
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.95
 ```
 
 ```bash
-MAS_VERSION=0.7.94 bash install.sh
+MAS_VERSION=0.7.95 bash install.sh
 ```
 
 > The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
@@ -1066,6 +1066,34 @@ use the tool, skip this section.
 
   ```bash
   mas selftest --only doc_text_integrity
+  ```
+
+- **Gate 36 `report_trace_roles`** --- the last column of the ledger table is
+  the summary. It comes from `_short_detail()` in `mas/report.py`, which
+  dispatches on the ledger role: `closure`, `planner`, `review`,
+  `reflector`, `handback` and so on.
+  **Six roles had no branch at all**: `write`, `draft`, `truncated`,
+  `reask`, `reask_failed` and `lead`.
+  The dispatch falls through to `return ""`, so those rows rendered as
+  **empty strings** --- the row was there, with its number, its
+  timestamp, its run id and its role, and the one column that said
+  *what happened* was blank.
+  That is not a cosmetic gap: the `write` row is the one line that
+  answers **"what did the agent actually change on my machine?"** ---
+  which file, how many bytes, created or overwritten ---
+  and it was invisible. A run that wrote three files and a run that
+  wrote nothing looked exactly the same.
+  Now the `write` row names the file, the size and whether it was
+  created, the `draft` row names the draft and the file, the
+  `truncated` row says the answer was cut off and will be retried,
+  the `reask` row names the criteria that were still missing, and the
+  `lead` row reads the advisor's advice.
+  The gate **proves it can fail**: break `_short_detail()` on purpose
+  so it says nothing, and the gate has to notice that it can no longer
+  tell a row that happened from a row that did not.
+
+  ```bash
+  mas selftest --only report_trace_roles
   ```
 
 - **The 31st gate `report_audit`** - v0.7.76 made every human decision

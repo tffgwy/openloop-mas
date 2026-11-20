@@ -7,6 +7,7 @@ here invents data - every number comes from the ledger.
 
 from __future__ import annotations
 
+import contextlib
 import pathlib
 from typing import Any, Dict, List, Optional
 
@@ -2160,6 +2161,65 @@ def _human_detail(row: Dict[str, Any]) -> str:
             return (
                 "\uff1b".join(issue_reading(i) for i in issues)
             )[:300]
+    if role == "write":
+        written = row.get("written") or []
+        parts = []
+        for item in written:
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("path") or item.get("absolute") or "").strip()
+            if not path:
+                continue
+            verb = "新建了" if item.get("created") else "写了"
+            size = item.get("bytes")
+            size_text = ""
+            if size is not None:
+                with contextlib.suppress(TypeError, ValueError):
+                    size_text = "%d 字节" % int(size)
+            parts.append((verb + path + ("（" + size_text + "）" if size_text else "")))
+        errors = row.get("errors") or []
+        for item in errors:
+            text = str(item).strip()
+            if text:
+                parts.append("写入出错：" + text)
+        if parts:
+            return "；".join(parts)[:300]
+    if role == "draft":
+        drafts = row.get("drafts") or []
+        parts = []
+        for item in drafts:
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("path") or item.get("absolute") or "").strip()
+            ident = str(item.get("id") or "").strip()
+            if not path:
+                continue
+            parts.append("提议改动 " + path + (("（" + ident + "）") if ident else ""))
+        if parts:
+            return "；".join(parts)[:300]
+    if role == "truncated":
+        parts = []
+        error = str(row.get("error") or "").strip()
+        if error:
+            parts.append("回答被截断：" + error)
+        if row.get("retry"):
+            parts.append("将重试")
+        return "；".join(parts)[:300]
+    if role == "reask":
+        missing = [str(m) for m in (row.get("missing") or []) if str(m).strip()]
+        if missing:
+            return "补问未满足的标准：" + "、".join(missing)[:280]
+    if role == "reask_failed":
+        error = str(row.get("error") or "").strip()
+        if error:
+            return "补问失败：" + error[:280]
+    if role == "lead":
+        lead = row.get("lead")
+        if isinstance(lead, dict) and lead:
+            for key in ("summary", "advice", "reason", "decision", "verdict"):
+                value = str(lead.get(key) or "").strip()
+                if value:
+                    return value[:300]
     return detail
 
 
@@ -2219,6 +2279,107 @@ def _short_detail(row: Dict[str, Any]) -> str:
             f"模式={row.get('mode')} 可用={row.get('usable')} "
             f"跳过={row.get('skipped')} 缺席={row.get('missing')}"
         )
+    if role == "write":
+        # The row that says what the engine actually put on the disk.
+        # The trace had no branch for it, so the one line that proves
+        # the deliverable reached a file rendered as an empty string -
+        # and an audit of "what did the agent change on my disk" had
+        # nothing to read.
+        parts: List[str] = []
+        written = row.get("written") or []
+        for item in written:
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("path") or item.get("absolute") or "").strip()
+            if not path:
+                continue
+            bits = [path]
+            size = item.get("bytes")
+            if size is not None:
+                with contextlib.suppress(TypeError, ValueError):
+                    bits.append("%d 字节" % int(size))
+            if item.get("created"):
+                bits.append("新建")
+            elif item.get("written") is False:
+                bits.append("未写入")
+            parts.append(" ".join(bits))
+        errors = row.get("errors") or []
+        for item in errors:
+            text = str(item).strip()
+            if text:
+                parts.append("写入出错：" + text)
+        if parts:
+            return "；".join(parts)[:300]
+        return "没有文件被写入"
+    if role == "draft":
+        # The row that says the loop proposed a change instead of
+        # making it. The trace had no branch for it, so the row that
+        # names the file a human still has to approve rendered blank.
+        drafts = row.get("drafts") or []
+        parts = []
+        for item in drafts:
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("path") or item.get("absolute") or "").strip()
+            ident = str(item.get("id") or "").strip()
+            bits = []
+            if ident:
+                bits.append(ident)
+            if path:
+                bits.append(path)
+            if not bits:
+                continue
+            parts.append(" ".join(bits))
+        if parts:
+            return "；".join(parts)[:300]
+        return "提议了改动"
+    if role == "truncated":
+        # The call ran out of room mid-answer. The row is charged to the
+        # budget, and it used to render as an empty string - so a run
+        # that had to retry showed nothing about why it retried.
+        parts = []
+        error = str(row.get("error") or "").strip()
+        if error:
+            parts.append(error)
+        tokens = row.get("tokens")
+        if tokens is not None:
+            with contextlib.suppress(TypeError, ValueError):
+                parts.append("已用 %d tokens" % int(tokens))
+        if row.get("retry"):
+            parts.append("将重试")
+        return "；".join(parts)[:300]
+    if role == "reask":
+        # The follow-up question the loop asked because a criterion was
+        # not met yet. It used to render blank, so the trace showed a
+        # question going out with no question in it.
+        missing = row.get("missing") or []
+        names = [str(m) for m in missing if str(m).strip()]
+        if names:
+            return "补问：" + "、".join(names)[:280]
+        return "补问"
+    if role == "reask_failed":
+        # The follow-up question failed to be answered. The row carries
+        # the reason, and it used to render blank.
+        parts = []
+        error = str(row.get("error") or "").strip()
+        if error:
+            parts.append(error)
+        missing = row.get("missing") or []
+        names = [str(m) for m in missing if str(m).strip()]
+        if names:
+            parts.append("未满足：" + "、".join(names))
+        return "；".join(parts)[:300]
+    if role == "lead":
+        # The advisor's answer. It used to render blank, so the trace
+        # showed a consulted advisor saying nothing.
+        lead = row.get("lead")
+        if isinstance(lead, dict) and lead:
+            for key in ("summary", "advice", "reason", "decision", "verdict"):
+                value = str(lead.get(key) or "").strip()
+                if value:
+                    return value[:300]
+            return "、".join(str(k) for k in lead)[:300]
+        return "顾问已咨询"
     if role == "reflector":
         # The reflector is the role that says why the next attempt has
         # to change. The trace had no branch for it, so the one line

@@ -109,6 +109,11 @@ ROLE_READING: Dict[str, str] = {
     # which one happened.
     "draft_approve": "批准改动",
     "draft_undo": "撤销改动",
+    # The row the loop writes when it proposed a change instead of
+    # making it. Without a reading of its own it showed up in the
+    # ledger table as the bare word "draft" - English in a column
+    # that is otherwise entirely Chinese.
+    "draft": "提议改动",
 }
 
 

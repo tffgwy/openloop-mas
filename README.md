@@ -118,11 +118,11 @@ bash install.sh
 想装固定版本（而不是"最新版"）：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.94
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.95
 ```
 
 ```bash
-MAS_VERSION=0.7.94 bash install.sh
+MAS_VERSION=0.7.95 bash install.sh
 ```
 
 > 脚本默认会往 `PATH` 里加一条 `~/.mas/bin`（Windows 写当前用户的注册表）。
@@ -1138,6 +1138,31 @@ MIT © OpenLoop MAS contributors
 
   ```bash
   mas selftest --only doc_text_integrity
+  ```
+
+- **第 36 项门禁 `report_trace_roles`** —— 账本表的最后一列叫「摘要」。
+  它来自 `mas/report.py` 的 `_short_detail()`，
+  按角色分派：`closure`、`planner`、`review`、`reflector`、`handback`……
+  **有六个角色根本没有分支**：`write`、`draft`、`truncated`、
+  `reask`、`reask_failed`、`lead`。
+  分派落到最后是 `return ""`，所以这些行**渲染成空字符串** ——
+  表格里那一行在，有序号、有时间、有运行号、有角色，
+  唯一说「发生了什么」的那一列**是空的**。
+  这不是化妆品级别的洞：`write` 行是唯一一行能回答
+  **「这个智能体到底改了我机器上的什么」** 的记录 ——
+  哪个文件、多少字节、是新建还是覆盖。
+  而**写了三个文件的运行，和什么都没写的运行，在报告里长得一模一样**。
+  现在 `write` 行读出文件名、字节数与新建/未写入，
+  `draft` 行读出草稿号与文件，
+  `truncated` 行读出截断原因与「将重试」，
+  `reask` 行读出哪几条标准没过，
+  `lead` 行读出顾问的建议，
+  `role_reading()` 也补上了 `draft` 的中文读法「提议改动」。
+  门禁**自证能失败**：把 `_short_detail()` 故意打坏成什么都不说，
+  门禁必须发现它已经分不出「发生过的事」和「没发生过的事」。
+
+  ```bash
+  mas selftest --only report_trace_roles
   ```
 
 - **第 31 项门禁 `report_audit`** —— v0.7.76 让每一次人工决定（起草、批准、撤销）

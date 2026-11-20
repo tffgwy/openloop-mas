@@ -60,6 +60,7 @@ EXPECTED_GATE_NAMES = (
     "report_audit",
     "report_tickets",
     "report_drafts",
+    "report_trace_roles",
     "doc_text_integrity",
     "selftest_isolation",
 )
