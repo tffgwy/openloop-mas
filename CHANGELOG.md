@@ -4,6 +4,79 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.98] - 2026-11-21
+
+### 一份报告不该握着两个答案
+
+v0.7.97 把闭合判定放进了 `mas/report.py`，命令行和 MCP 共用一份。那之后，
+判定就一直是**按「尝试」算**的，而报告里的线程判定**按「问题」算**——两套粒度。
+
+后果不是措辞问题，是**逻辑矛盾**。一个失败后又 resume 成功的问题，
+同一份报告里会同时说：
+
+```
+threads:    [('T-1', closed=True)]        <- 问题已闭合
+VERDICT:    ok=False ['runs_not_closed']   <- 还有东西在等
+```
+
+**一份报告，两个答案。**而且更要命的是：**失败→resume→成功这条核心工作流，
+永远拿不到 `ok=True`**——问题队列只会越积越多，而一个永远不清空的队列，
+教会读者忽略它。
+
+### 第十七个不变量
+
+> **闭合的粒度是问题，不是尝试；报告和判定必须用同一个粒度说话。**
+
+被后来的成功尝试**取代**的失败，是**历史**，不是**待办**。历史不删，但不该占着队列。
+
+### 改了什么
+
+* `mas/report.py:build_report()` 新增两个数：
+  * `totals["not_closed_open"]` —— 仍在开放问题里的失败尝试数（**判定建在它上面**）
+  * `totals["not_closed_superseded"]` —— 已被后来成功尝试取代的失败数
+  * `totals["not_closed"]` 保持原样：**所有**失败尝试，历史照旧不丢
+* `mas/report.py:closure_verdict()`：判定改用 `not_closed_open`；
+  `counts` 同时给出三个数，读者能看到历史与待办的区别。
+* 新增 `totals["problem_closure_rate"]` 与 `verdict["problem_closure_rate"]`：
+  **问题闭环率**（已解决问题 / 全部问题）。原有的 `closure_rate` 是**尝试闭环率**，
+  两个都留着，各自报出自己的粒度。
+* `format_closure()` 与 `render_markdown()`：分别报「问题 N 个（已解决 x / 还开着 y），
+  问题闭环率 z%」和「尝试 N 次（闭合 x / 未闭合 y），尝试闭环率 z%」，
+  并在有被取代的失败时明说「其中 N 次失败已被后来的成功尝试取代，不算待办」。
+
+**没有删掉任何历史。**`not_closed` 仍然是全部失败尝试数；
+只是判定不再拿历史当待办。
+
+### 第 39 项门禁 `closure_supersede`
+
+门禁要求：
+
+* 被后来成功尝试**取代**的失败**不占着队列**（判为闭合）；
+* 最后一次尝试失败的问题**仍然开着**（判为未闭合，并点名 `problems_open`）；
+* **报告和判定不能对同一个问题给出相反的答案**；
+* 被取代的失败**仍然被计作历史**（`not_closed` / `not_closed_superseded` 各为 1）；
+* **两个闭环率都报出自己的粒度**（尝试 50% / 问题 100%）；
+* **命令行和 MCP 给出同一个答案**（v0.7.97 的承诺不能因为换了粒度而破掉）。
+
+门禁**独立实现两遍判定**（`_supersede_verdicts` 与 `_supersede_verdicts_independent`），
+并**自证能失败**：把判定**故意打坏**成「每次失败都算待办」（也就是旧口径），
+门禁必须发现「失败后被成功取代」的问题又被报成未完成。
+
+### 验证
+
+* `mas selftest --only closure_supersede` → 通过
+* `pytest tests/test_closure_supersede_798.py` → 18 项通过
+* `pytest tests/test_closure_verdict_797.py tests/test_gate_count_is_pinned.py tests/test_one_problem_one_thread.py tests/test_handback_report_768.py` → 58 项通过
+* `ruff check .` → All checks passed
+* 口径对照表（真实代码跑出来的，不是推测）：
+
+  | 同一问题的尝试序列 | 问题闭合 | 未闭合尝试 | 开放问题 | 判定 |
+  | --- | --- | --- | --- | --- |
+  | 失败 → 成功 | 是 | 1（已被取代） | 0 | **闭合** |
+  | 成功 → 失败 | 否 | 1（仍在等） | 1 | 未闭合 |
+  | 失败 → 失败 → 成功 | 是 | 2（已被取代） | 0 | **闭合** |
+  | 成功 → 成功 | 是 | 0 | 0 | 闭合 |
+
 ## [0.7.97] - 2026-11-21
 
 ### 闭合这件事终于有人能回答了

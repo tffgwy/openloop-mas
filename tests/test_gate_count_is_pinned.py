@@ -63,6 +63,7 @@ EXPECTED_GATE_NAMES = (
     "report_trace_roles",
     "mcp_artifacts",
     "closure_verdict",
+    "closure_supersede",
     "doc_text_integrity",
     "selftest_isolation",
 )

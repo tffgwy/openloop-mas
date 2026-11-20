@@ -1106,6 +1106,30 @@ def build_report(
     failed_runs = [r for r in runs if not r["closed"]]
     threads = group_threads(runs)
     open_threads = [t for t in threads if not t["closed"]]
+    # The failed attempts that are still waiting, as opposed to the
+    # failed attempts that were *superseded*.
+    #
+    # A problem that failed once and then succeeded is closed: the
+    # later attempt replaced the earlier one. Counting the earlier
+    # failure as "still waiting" is how a resumed problem stays in
+    # the open queue forever - and the report would then say the
+    # thread is closed while the verdict says it is not, which is
+    # two answers to one question.
+    #
+    # So the two counts are kept apart on purpose:
+    #
+    # * ``not_closed`` - every attempt that did not close. History.
+    # * ``not_closed_open`` - the failed attempts that belong to a
+    #   problem that is *still open*. Work that is still waiting.
+    #
+    # The closure verdict is built on the second one, because the
+    # question it answers is "is anything still waiting?", not "did
+    # every try succeed?".
+    open_thread_ids = {str(t.get("thread_id") or "") for t in open_threads}
+    failed_open = [
+        r for r in failed_runs if thread_of(r) in open_thread_ids
+    ]
+    failed_superseded = [r for r in failed_runs if r not in failed_open]
     # The sealed conclusions, checked against the disk as it stands
     # now. A report that says "3 closed" and does not say whether
     # those three conclusions still hold is a report about the past
@@ -1174,11 +1198,31 @@ def build_report(
             "runs": len(runs),
             "closed": len(closed),
             "not_closed": len(failed_runs),
+            # The failed attempts that are still waiting, and the ones
+            # a later attempt replaced. Two different facts, and the
+            # closure verdict is built on the first.
+            "not_closed_open": len(failed_open),
+            "not_closed_superseded": len(failed_superseded),
             # How many distinct problems the ledger holds.
             "problems": len(threads),
             "problems_open": len(open_threads),
             "problems_closed": len(threads) - len(open_threads),
+            # Two closure rates, because there are two grains.
+            #
+            # ``closure_rate`` counts attempts: of the runs that were
+            # made, how many closed. ``problem_closure_rate`` counts
+            # problems: of the things the human had to deal with, how
+            # many are done. A problem that failed and then succeeded
+            # is one problem, closed - but two attempts, one of which
+            # failed. Printing the attempt rate next to a verdict of
+            # "closed" reads like a contradiction, and it is one:
+            # two grains, one number.
             "closure_rate": round(len(closed) / len(runs), 4) if runs else 0.0,
+            "problem_closure_rate": (
+                round((len(threads) - len(open_threads)) / len(threads), 4)
+                if threads
+                else 0.0
+            ),
             "entries": len(rows),
             # The spend of every run in this report.
             "tokens": sum(int(run.get("tokens") or 0) for run in runs),
@@ -1466,7 +1510,7 @@ def render_markdown(report: Dict[str, Any]) -> str:
     lines.append(f"生成时间：{report.get('generated_at', '')}")
     lines.append(
         f"运行总数：{totals.get('runs', 0)}　已闭环：{totals.get('closed', 0)}　"
-        f"未闭环：{totals.get('not_closed', 0)}　闭环率：{totals.get('closure_rate', 0):.0%}"
+        f"未闭环：{totals.get('not_closed', 0)}　尝试闭环率：{totals.get('closure_rate', 0):.0%}"
     )
     # Runs are attempts; problems are what the human actually has to
     # deal with. Saying both stops the report from looking like three
@@ -1474,7 +1518,8 @@ def render_markdown(report: Dict[str, Any]) -> str:
     lines.append(
         f"待解决问题：{totals.get('problems_open', 0)} 个"
         f"（共 {totals.get('problems', 0)} 个问题，"
-        f"{totals.get('problems_closed', 0)} 个已解决）"
+        f"{totals.get('problems_closed', 0)} 个已解决，"
+        f"问题闭环率 {totals.get('problem_closure_rate', 0):.0%}）"
     )
     lines.append(f"总花费：{int(totals.get('tokens', 0) or 0)} token")
     # The human queue, in the headline. The report says how much the
@@ -2597,9 +2642,29 @@ def closure_verdict(report: Dict[str, Any]) -> Dict[str, Any]:
     What "closed" means here
     -----------------------
     Not "the runs succeeded". A loop is closed when *nothing is left
-    waiting*: every run closed, no problem thread is open, no ticket is
-    waiting for a person, no draft is pending, no seal has drifted, and
-    no decision chain is broken.
+    waiting*: no problem thread is open, no ticket is waiting for a
+    person, no draft is pending, no seal has drifted, and no decision
+    chain is broken.
+
+    The grain is the *problem*, not the attempt
+    -------------------------------------------
+    A problem that failed once and then succeeded is closed. The later
+    attempt replaced the earlier one - that is what a resume is for.
+    So the verdict counts the failed attempts that belong to a problem
+    that is still open, and a failure that was superseded does not
+    hold the loop open.
+
+    This used to be counted two ways at once, and the two ways
+    disagreed. The thread reading said "closed" (the last attempt
+    closed the problem) while the verdict said "not closed" (an
+    earlier attempt had failed) - one report, two answers to the same
+    question. A resumed problem could then never be reported as
+    closed, which made the core workflow of this project - fail,
+    resume, succeed - impossible to finish.
+
+    The history is not lost: ``counts["not_closed"]`` still holds
+    every failed attempt, and ``counts["not_closed_superseded"]``
+    holds the ones a later attempt replaced.
 
     Every one of those is reported separately, with its own count, so a
     reader who disagrees with the verdict can see which part they
@@ -2624,6 +2689,17 @@ def closure_verdict(report: Dict[str, Any]) -> Dict[str, Any]:
 
     runs = int(totals.get("runs") or 0)
     not_closed = int(totals.get("not_closed") or 0)
+    # The failed attempts that are still waiting. A report built by
+    # an older version of this file has no such number, so the
+    # fallback is the count it does have - and a report without
+    # threads at all falls back to "every failure is still waiting",
+    # which is the safe direction to be wrong in.
+    not_closed_open = int(
+        totals.get("not_closed_open")
+        if totals.get("not_closed_open") is not None
+        else not_closed
+    )
+    superseded = int(totals.get("not_closed_superseded") or 0)
     open_problems = int(totals.get("problems_open") or 0)
     waiting = int(totals.get("tickets_waiting") or 0)
     pending_drafts = int(drafts.get("pending_count") or 0)
@@ -2631,7 +2707,11 @@ def closure_verdict(report: Dict[str, Any]) -> Dict[str, Any]:
     audit_problems = int(totals.get("audit_problems") or 0)
     unmatched_undos = int(totals.get("undos_unmatched") or 0)
 
-    reason("runs_not_closed", not_closed, "有 %d 次运行没有闭合" % not_closed)
+    reason(
+        "runs_not_closed",
+        not_closed_open,
+        "还有 %d 次尝试没有闭合，这些尝试所在的问题还开着" % not_closed_open,
+    )
     reason("problems_open", open_problems, "有 %d 条问题线索还开着" % open_problems)
     reason("tickets_waiting", waiting, "有 %d 张工单在等人" % waiting)
     reason("drafts_pending", pending_drafts, "有 %d 份草稿等人批准" % pending_drafts)
@@ -2665,14 +2745,25 @@ def closure_verdict(report: Dict[str, Any]) -> Dict[str, Any]:
             "runs": runs,
             "closed": int(totals.get("closed") or 0),
             "not_closed": not_closed,
+            # The failed attempts that are still waiting - the number
+            # the verdict is built on - and the ones a later attempt
+            # replaced.
+            "not_closed_open": not_closed_open,
+            "not_closed_superseded": superseded,
             "problems_open": open_problems,
+            "problems": int(totals.get("problems") or 0),
+            "problems_closed": int(totals.get("problems_closed") or 0),
             "tickets_waiting": waiting,
             "drafts_pending": pending_drafts,
             "seal_drifted": drifted,
             "audit_problems": audit_problems,
             "undos_unmatched": unmatched_undos,
         },
+        # The attempt-grain rate and the problem-grain rate. The
+        # verdict is built on the second one, so it is the one that
+        # has to be next to the headline.
         "closure_rate": float(totals.get("closure_rate") or 0.0),
+        "problem_closure_rate": float(totals.get("problem_closure_rate") or 0.0),
         "open_threads": [
             {
                 "thread_id": str(thread.get("thread_id") or thread.get("id") or ""),
@@ -2698,9 +2789,26 @@ def format_closure(verdict: Dict[str, Any]) -> str:
         return "\n".join(lines)
 
     ok = bool(verdict.get("ok"))
-    lines.append("[通过] %s" % verdict.get("headline") if ok else "[未闭] %s" % verdict.get("headline"))
     lines.append(
-        "       运行 %d 次（闭合 %d / 未闭合 %d），闭合率 %.0f%%"
+        ("[通过] %s" if ok else "[未闭] %s") % verdict.get("headline")
+    )
+    # Two grains, two rates, both named. The attempt rate is not
+    # wrong - it is the rate of the tries - but putting it next to a
+    # verdict without saying which grain it measures is how a reader
+    # concludes the tool is contradicting itself.
+    problems = int(counts.get("problems") or 0)
+    problems_closed = int(counts.get("problems_closed") or 0)
+    lines.append(
+        "       问题 %d 个（已解决 %d / 还开着 %d），问题闭环率 %.0f%%"
+        % (
+            problems,
+            problems_closed,
+            int(counts.get("problems_open") or 0),
+            float(verdict.get("problem_closure_rate") or 0.0) * 100,
+        )
+    )
+    lines.append(
+        "       尝试 %d 次（闭合 %d / 未闭合 %d），尝试闭环率 %.0f%%"
         % (
             int(counts.get("runs") or 0),
             int(counts.get("closed") or 0),
@@ -2708,6 +2816,15 @@ def format_closure(verdict: Dict[str, Any]) -> str:
             float(verdict.get("closure_rate") or 0.0) * 100,
         )
     )
+    # The superseded attempts are history, not work in progress. A
+    # reader who sees "2 runs did not close" under a closed verdict
+    # has to be told that a later attempt replaced them, or the two
+    # numbers look like a contradiction.
+    superseded = int(counts.get("not_closed_superseded") or 0)
+    if superseded:
+        lines.append(
+            "       （其中 %d 次失败已被后来的成功尝试取代，不算待办）" % superseded
+        )
     for reason in verdict.get("reasons") or []:
         lines.append("       - %s" % reason.get("detail"))
     for thread in verdict.get("open_threads") or []:

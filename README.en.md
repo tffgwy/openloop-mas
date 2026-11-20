@@ -140,11 +140,11 @@ server and the skills, and finishes with an offline self-check.
 Pin a specific release instead of "the latest":
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.97
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.98
 ```
 
 ```bash
-MAS_VERSION=0.7.97 bash install.sh
+MAS_VERSION=0.7.98 bash install.sh
 ```
 
 > The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
@@ -1157,6 +1157,45 @@ use the tool, skip this section.
   always says closed, and the gate has to notice.
   ```bash
   mas selftest --only closure_verdict
+  ```
+- **The thirty-ninth gate `closure_supersede`** - v0.7.97 moved the
+  closure verdict into the code; this release fixes the fact that it
+  **counted at the wrong grain**.
+
+  The report groups runs into **problems** (one problem, two attempts,
+  closed - the later attempt superseded the earlier one), while the
+  verdict counted **attempts**. So one report could say both at once:
+
+  ```
+  threads:    [('T-1', closed=True)]        <- the problem is closed
+  VERDICT:    ok=False ['runs_not_closed']   <- something is still waiting
+  ```
+
+  One report, two answers. And the consequence was worse than a wording
+  problem: **a problem that failed and then succeeded could never reach
+  `ok=True`**. Fail, resume, succeed - the core workflow of this project -
+  could not finish. The queue of open problems could only ever grow, and
+  a queue that never empties teaches the reader to ignore it.
+
+  Closure is now counted at the grain of the **problem**:
+
+  * a failure that a later successful attempt **superseded** is
+    **history**, not work in progress - the history is kept, it no
+    longer holds the queue open;
+  * `not_closed` (every failed attempt), `not_closed_open` (still
+    waiting) and `not_closed_superseded` (replaced) each say their own
+    thing;
+  * the attempt closure rate and the new **problem closure rate** both
+    exist, and each names its grain;
+  * the rendering says it out loud: "1 of the failures was replaced by a
+    later successful attempt, so it is not work in progress".
+
+  The gate **implements the reading twice** and **proves it can fail**:
+  the verdict is broken on purpose - back to the old grain, where every
+  failure counts as waiting - and the gate has to notice that a
+  superseded problem is reported as unfinished again.
+  ```bash
+  mas selftest --only closure_supersede
   ```
 - **The 31st gate `report_audit`** - v0.7.76 made every human decision
   (the proposal, the approval, the undo) leave a hash-linked entry next to the

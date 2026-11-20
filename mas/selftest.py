@@ -51,6 +51,9 @@ from mas.selftest_bootstrap import (
 from mas.selftest_bootstrap_execution import (
     check_the_bootstrap_path_is_executed_and_not_just_described,
 )
+from mas.selftest_closure_supersede import (
+    check_the_report_and_the_verdict_agree_on_the_grain,
+)
 from mas.selftest_closure_verdict import (
     check_the_closure_verdict_reaches_both_surfaces,
 )
@@ -5541,6 +5544,7 @@ CHECKS = (
     check_the_report_reads_every_ledger_row,
     check_the_deliverables_reach_the_mcp_caller,
     check_the_closure_verdict_reaches_both_surfaces,
+    check_the_report_and_the_verdict_agree_on_the_grain,
     check_the_documents_are_still_text,
     check_the_selftest_leaves_the_machine_alone,
 )

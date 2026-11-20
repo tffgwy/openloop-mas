@@ -118,11 +118,11 @@ bash install.sh
 想装固定版本（而不是"最新版"）：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.97
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.98
 ```
 
 ```bash
-MAS_VERSION=0.7.97 bash install.sh
+MAS_VERSION=0.7.98 bash install.sh
 ```
 
 > 脚本默认会往 `PATH` 里加一条 `~/.mas/bin`（Windows 写当前用户的注册表）。
@@ -1214,6 +1214,23 @@ MIT © OpenLoop MAS contributors
   把共享判定替换成「永远说闭合」，门禁必须报警。
   ```bash
   mas selftest --only closure_verdict
+  ```
+- **第 39 项门禁 `closure_supersede`** —— v0.7.97 把闭合判定放进了代码，
+  这一版修的是它**数错了粒度**：
+  报告按**问题**分组（一次失败后 resume 成功 = 一个问题，已闭合），
+  判定却按**尝试**数——**同一份报告能同时说「问题已闭合」和「还有东西在等」**。
+  更要命的是：**失败→resume→成功这条核心工作流永远拿不到 `ok=True`**，
+  问题队列只会越积越多，而一个永远不清空的队列，教会读者忽略它。
+  现在闭合的粒度是**问题**：
+  * 被后来的成功尝试**取代**的失败，是**历史**，不是**待办**——历史不删，但不再占队列；
+  * `not_closed`（全部失败尝试）、`not_closed_open`（仍在等的）、
+    `not_closed_superseded`（已被取代的）三个数**各说各的**；
+  * 尝试闭环率和**问题闭环率**并存，各报各的粒度，不再混着说；
+  * 渲染会把话说全：「其中 1 次失败已被后来的成功尝试取代，不算待办」。
+  门禁**独立实现两遍判定**并**自证能失败**：把判定打坏成旧口径（「每次失败都算待办」），
+  门禁必须发现被取代的失败又把问题报成未完成。
+  ```bash
+  mas selftest --only closure_supersede
   ```
 - **第 31 项门禁 `report_audit`** —— v0.7.76 让每一次人工决定（起草、批准、撤销）
   都在工作区旁边留下一条哈希链，并在主账本里留一份副本；
