@@ -500,8 +500,6 @@ fi          # 不存在时静默跳过
 [OK] mas --version / mas doctor --no-network / mas demo / mas bench --repeats 1
 [OK] fresh-install verification passed
 ```
-[OK] fresh-install verification passed
-```
 
 ### CI 三平台实跑（run 43299517751，head `ed5b179`）
 

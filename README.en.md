@@ -140,11 +140,11 @@ server and the skills, and finishes with an offline self-check.
 Pin a specific release instead of "the latest":
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.93
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.94
 ```
 
 ```bash
-MAS_VERSION=0.7.93 bash install.sh
+MAS_VERSION=0.7.94 bash install.sh
 ```
 
 > The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
@@ -981,6 +981,91 @@ use the tool, skip this section.
 
   ```bash
   mas selftest --only report_tickets
+  ```
+
+- **The 34th gate `report_drafts`** - when the engine wants to change a
+  file that **already exists**, it does not change it: it stages the
+  change as a **draft** and leaves the file alone until a human
+  approves it - that is the `edit_policy` rule of v0.7.72, and the
+  reason the tool does not destroy work. `mas drafts` shows the queue
+  and `mas status` counts it. But **`mas report` never looked at it** -
+  `run_summary()` in `mas/report.py` reads the `closure`, `planner`,
+  `candidates`, `review`, `reflector` and `handback` rows, and there is
+  **no `draft` branch in that dispatch at all**.
+
+  The consequence is concrete: a draft waiting for a human was
+  **invisible** in `mas status` and in `mas report` - the two views a
+  beginner actually reads. Worse, a run that closed *because its own
+  proposed change* was judged by the machine checks (the checks read
+  the draft as an overlay, so the loop can close on its own proposal)
+  reported `closed` with a deliverable that passed, while the file on
+  the disk was **byte for byte the old one**. The report said "closed",
+  the disk said "nothing happened", and nothing in between said a word.
+  A capability that lets a change wait for a human, but is not
+  consumed by the main view, is a capability nobody has. This is the
+  **fifth hole of the same family**: v0.7.89 was the report not looking
+  at the seal, v0.7.90 the report not looking at the undo, v0.7.91 the
+  report not looking at the audit chain, v0.7.93 the report not
+  looking at the ticket queue, v0.7.94 the report not looking at the
+  draft queue.
+
+  The report now says it: a headline line reads "N drafts waiting for
+  a person (the change is not on the disk yet)"; a section of its own -
+  "drafts waiting for approval" - names **the draft id**, **its
+  state**, **which file**, **which run proposed it**, and **the
+  approval command you can paste**; and the JSON payload carries the
+  same numbers, so CI and scripts never have to parse Markdown.
+
+  More important, the **queue and the ledger check each other**: a
+  draft the ledger staged but the **queue does not hold** (the record
+  of the proposal is gone, so nobody can approve it), and a draft the
+  queue holds that the **ledger never mentions** (a human is being
+  asked to approve a change the ledger cannot account for). And the
+  sharp one is named on its own: **a run that reported closure while
+  its change is still waiting in front of a human** - because that is
+  the one fact a person most needs to know.
+
+  The gate proves it can fail: the report's draft reading is broken on
+  purpose - the queue is reported as empty - and the gate has to notice
+  that the report can no longer tell a waiting change from no change
+  at all.
+
+  ```bash
+  mas selftest --only report_drafts
+  ```
+
+- **The 35th gate `doc_text_integrity`** - while writing the v0.7.93
+  release notes, the text was produced through a shell that treats a
+  backquote as an **escape character**. So `budget` came out as a
+  **backspace**, `tickets` as a **tab**, `reason_text` as a **carriage
+  return** plus an `eason_text` that had lost its first letter, and a
+  fenced block came out as `` ``bash ``.
+
+  The damage was small, and it was almost invisible in a rendered
+  Markdown page: the sentence still read, the code block still looked
+  like a code block. But the **file on the disk was corrupted**, and it
+  **shipped** - because **nothing was looking**.
+
+  That is the point. A document is the thing a beginner opens first. A
+  document with a backspace in it is not a document; it is a file that
+  happens to be mostly text. And this project's own rule is that a
+  **capability nobody checks is a capability nobody has** - which is
+  why every hole in this project got a gate. This one was waiting too.
+
+  The thirty-fifth gate now reads the **documents of the project** -
+  both READMEs, the CHANGELOG and the `docs/` folder, in the
+  repository **and in the wheel** - and checks three things: **no
+  control characters** (a backspace, a stray carriage return), **no
+  stray tabs in the prose**, and **the code fences are intact** (an
+  opening fence names a language or nothing, a closing fence names
+  nothing, every fence is closed).
+
+  And it proves it can fail: a document is corrupted on purpose - a
+  backspace is injected into it - and the gate has to notice that it
+  can no longer tell a clean document from a mangled one.
+
+  ```bash
+  mas selftest --only doc_text_integrity
   ```
 
 - **The 31st gate `report_audit`** - v0.7.76 made every human decision

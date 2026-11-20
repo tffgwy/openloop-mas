@@ -51,6 +51,9 @@ from mas.selftest_bootstrap import (
 from mas.selftest_bootstrap_execution import (
     check_the_bootstrap_path_is_executed_and_not_just_described,
 )
+from mas.selftest_doc_text import (
+    check_the_documents_are_still_text,
+)
 from mas.selftest_isolation import (
     check_the_selftest_leaves_the_machine_alone,
 )
@@ -62,6 +65,9 @@ from mas.selftest_packaged_docs import (
 )
 from mas.selftest_report_audit import (
     check_the_report_reads_the_decision_chains,
+)
+from mas.selftest_report_drafts import (
+    check_the_report_reads_the_drafts,
 )
 from mas.selftest_report_seal import (
     check_the_report_sees_the_drift,
@@ -5522,6 +5528,8 @@ CHECKS = (
     check_the_report_says_which_approvals_were_wrong,
     check_the_report_reads_the_decision_chains,
     check_the_report_reads_the_human_tickets,
+    check_the_report_reads_the_drafts,
+    check_the_documents_are_still_text,
     check_the_selftest_leaves_the_machine_alone,
 )
 

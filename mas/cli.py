@@ -486,6 +486,12 @@ def cmd_status(args: argparse.Namespace) -> int:
         )
     waiting = [t["id"] for t in tickets if t.get("state") == "waiting_human"]
     resolved = [t["id"] for t in tickets if t.get("state") == "resolved"]
+    # The draft queue. A draft is a change the loop proposed and did
+    # not make, so it is work that is waiting for a person - exactly
+    # like a ticket, and exactly as invisible if nobody reads it.
+    drafts = _all_drafts_in_state(config, rows)
+    pending_drafts = [d["id"] for d in drafts if d.get("state") == "pending"]
+    approved_drafts = [d["id"] for d in drafts if d.get("state") == "approved"]
     # The payload of every waiting ticket. The continuation command
     # needs the reason and the budget of the stopped run to build a
     # command that can actually work.
@@ -508,6 +514,16 @@ def cmd_status(args: argparse.Namespace) -> int:
     runs = [
         run_summary(group["run_id"], group["rows"]) for group in group_runs(rows)
     ]
+    # The drafts reconciled against the ledger. A run that closed
+    # while its change is still waiting for a human is the sharpest
+    # fact this page can tell: the machine says "done", the disk says
+    # "nothing happened", and only the draft says why.
+    try:
+        from mas.drafts_reading import draft_reading
+
+        draft_queue = draft_reading(rows, drafts, runs=runs)
+    except Exception:  # noqa: BLE001 - status must never crash
+        draft_queue = {}
     # Runs are attempts; problems are what the human has to deal with.
     # A problem that was resumed three times is one open problem, not
     # four - the status page has to say so, or the queue and the
@@ -525,6 +541,28 @@ def cmd_status(args: argparse.Namespace) -> int:
         "tickets": {
             "waiting_human": waiting,
             "resolved": resolved,
+        },
+        # The changes that were proposed and are waiting for a human.
+        # A status page that counts tickets but not drafts says the
+        # queue is empty while changes are sitting in it.
+        "drafts": {
+            "total": len(drafts),
+            "pending": pending_drafts,
+            "approved": approved_drafts,
+        },
+        # The reconciliation of the queue against the ledger: how many
+        # drafts are waiting, and how many closed runs are waiting for
+        # their own change to be approved.
+        "draft_reading": {
+            "pending_count": int(draft_queue.get("pending_count") or 0),
+            "approved_count": int(draft_queue.get("approved_count") or 0),
+            "closed_with_pending": list(
+                draft_queue.get("closed_with_pending") or []
+            ),
+            "closed_with_pending_count": int(
+                draft_queue.get("closed_with_pending_count") or 0
+            ),
+            "problems": list(draft_queue.get("problems") or []),
         },
         # How much work this machine has done, and how much of it
         # actually closed. "entries: 27" says how many lines the log
@@ -640,6 +678,37 @@ def cmd_status(args: argparse.Namespace) -> int:
         print("待处理工单：0 个")
     if resolved:
         print(f"已解决工单：{len(resolved)} 个")
+    # The changes that were proposed and not made. A pending draft is
+    # work that is waiting for a person, so it belongs next to the
+    # tickets - and a closed run whose draft is still pending belongs
+    # even higher up, because that run says "done" while the file on
+    # the disk is still the old one.
+    pending_draft_items = [
+        d for d in drafts if str(d.get("state") or "") == "pending"
+    ]
+    if pending_draft_items:
+        print(f"待批草稿：{len(pending_draft_items)} 个（改动还没落盘）")
+        for draft in pending_draft_items:
+            label = str(draft.get("path") or "")
+            print(f"  {draft.get('id')}  {label}" if label else f"  {draft.get('id')}")
+            print(f"    →  mas drafts approve {draft.get('id')}")
+    else:
+        print("待批草稿：0 个")
+    # The closed runs that are waiting for their own change. This is
+    # the fact a reader must not have to infer: the run reported a
+    # closed loop, and the file is still the old one.
+    closed_pending = list(
+        (payload.get("draft_reading") or {}).get("closed_with_pending") or []
+    )
+    if closed_pending:
+        print(
+            f"⚠ 闭环待写：{len(closed_pending)} 次运行报了闭环，"
+            "但它的改动还排在人前面（文件没变）"
+        )
+        for item in closed_pending:
+            paths = ", ".join(item.get("paths") or []) or "-"
+            print(f"  {item.get('run_id')}  {paths}")
+            print(f"    →  mas drafts approve {item.get('draft_ids')[0]}")
     print(
         f"预算：迭代 {budget.get('max_iterations')} / "
         f"{budget.get('deadline_sec')} 秒 / {budget.get('max_tokens')} token"
@@ -2193,6 +2262,93 @@ def _report_missing(message, args, payload):
     return 2
 
 
+def _workspaces_of_drafts(rows) -> List[pathlib.Path]:
+    """The workspaces the ledger says hold drafts.
+
+    A draft row names the file the loop wanted to change, and the
+    absolute path of that file. The workspace is the folder that file
+    sits in - so the workspace can be read back out of the row. That
+    matters because the workspace is *not* part of the saved
+    configuration: it belongs to the run, and a reader that looked
+    only at the configuration found nothing.
+    """
+    workspaces: List[pathlib.Path] = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("role") or "") != "draft":
+            continue
+        for item in row.get("drafts") or []:
+            if not isinstance(item, dict):
+                continue
+            absolute = str(item.get("absolute") or "").strip()
+            relative = str(item.get("path") or "").strip().replace("\\", "/")
+            if not absolute:
+                continue
+            depth = len([p for p in relative.split("/") if p]) or 1
+            parents = list(pathlib.Path(absolute).parents)
+            if len(parents) < depth:
+                continue
+            workspace = parents[depth - 1]
+            if workspace not in workspaces:
+                workspaces.append(workspace)
+    return workspaces
+
+
+def _all_drafts_in_state(config, ledger_rows=None) -> List[Dict[str, Any]]:
+    """Every draft of every workspace this machine owns.
+
+    A draft lives in the workspace of the run that proposed it, and a
+    run's workspace is a folder under ``<state_dir>/artifacts``. The
+    drafts are therefore found by looking into that folder and its
+    sub-folders - the same rule the CLI and the MCP server use, so
+    all three answer "which drafts are waiting" the same way.
+
+    A run that was given a workspace of its own (``--workspace``)
+    puts its drafts *there* and not under the artifacts root, and that
+    folder is not part of the saved configuration either - it belongs
+    to the run. So the ledger is asked as well: a draft row names the
+    file the loop wanted to change, and the folder of that file is
+    the workspace. Without this the queue of such a run was empty -
+    and the report said "no drafts" while a change was waiting on the
+    disk right there.
+    """
+    from mas.drafts import drafts_in
+
+    drafts_found: List[Dict[str, Any]] = []
+    seen = set()
+
+    def _scan(root: pathlib.Path) -> None:
+        if not root.exists():
+            return
+        try:
+            found = drafts_in(root)
+        except Exception:  # noqa: BLE001 - a broken folder must not break the report
+            return
+        for draft in found:
+            key = str(draft.get("id") or "")
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            drafts_found.append(draft)
+
+    _scan(
+        pathlib.Path(
+            os.path.expanduser(
+                os.path.expandvars(str((config or {}).get("state_dir") or ""))
+            )
+        )
+        / "artifacts"
+    )
+    named = str((config or {}).get("workspace") or "").strip()
+    if named:
+        _scan(pathlib.Path(os.path.expanduser(os.path.expandvars(named))))
+    for workspace in _workspaces_of_drafts(ledger_rows):
+        _scan(workspace)
+    return drafts_found
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     """Render a Markdown closure report from the ledger."""
     config = load_config()
@@ -2215,7 +2371,22 @@ def cmd_report(args: argparse.Namespace) -> int:
             if str(row.get("ticket_id") or "")
         }
         tickets = [t for t in tickets if str(t.get("id") or "") in wanted]
-    report = build_report(rows, tickets)
+    # The draft queue is read as well. A run that proposed a change
+    # instead of making it leaves a draft behind - and a report that
+    # never reads it says "closed" while the file on the disk is
+    # still the old one.
+    drafts = _all_drafts_in_state(config, rows)
+    if args.run_id:
+        # Only the drafts of this run are shown.
+        wanted_drafts = {
+            str(item.get("id") or "")
+            for row in rows
+            if str(row.get("role") or "") == "draft"
+            for item in (row.get("drafts") or [])
+            if isinstance(item, dict)
+        }
+        drafts = [d for d in drafts if str(d.get("id") or "") in wanted_drafts]
+    report = build_report(rows, tickets, drafts=drafts)
     markdown = render_markdown(report)
     if args.out:
         path = pathlib.Path(args.out).expanduser()

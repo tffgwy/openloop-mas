@@ -10,6 +10,7 @@ from __future__ import annotations
 import pathlib
 from typing import Any, Dict, List, Optional
 
+from mas.drafts_reading import draft_reading
 from mas.reason_text import continuation_command, reason_hint, reason_text
 from mas.util import now_iso
 from mas.verdict_text import (
@@ -1082,6 +1083,7 @@ def build_report(
     rows: List[Dict[str, Any]],
     tickets: Optional[List[Dict[str, Any]]] = None,
     ledger_complete: bool = True,
+    drafts: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Build the full report payload for a set of ledger rows.
 
@@ -1089,6 +1091,14 @@ def build_report(
     says what the machine did; the queue says what is still waiting for
     a person. A report that reads only the ledger cannot tell the
     reader that a problem is sitting in the human queue.
+
+    The draft queue is read too, for the same reason and with a
+    sharper edge: a run that wanted to *change* a file did not change
+    it - it staged a draft - and the machine checks judge the draft,
+    so the loop can close while the disk still holds the old bytes.
+    A report that never reads the drafts reports that as a closed loop
+    and says nothing about the change that is still waiting for a
+    person.
     """
     runs = [run_summary(run["run_id"], run["rows"]) for run in group_runs(rows)]
     closed = [r for r in runs if r["closed"]]
@@ -1117,6 +1127,10 @@ def build_report(
     # person", so a report that never reads the queue reports a busy
     # machine while problems wait.
     queue = ticket_reading(rows, tickets, ledger_complete=ledger_complete)
+    # The draft queue. A run that proposed a change instead of making
+    # it leaves a draft behind, and the report has to say so: the run
+    # may well be closed, but the *file* is still the old one.
+    draft_queue = draft_reading(rows, drafts, runs=runs)
     return {
         "generated_at": now_iso(),
         "runs": runs,
@@ -1145,6 +1159,11 @@ def build_report(
         # queue is what is waiting for a person, so it belongs in the
         # payload and not only in the rendered Markdown.
         "tickets": queue,
+        # The draft queue, reconciled against the ledger. A draft is a
+        # change the loop proposed and did not make, so it is also
+        # work that is waiting for a person - and a closed loop whose
+        # draft is still pending is a loop whose file is still old.
+        "drafts": draft_queue,
         # The problems, as opposed to the attempts. One unfinished
         # problem that was resumed three times is one open problem and
         # four runs; a report that only counts runs makes the human
@@ -1191,8 +1210,86 @@ def build_report(
             "tickets_waiting": int(queue.get("waiting_count") or 0),
             "tickets_resolved": int(queue.get("resolved_count") or 0),
             "ticket_problems": int(queue.get("problem_count") or 0),
+            # The draft queue. A pending draft is a change the loop
+            # proposed and a human has to approve - and a run that
+            # closed with a pending draft did not actually write.
+            "drafts": int(draft_queue.get("draft_count") or 0),
+            "drafts_pending": int(draft_queue.get("pending_count") or 0),
+            "drafts_approved": int(draft_queue.get("approved_count") or 0),
+            "draft_problems": int(draft_queue.get("problem_count") or 0),
+            # A run that closed while its change was still waiting.
+            # This is the count of "closed but the disk says otherwise".
+            "runs_closed_with_pending_drafts": int(
+                draft_queue.get("closed_with_pending_count") or 0
+            ),
         },
     }
+
+
+def _draft_section_lines(report: Dict[str, Any]) -> List[str]:
+    """The section that names the changes the loop proposed but did not make.
+
+    It is a section of its own because it is a different kind of
+    fact: not a run, not a problem, not a request - a *change that is
+    waiting*. A draft says "the loop wanted to write this, and nobody
+    has said yes yet". A report that only shows runs and problems
+    leaves the reader with a closed loop and an unchanged file, and
+    nothing in between to explain it.
+
+    The sharpest line in the section is the one about a closed run:
+    the loop reported success, the deliverable passed the machine
+    checks, and the file on the disk is still the old one - because
+    the change is still in front of a human.
+    """
+    lines: List[str] = []
+    queue = report.get("drafts") or {}
+    entries = list(queue.get("drafts") or [])
+    problems = list(queue.get("problems") or [])
+    waiting = int(queue.get("pending_count") or 0)
+    approved = int(queue.get("approved_count") or 0)
+    if not entries and not problems:
+        return lines
+    lines.append("## 待批草稿")
+    lines.append("")
+    if entries:
+        lines.append(
+            "%d 张草稿，其中 %d 张等人批、%d 张已批准。"
+            "草稿是循环**提议**但没有落地的改动 —— "
+            "文件在批准之前一个字节都不会变。"
+            % (len(entries), waiting, approved)
+        )
+        lines.append("")
+        lines.append("| 草稿 | 状态 | 文件 | 提议运行 | 原因 | 接着干 |")
+        lines.append("|---|---|---|---|---|---|")
+        for entry in entries:
+            path = str(entry.get("path") or "").replace("|", "\\|")[:40]
+            reason = str(entry.get("reason") or "").replace("|", "\\|")[:50]
+            state_text = str(entry.get("state_reading") or entry.get("state") or "-")
+            run_id = str(entry.get("run_id") or "")
+            command = (
+                "mas drafts approve %s" % entry.get("draft_id")
+                if str(entry.get("state") or "") == "pending"
+                else "-"
+            )
+            lines.append(
+                "| %s | %s | %s | %s | %s | %s |"
+                % (
+                    entry.get("draft_id") or "-",
+                    state_text,
+                    path or "-",
+                    run_id or "-",
+                    reason or "-",
+                    command,
+                )
+            )
+        lines.append("")
+    if problems:
+        lines.append("草稿队列和账本对不上，下面这些问题需要人看一眼：")
+        lines.append("")
+        for problem in problems:
+            lines.append("- %s" % problem)
+        lines.append("")
+    return lines
 
 
 def _undo_section_lines(report: Dict[str, Any]) -> List[str]:
@@ -1388,6 +1485,25 @@ def render_markdown(report: Dict[str, Any]) -> str:
             "人工工单：%d 张等人接（共 %d 张）"
             % (waiting_tickets, int(totals.get("tickets") or 0))
         )
+    # The changes that were proposed and not made, in the headline. A
+    # report that says "3 closed" and never says "2 of those changes
+    # are still in front of a human" hands the reader a closed machine
+    # and an unchanged disk.
+    pending_drafts = int(totals.get("drafts_pending") or 0)
+    if pending_drafts:
+        lines.append(
+            "待批草稿：%d 张等人批（共 %d 张）"
+            % (pending_drafts, int(totals.get("drafts") or 0))
+        )
+    # A run that closed while its change was still waiting. This is
+    # the sharpest thing the report can say, so it goes in the
+    # headline and not only in a section further down.
+    closed_pending = int(totals.get("runs_closed_with_pending_drafts") or 0)
+    if closed_pending:
+        lines.append(
+            "闭环待写：%d 次运行报了闭环，但它的改动还排在人前面"
+            "（文件没变）" % closed_pending
+        )
     # The seal, in the headline. A report that says "1 closed" and
     # does not say whether that conclusion still holds leaves the
     # reader to find out the hard way.
@@ -1462,8 +1578,11 @@ def render_markdown(report: Dict[str, Any]) -> str:
             or int((report.get("totals") or {}).get("audit_problems") or 0)
             or int((report.get("totals") or {}).get("tickets") or 0)
             or int((report.get("totals") or {}).get("ticket_problems") or 0)
+            or int((report.get("totals") or {}).get("drafts") or 0)
+            or int((report.get("totals") or {}).get("draft_problems") or 0)
         ):
             lines.extend(_ticket_section_lines(report))
+            lines.extend(_draft_section_lines(report))
             lines.extend(_undo_section_lines(report))
             lines.extend(_audit_section_lines(report))
             lines.append("这台机器上还没有跑过任何一次闭环，但账本里记着人工的决定。")
@@ -1522,6 +1641,7 @@ def render_markdown(report: Dict[str, Any]) -> str:
         lines.append("")
 
     lines.extend(_ticket_section_lines(report))
+    lines.extend(_draft_section_lines(report))
     lines.extend(_undo_section_lines(report))
     lines.extend(_audit_section_lines(report))
     lines.append("## 运行概览")
