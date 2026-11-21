@@ -140,11 +140,11 @@ server and the skills, and finishes with an offline self-check.
 Pin a specific release instead of "the latest":
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.2
 ```
 
 ```bash
-MAS_VERSION=0.8.1 bash install.sh
+MAS_VERSION=0.8.2 bash install.sh
 ```
 
 > The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
@@ -892,7 +892,7 @@ MIT © OpenLoop MAS contributors
 
 ## Gate archaeology
 
-This project now holds **42 gates**, and every one of them grew out of a
+This project now holds **43 gates**, and every one of them grew out of a
 **real incident**. They are listed below newest first - if you just want to
 use the tool, skip this section.
 
@@ -1231,6 +1231,40 @@ use the tool, skip this section.
   verdict now give opposite answers.
   ```bash
   mas selftest --only status_grain
+  ```
+- **The forty-third gate `closure_grain_text`** - v0.7.98 put the closure
+  verdict on the **problem** grain, v0.7.99 put the verdict in one place,
+  and v0.7.100 made the **status page** and the **report** say the grain
+  out loud. This release finds that **the verdict page still spoke the
+  old wording**: `mas closure` and the MCP `closure_text` still printed
+  "closed 1 / not closed 1".
+
+  ```text
+  ledger: 2 attempts  closed 1  still waiting 0      <- the status page
+  verdict: closed: nothing left waiting.
+            2 attempts (closed 1 / not closed 1)      <- the verdict page
+  ```
+
+  **One machine, two answers**: one says "nothing is waiting", the other
+  says "one attempt did not close". The reader is one person, and the
+  reader who reads the verdict first is exactly the one who went there
+  *because* they wanted the answer.
+
+  The verdict page now splits the two numbers the same way (nothing is
+  hidden - the history is still counted, only labelled):
+  * the attempt line becomes "N attempts (closed X / still waiting Y),
+    attempt closure rate Z%";
+  * a second line reads "history: N failures (M of them replaced by a
+    later successful attempt, not pending)";
+  * the old "closed / not closed" wording is **gone** from the verdict
+    page.
+
+  The gate **implements the reading twice** and **proves it can fail**:
+  the verdict page is broken on purpose - made to print the old wording
+  again - and the gate has to notice that one machine is giving two
+  answers again.
+  ```bash
+  mas selftest --only closure_grain_text
   ```
 - **The forty-second gate `queue_brief`** - v0.8.0 gave the status
   tool ticket briefs. This release finds that **the queue had a second

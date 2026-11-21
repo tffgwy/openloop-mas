@@ -118,11 +118,11 @@ bash install.sh
 想装固定版本（而不是"最新版"）：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.2
 ```
 
 ```bash
-MAS_VERSION=0.8.1 bash install.sh
+MAS_VERSION=0.8.2 bash install.sh
 ```
 
 > 脚本默认会往 `PATH` 里加一条 `~/.mas/bin`（Windows 写当前用户的注册表）。
@@ -1001,7 +1001,7 @@ MIT © OpenLoop MAS contributors
 
 ## 门禁考古
 
-这个项目至今有 **42 道门禁**，每一道都是从一个**真实事故**里长出来的。
+这个项目至今有 **43 道门禁**，每一道都是从一个**真实事故**里长出来的。
 下面按门禁编号倒序记录它们各自的来历 —— 如果你只想用，直接跳过这一节就好。
 
 - **第 32 项门禁 `selftest_isolation`** —— 自检本身也是一个程序，
@@ -1252,6 +1252,25 @@ MIT © OpenLoop MAS contributors
   门禁必须发现状态页和判定给了相反的答案。
   ```bash
   mas selftest --only status_grain
+  ```
+- **第 43 项门禁 `closure_grain_text`** —— v0.7.98 把**闭合的粒度**统一到「问题」，v0.7.99 把判定收到一处，
+  v0.7.100 让**状态页**和**报告**把粒度说出口。这一版发现**判定页还是旧口径**：
+  `mas closure` 与 MCP 的 `closure_text` 仍在打印「闭合 1 / 未闭合 1」。
+  ```text
+  账本：尝试 2 次  已闭环 1  仍在等 0        <- 状态页
+  闭合判定：闭合：没有留下任何待办。
+            尝试 2 次（闭合 1 / 未闭合 1）      <- 判定页
+  ```
+  **一台机器两个答案**：一个说「没东西在等」，另一个说「有一次没闭合」。
+  而读者只有一个，且**先读判定的人**恰好是因为想知道答案才去那里的。
+  现在判定页也拆成两个数说（**没东西被藏掉**，历史仍然计着，只是被标上了名字）：
+  * 尝试行改成「尝试 N 次（闭合 X / 仍在等 Y），尝试环闭率 Z%」；
+  * 另起一行「历史失败：N 次（其中 M 次已被后来的成功尝试取代，不算待办）」；
+  * 旧的「闭合 / 未闭合」说法从判定页上**消失**。
+  门禁**独立实现两遍判定**并**自证能失败**：把判定页打坏成旧口径，
+  门禁必须发现又回到「一台机器两个答案」的状态。
+  ```bash
+  mas selftest --only closure_grain_text
   ```
 - **第 42 项门禁 `queue_brief`** —— v0.8.0 让**状态工具**带上了工单摘要，
   这一版发现**队列还有第二个家**，而它没跟上：`mas tickets --json`

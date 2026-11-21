@@ -4,6 +4,48 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.2] - 2026-11-21
+
+### 判定页也说同一套话
+
+v0.7.98 把闭合的粒度统一到「问题」，v0.7.100 让状态页与报告把粒度说出口。
+但**判定页**还是旧口径：`mas closure` 与 MCP 的 `closure_text` 仍在打印
+「闭合 1 / 未闭合 1」。
+
+```text
+账本：尝试 2 次  已闭环 1  仍在等 0        <- 状态页
+闭合判定：闭合：没有留下任何待办。
+          尝试 2 次（闭合 1 / 未闭合 1）      <- 判定页
+```
+
+**一台机器两个答案**：一个说「没东西在等」，另一个说「有一次没闭合」。
+而读者只有一个，且先读判定的人恰好是因为想知道答案才去那里的。
+
+### 第二十一个不变量
+
+> **闭合判定页、状态页和报告对同一台机器说同一件事：还在等的失败与历史失败分开说。**
+
+### 改了什么
+
+* `mas/report.py` 的 `format_closure()`（`mas closure` 与 MCP `closure_text` 共用的渲染函数）：
+  * 尝试行改成「尝试 N 次（闭合 X / 仍在等 Y），尝试环闭率 Z%」；
+  * 另起一行「历史失败：N 次（其中 M 次已被后来的成功尝试取代，不算待办）」；
+  * 旧的「（其中 M 次失败已被后来的成功尝试取代，不算待办）」单独行已删除。
+* 无数量变化：历史仍然被计入，**没有任何失败被藏掉**，只是被标上了名字。
+
+### 第 43 项门禁 `closure_grain_text`
+
+门禁要求：判定页**把还在等的与历史失败分开说**；它叫「仍在等」的数就是
+判定本身所依据的数；判定页、状态页与报告**说同一件事**；
+一个已闭合的判定不会在旁边留下一个**无人能解释的失败数**。
+
+门禁**独立实现两遍判定**（`_grain_text_verdicts` 与 `_grain_text_verdicts_independent`），
+并**自证能失败**：把判定页打坏成旧口径，门禁必须发现又回到「一台机器两个答案」的状态。
+
+```bash
+mas selftest --only closure_grain_text
+```
+
 ## [0.8.1] - 2026-11-21
 
 ### 工单队列在每一面都是交接

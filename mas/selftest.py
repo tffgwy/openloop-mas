@@ -51,6 +51,9 @@ from mas.selftest_bootstrap import (
 from mas.selftest_bootstrap_execution import (
     check_the_bootstrap_path_is_executed_and_not_just_described,
 )
+from mas.selftest_closure_grain_text import (
+    check_the_verdict_page_speaks_the_same_grain,
+)
 from mas.selftest_closure_supersede import (
     check_the_report_and_the_verdict_agree_on_the_grain,
 )
@@ -5557,6 +5560,7 @@ CHECKS = (
     check_the_status_page_speaks_the_same_grain,
     check_a_ticket_a_human_can_act_on_an_agent_can_too,
     check_the_ticket_queue_is_a_handover_everywhere,
+    check_the_verdict_page_speaks_the_same_grain,
     check_the_documents_are_still_text,
     check_the_selftest_leaves_the_machine_alone,
 )

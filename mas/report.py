@@ -2920,24 +2920,46 @@ def format_closure(verdict: Dict[str, Any]) -> str:
             float(verdict.get("problem_closure_rate") or 0.0) * 100,
         )
     )
+    # The attempt grain, split the way every other surface splits it.
+    #
+    # The gap this closes: this line used to say "闭合 1 / 未闭合 1"
+    # next to a verdict that said "closed". The status page and the
+    # report had already been fixed to say "仍在等 0 / 历史失败 1",
+    # but this one surface kept the old wording - so one machine gave
+    # two answers to "is anything still waiting?", and the answer
+    # depended on which line the reader read first.
+    #
+    # So the same split applies here: the failed attempts that belong
+    # to a problem that is still open are "still waiting", and the ones
+    # a later attempt replaced are history. Nothing is hidden - the
+    # history is still counted, only labelled.
+    attempts = int(counts.get("runs") or 0)
+    attempts_closed = int(counts.get("closed") or 0)
+    attempts_not_closed = int(counts.get("not_closed") or 0)
+    attempts_open = int(
+        counts.get("not_closed_open")
+        if counts.get("not_closed_open") is not None
+        else attempts_not_closed
+    )
     lines.append(
-        "       尝试 %d 次（闭合 %d / 未闭合 %d），尝试闭环率 %.0f%%"
+        "       尝试 %d 次（闭合 %d / 仍在等 %d），尝试闭环率 %.0f%%"
         % (
-            int(counts.get("runs") or 0),
-            int(counts.get("closed") or 0),
-            int(counts.get("not_closed") or 0),
+            attempts,
+            attempts_closed,
+            attempts_open,
             float(verdict.get("closure_rate") or 0.0) * 100,
         )
     )
-    # The superseded attempts are history, not work in progress. A
-    # reader who sees "2 runs did not close" under a closed verdict
-    # has to be told that a later attempt replaced them, or the two
-    # numbers look like a contradiction.
+    # The history, named as history - the same sentence the status page
+    # and the report use, so the three say the same thing.
     superseded = int(counts.get("not_closed_superseded") or 0)
     if superseded:
         lines.append(
-            "       （其中 %d 次失败已被后来的成功尝试取代，不算待办）" % superseded
+            "       历史失败：%d 次（其中 %d 次已被后来的成功尝试取代，不算待办）"
+            % (attempts_not_closed, superseded)
         )
+    elif attempts_not_closed:
+        lines.append("       历史失败：%d 次" % attempts_not_closed)
     for reason in verdict.get("reasons") or []:
         lines.append("       - %s" % reason.get("detail"))
     for thread in verdict.get("open_threads") or []:
