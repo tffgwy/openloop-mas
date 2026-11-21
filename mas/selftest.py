@@ -105,6 +105,9 @@ from mas.selftest_seal import (
 from mas.selftest_shadow import (
     check_the_program_you_type_is_the_program_that_was_checked,
 )
+from mas.selftest_single_run_supersede import (
+    check_the_queue_decides_and_not_the_ledger_alone,
+)
 from mas.selftest_status_grain import (
     check_the_status_page_speaks_the_same_grain,
 )
@@ -5565,6 +5568,7 @@ CHECKS = (
     check_the_ticket_queue_is_a_handover_everywhere,
     check_the_verdict_page_speaks_the_same_grain,
     check_the_run_detail_speaks_the_same_grain,
+    check_the_queue_decides_and_not_the_ledger_alone,
     check_the_documents_are_still_text,
     check_the_selftest_leaves_the_machine_alone,
 )

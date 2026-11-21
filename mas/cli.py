@@ -38,6 +38,7 @@ from mas.report import (
     group_runs,
     group_threads,
     ledger_markdown,
+    queue_closed_by_success,
     render_markdown,
     replay_trace,
     run_summary,
@@ -542,7 +543,11 @@ def cmd_status(args: argparse.Namespace) -> int:
     # A problem that was resumed three times is one open problem, not
     # four - the status page has to say so, or the queue and the
     # report disagree about how much is left to do.
-    threads = group_threads(runs)
+    # The queue is the authority on which problems are finished. The
+    # status page reads the whole ledger, so it normally sees the
+    # attempt that closed a problem - but the queue still has the
+    # last word, because it is what a person acts on.
+    threads = group_threads(runs, queue_closed_by_success(tickets))
     # The one rule, in one place: what is still waiting is counted by
     # problem, not by attempt. The status page used to count attempts
     # while the closure verdict counted problems, so the same machine
@@ -2493,7 +2498,11 @@ def cmd_replay(args: argparse.Namespace) -> int:
         else:
             print(message, file=sys.stderr)
         return 1
-    trace = replay_trace(rows)
+    # The queue is read so the handover hint below can tell a waiting
+    # ticket from a finished one. A ticket that was resolved leaves
+    # its id on the run it closed, and pointing the reader at
+    # `mas resume` for it sends them to reopen finished work.
+    trace = replay_trace(rows, engine.tickets.list())
     if args.json:
         _print(trace, True)
         return 0
@@ -2546,7 +2555,11 @@ def cmd_replay(args: argparse.Namespace) -> int:
         # what to do about it - the same gap the report closed in
         # v0.7.49, left open here.
         ticket_id = block.get("ticket_id") or ""
-        if ticket_id and not block.get("closed"):
+        # Only a ticket that is **still waiting** gets a handover
+        # command. A ticket the queue has resolved is finished work,
+        # and `mas resume` on it would reopen a problem nobody is
+        # holding any more.
+        if ticket_id and not block.get("closed") and block.get("ticket_waiting"):
             print(
                 f"   → 接着干：mas resume {ticket_id} --note \"你的意见\""
             )

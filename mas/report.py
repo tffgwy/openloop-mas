@@ -573,12 +573,75 @@ def thread_of(run: Dict[str, Any]) -> str:
     return str(run.get("run_id") or "")
 
 
-def group_threads(runs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def queue_closed_by_success(tickets: Optional[List[Dict[str, Any]]]) -> Dict[str, str]:
+    """Which problems the queue says are finished, and which run finished them.
+
+    The gap this closes
+    ------------------
+    The ledger says what the machine did; the queue says what is still
+    waiting for a person. When a report is about **one** run, the
+    ledger holds one run - and the attempt that finally closed the
+    problem is not in it, because it happened later, in another run.
+
+    So a report about that one run could not tell "this failed and is
+    still waiting" from "this failed and was replaced by the attempt
+    that later closed it". It read the ledger only, and the ledger -
+    for that run - holds nothing but the failure. So the failure was
+    counted as work in progress, and the same page said:
+
+        尝试总数：1　已闭环：0　仍在等：1
+        | 把事情做完 | 待处理 |          <- the problem is waiting
+        | T1 | 已解决 |                 <- the queue says it is done
+        - 人工工单：`T1`（已不需要续跑）  <- and the detail says so too
+
+    Four lines, three answers, on one page.
+
+    The queue is the authority on this, and it already carries the
+    evidence: when an attempt closes a problem, the engine records
+    **which** attempt closed it on the ticket (``closed_run_id``). A
+    ticket in the ``resolved`` state that names the run that closed
+    it is proof that the problem was finished - and the failed attempt
+    it covers is **history**, not work in progress.
+
+    Only that proof counts. A ticket that was resolved by hand
+    (``mas_ticket_resolve``) carries no ``closed_run_id`` - nobody
+    recorded a successful attempt - so the failed attempt it covers
+    stays *open*: the human marked the ticket handled, and the
+    machine still has nothing to show for it.
+
+    So the mapping is: ticket id -> the run that closed the problem.
+    """
+    closed_by: Dict[str, str] = {}
+    for ticket in tickets or []:
+        if not isinstance(ticket, dict):
+            continue
+        if str(ticket.get("state") or "") != "resolved":
+            continue
+        payload = ticket.get("payload") or {}
+        run_id = str(payload.get("closed_run_id") or "")
+        ticket_id = str(ticket.get("id") or "")
+        if ticket_id and run_id:
+            closed_by[ticket_id] = run_id
+    return closed_by
+
+
+def group_threads(
+    runs: List[Dict[str, Any]],
+    closed_by_ticket: Optional[Dict[str, str]] = None,
+) -> List[Dict[str, Any]]:
     """Group runs into threads, keeping the order of first appearance.
 
     A thread is one problem the human has to deal with. The runs in
     it are the attempts that were made on it.
+
+    ``closed_by_ticket`` is what the **queue** says about the
+    problems: the id of the ticket -> the run that closed it. It
+    matters when the runs handed in are not the whole story - a
+    report about one run cannot see the attempt that closed the
+    problem later, so without the queue the failed attempt would be
+    counted as work in progress while the queue says it is done.
     """
+
     order: List[str] = []
     grouped: Dict[str, List[Dict[str, Any]]] = {}
     for run in runs:
@@ -607,6 +670,14 @@ def group_threads(runs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         last = members[-1] if members else {}
         closed = bool(last.get("closed"))
         closed_by = str(last.get("run_id") or "") if closed else ""
+        # The queue may know that the problem was finished by a run
+        # that is not in this ledger - the attempt that closed it
+        # happened later. When it does, the problem is closed, and the
+        # failed attempts it covers are history.
+        queue_closed_by = str((closed_by_ticket or {}).get(key) or "")
+        if not closed and queue_closed_by:
+            closed = True
+            closed_by = queue_closed_by
         # A human deliverable that closed the problem is worth naming:
         # it is the answer, and it came from a person.
         handback = any(bool(m.get("handback")) for m in members)
@@ -809,15 +880,28 @@ def _run_source(run: Dict[str, Any]) -> str:
 
 
 def _thread_source(thread: Dict[str, Any]) -> str:
-    """Where the answer of one problem came from, in a word."""
+    """Where the answer of one problem came from, in a word.
+
+    A problem the loop closed **by another attempt** must not be
+    credited to the attempt this table is showing. A report about
+    one failed run said "机器闭环" in the overview - and
+    the only run in that report is the failed one. The reader sees a
+    failure and a credit, and concludes the machine closed this
+    problem. It did - just not here.
+
+    So the attempt that closed it is named.
+    """
     seal_state = str(thread.get("seal_state") or "")
     if seal_state and seal_state != "holds":
         return "\u26a0 \u7ed3\u8bba\u5df2\u6f02\u79fb"
     if thread.get("handback"):
         return "🤝 人工完成"
     if thread.get("closed"):
+        closed_by = str(thread.get("closed_by") or "")
+        if closed_by:
+            return "🤖 机器闭环（`%s`）" % closed_by
         return "🤖 机器闭环"
-    return "—"
+    return "\u2014"
 
 
 #: The states an undo can leave a draft in, in words. A draft whose
@@ -1188,7 +1272,11 @@ def build_report(
     runs = [run_summary(run["run_id"], run["rows"]) for run in group_runs(rows)]
     closed = [r for r in runs if r["closed"]]
     failed_runs = [r for r in runs if not r["closed"]]
-    threads = group_threads(runs)
+    # The queue is the authority on which problems are finished, and
+    # a report about one run cannot see the attempt that closed the
+    # problem later - it is not in this ledger. So the queue is read
+    # first, and the threads are built with it.
+    threads = group_threads(runs, queue_closed_by_success(tickets))
     # The failed attempts that are still waiting, as opposed to the
     # failed attempts that were *superseded*.
     #
@@ -1306,14 +1394,27 @@ def build_report(
         for row in (rows or [])
         if str(row.get("ticket_id") or "")
     }
+    # The run that closed each problem, as the queue records it. It is
+    # what lets the detail answer "so what replaced it?" without
+    # making the reader go and look for the later attempt.
+    _closed_by_ticket = queue_closed_by_success(tickets)
     for _run in runs:
         if _run.get("closed"):
             _run["failure_grain"] = ""
+            _run["superseded_by"] = ""
         else:
             _run["failure_grain"] = (
                 "superseded"
                 if str(_run.get("run_id") or "") in _superseded_ids
                 else "open"
+            )
+            # The attempt that took this one over, when the queue
+            # knows it. Empty when the problem is still open - then
+            # nothing replaced it.
+            _run["superseded_by"] = (
+                _closed_by_ticket.get(str(_run.get("ticket_id") or ""), "")
+                if _run["failure_grain"] == "superseded"
+                else ""
             )
         # Whether this run still has work waiting behind it. True only
         # for a run that failed *and* whose ticket is still waiting.
@@ -2041,6 +2142,16 @@ def render_markdown(report: Dict[str, Any]) -> str:
                 "- 历史：这次失败已被后来的成功尝试取代"
                 "（不算待办）"
             )
+            # Say *which* attempt replaced it. The reader who lands on
+            # this detail asks "so what did replace it?" - and the
+            # answer is on the queue, not in this ledger, because the
+            # attempt that closed the problem happened later. Without
+            # the name, the reader has to go and find it.
+            replaced_by = str(run.get("superseded_by") or "")
+            if replaced_by:
+                lines.append(
+                    "- 取代它的那次成功尝试：`%s`" % replaced_by
+                )
         # Why the run ended the way it did. The engine writes the reason
         # on the run's end entry - including the specific cause of a
         # stagnation escalation ("the deliverable did not change for N
@@ -2083,6 +2194,7 @@ def render_markdown(report: Dict[str, Any]) -> str:
                     f"- 当时的人工工单：`{run.get('ticket_id')}`"
                     "（已被后来的成功尝试取代，不需要续跑）"
                 )
+
             elif run.get("ticket_waiting"):
                 lines.append(
                     f"- 人工工单：`{run.get('ticket_id')}`"
@@ -2326,7 +2438,10 @@ def write_report(rows: List[Dict[str, Any]], out_dir: str | pathlib.Path) -> Dic
     return {"path": str(path), "report": report}
 
 
-def replay_trace(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+def replay_trace(
+    rows: List[Dict[str, Any]],
+    tickets: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
     """Build a deterministic replay trace of a run.
 
     The trace lists every ledger entry in order with the role, the decision
@@ -2338,6 +2453,16 @@ def replay_trace(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     problems" - so the trace groups the steps by run, and the runs by
     the problem they belong to.
     """
+    # The tickets that are still waiting for a person. "No queue at
+    # all" is not "the queue is empty" - a caller that did not look
+    # cannot retire a ticket, so the handover hint stays.
+    _waiting_ticket_ids = {
+        str(t.get("id") or "")
+        for t in (tickets or [])
+        if isinstance(t, dict)
+        and str(t.get("state") or "") == "waiting_human"
+        and str(t.get("id") or "")
+    }
     steps: List[Dict[str, Any]] = []
     for row in rows:
         steps.append(
@@ -2375,6 +2500,16 @@ def replay_trace(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "iterations": summary["iterations"],
                 "goal": summary["goal"],
                 "ticket_id": summary["ticket_id"],
+                # Whether this run's ticket is **still waiting** for a
+                # person. The replay hands out a handover command, and
+                # a command that points at a finished problem sends
+                # the reader to redo work that is already done - so
+                # the queue decides, not the ledger.
+                "ticket_waiting": (
+                    bool(summary["ticket_id"])
+                    and not summary.get("closed")
+                    and str(summary["ticket_id"]) in _waiting_ticket_ids
+                ),
                 "artifact_path": summary["artifact_path"],
                 "tokens": summary["tokens"],
                 # Did a person close this run? The replay says so

@@ -140,11 +140,11 @@ server and the skills, and finishes with an offline self-check.
 Pin a specific release instead of "the latest":
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.3
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.4
 ```
 
 ```bash
-MAS_VERSION=0.8.3 bash install.sh
+MAS_VERSION=0.8.4 bash install.sh
 ```
 
 > The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
@@ -892,7 +892,7 @@ MIT © OpenLoop MAS contributors
 
 ## Gate archaeology
 
-This project now holds **44 gates**, and every one of them grew out of a
+This project now holds **45 gates**, and every one of them grew out of a
 **real incident**. They are listed below newest first - if you just want to
 use the tool, skip this section.
 
@@ -1231,6 +1231,64 @@ use the tool, skip this section.
   verdict now give opposite answers.
   ```bash
   mas selftest --only status_grain
+  ```
+- **The forty-fifth gate `single_run_supersede`** - the first four gates
+  put the **grain** on every surface, and this release finds that the most
+  **common** way of looking was still the old one: the single-run report.
+  ```bash
+  mas report --run-id R1
+  ```
+
+  The ledger of that report holds one run - the **failed** one. The attempt
+  that actually closed the problem (`R2`) happened **later**, in **another
+  run**, and is simply **not in that ledger** - so four lines of the same
+  page contradicted each other:
+
+  ```text
+  attempts: 1  closed: 0  still waiting: 1  attempt rate: 0%  <- headline
+  | do the thing | pending |                               <- overview
+  | T1 | resolved |                                          <- ticket table
+  - human ticket: `T1` (no need to continue)                <- and the detail
+  ```
+
+  Four lines, three answers - and the reader of a single-run report has
+  **no way to reconcile them**, because the evidence that would settle it
+  lives in a report they never opened.
+
+  The root cause is **asking the wrong authority**. "Is anyone still
+  holding this problem?" is a question about the **human queue**, and the
+  queue answered it. The verdict asked the **ledger** instead - and for
+  one run, the ledger holds nothing but the failure.
+
+  The **queue** is the authority now, and it already carries the evidence:
+  when an attempt closes a problem, the engine records **which attempt
+  closed it** on the ticket (`closed_run_id`). A resolved ticket that names
+  that attempt is proof the problem was finished, so the failure it covers
+  becomes **history** - and the report **names the attempt that replaced
+  it**.
+
+  Two things must **not** follow from that:
+
+  * a ticket a person closed **by hand** (`mas_ticket_resolve`) carries no
+    `closed_run_id` - no successful attempt was ever recorded - so the
+    failure **stays open**. The human handled the ticket; the machine
+    still has nothing to show for it. Reporting that as finished would be
+    the tool **lying in the direction that hides work**;
+  * a queue that was **never read** is not an empty queue: a caller that
+    hands in no queue has not looked, so it cannot retire a ticket, and
+    the failure **keeps its resume pointer**.
+
+  This gate watches six things: the single-run report listens to the
+  queue, the four lines of the page agree, the detail names the
+  replacement, **a hand-closed ticket still counts as pending**, **an
+  unread queue keeps the resume pointer**, and the verdict page reaches
+  the same answer. It **implements the reading twice** - once from the
+  rendered page, once from the raw facts - and the two must agree. The
+  gate **proves it can fail**: the thread grouping is broken on purpose -
+  made to ignore the queue - and the gate has to notice that the page
+  contradicts itself again.
+  ```bash
+  mas selftest --only single_run_supersede
   ```
 - **The forty-fourth gate `run_detail_grain`** - v0.7.100 made the
   **status page** and the **report headline** say the grain out loud, and
