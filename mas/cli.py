@@ -45,6 +45,7 @@ from mas.report import (
 )
 from mas.setup import format_verify, run_verify, run_wizard
 from mas.teams import list_teams, load_team
+from mas.ticket_brief import ticket_brief, ticket_briefs
 from mas.util import force_utf8_output, parse_criterion_shorthand
 from mas.verdict_text import (
     decision_reading,
@@ -516,6 +517,14 @@ def cmd_status(args: argparse.Namespace) -> int:
         )
         for t in tickets
     }
+    # The waiting tickets, read by the same function the MCP status
+    # tool reads. One ticket, one reading: if the two surfaces each
+    # described a ticket in their own words, an agent and a person
+    # could read the same ticket and come away with different ideas
+    # about what was stuck.
+    waiting_briefs = ticket_briefs(
+        [t for t in tickets if t.get("state") == "waiting_human"]
+    )
     runs = [
         run_summary(group["run_id"], group["rows"]) for group in group_runs(rows)
     ]
@@ -552,6 +561,9 @@ def cmd_status(args: argparse.Namespace) -> int:
         "tickets": {
             "waiting_human": waiting,
             "resolved": resolved,
+            # The same facts the MCP status tool gives, so a reader
+            # of either surface learns the same thing about a ticket.
+            "waiting_briefs": waiting_briefs,
         },
         # The changes that were proposed and are waiting for a human.
         # A status page that counts tickets but not drafts says the
@@ -1113,8 +1125,13 @@ def cmd_tickets(args: argparse.Namespace) -> int:
     resolved = [t for t in tickets if t.get("state") == "resolved"]
 
     def show(ticket: Dict[str, Any]) -> None:
+        # The facts come from the shared brief, so this screen and the
+        # MCP status tool describe the same ticket with the same
+        # words. The layout below is still the command line's own -
+        # it can indent and space things a JSON payload cannot.
+        brief = ticket_brief(ticket)
         payload = ticket.get("payload") or {}
-        title = payload.get("title") or payload.get("goal") or "(无标题)"
+        title = brief.get("title") or "(无标题)"
         print(f"{ticket['id']}  [{ticket.get('state')}]  {title}")
         goal = payload.get("goal") or ""
         if goal and goal != title:
@@ -1130,9 +1147,8 @@ def cmd_tickets(args: argparse.Namespace) -> int:
         if len(runs) > 1:
             print(f"  关联运行：{len(runs)} 次尝试（{runs[0]} … {runs[-1]}）")
         issues = payload.get("issues") or []
-        criteria = payload.get("criteria") or []
-        if issues:
-            print(f"  卡在：{_issue_reading(issues[0], criteria)}")
+        if brief.get("blocked_on"):
+            print(f"  卡在：{brief['blocked_on']}")
             if len(issues) > 1:
                 print(f"        （另有 {len(issues) - 1} 项未通过）")
         reason = payload.get("reason") or ""
@@ -1140,8 +1156,8 @@ def cmd_tickets(args: argparse.Namespace) -> int:
             # In words, for the same reason as the run screen: the
             # ticket is what a human picks up, so its reason is
             # read by a human.
-            print(f"  原因：{reason_text(reason)}")
-            hint = reason_hint(reason)
+            print(f"  原因：{brief.get('reason_reading') or reason_text(reason)}")
+            hint = brief.get("reason_hint") or reason_hint(reason)
             if hint:
                 print(f"    {hint}")
         attempts = payload.get("attempts")
@@ -1176,10 +1192,13 @@ def cmd_tickets(args: argparse.Namespace) -> int:
             # with a wider budget for the ceiling that stopped it.
             print(
                 "  接着干："
-                + continuation_command(
-                    str(ticket["id"]),
-                    reason,
-                    payload.get("budget"),
+                + (
+                    brief.get("next_command")
+                    or continuation_command(
+                        str(ticket["id"]),
+                        reason,
+                        payload.get("budget"),
+                    )
                 )
             )
             # A human who has already written the answer should not be

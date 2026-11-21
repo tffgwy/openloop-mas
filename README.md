@@ -118,11 +118,11 @@ bash install.sh
 想装固定版本（而不是"最新版"）：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.99
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.0
 ```
 
 ```bash
-MAS_VERSION=0.7.99 bash install.sh
+MAS_VERSION=0.8.0 bash install.sh
 ```
 
 > 脚本默认会往 `PATH` 里加一条 `~/.mas/bin`（Windows 写当前用户的注册表）。
@@ -1252,6 +1252,32 @@ MIT © OpenLoop MAS contributors
   门禁必须发现状态页和判定给了相反的答案。
   ```bash
   mas selftest --only status_grain
+  ```
+- **第 41 项门禁 `ticket_brief`** —— v0.7.99 把**状态页、报告和 MCP**
+  统一到了同一个粒度，这一版发现**另一条路还缺一截**：MCP 的 `mas_status`
+  给的工单**只有一串 ID**。
+  ```
+  "open_tickets": ["T-20261121-104405-7a81"]
+  ```
+  一个智能体问状态工具「现在需要我做什么」，拿到的是一串**把手**：
+  它无从知道这些 ID 说的是什么事、卡在哪、怎么接着干。
+  命令行的 `mas tickets` 一直说得很清楚（任务、卡住的标准、停下的原因、
+  接着跑的命令）—— 那正是**能力到了命令行、没到智能体那一边**的
+  **同一个形状**，本项目从 v0.7.89 起一直在修它。
+  现在两边读**同一个函数**（`mas/ticket_brief.py:ticket_brief()`）：
+  * 摘要带上**是什么**（标题、任务、哪次运行）、**卡在哪**（未通过的标准，人话）、
+    **为什么停**（原始理由 + 人话 + 提示）、**怎么继续**（带放宽预算的命令，
+    不撞同一堵墙）、**在哪改**（工作区）；
+  * MCP 的 `mas_status` 新增 `waiting_tickets`（摘要列表）、
+    `waiting_tickets_count` 和 `waiting_tickets_text`（一句话一行）；
+  * **ID 列表照旧保留**（`open_tickets`）—— 别的工具拿的正是它，
+    不能为了好看把把手改掉；
+  * 命令行和 MCP **用同一套话**描述同一张工单。
+  门禁**独立实现两遍判定**（后者完全从工单原始数据手算），
+  并**自证能失败**：把摘要**故意打坏**成「只给 ID」，
+  门禁必须发现智能体又读不懂工单了。
+  ```bash
+  mas selftest --only ticket_brief
   ```
 - **第 31 项门禁 `report_audit`** —— v0.7.76 让每一次人工决定（起草、批准、撤销）
   都在工作区旁边留下一条哈希链，并在主账本里留一份副本；

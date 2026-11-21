@@ -4,6 +4,71 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-11-21
+
+### 工单不只是一串 ID
+
+`mas tickets` 会说清楚一张工单是什么：它在做什么任务、卡在哪一条标准、循环
+为什么停下、接着该跑哪条命令。那是**特意**这么做的 —— 一个 ID 加一个类型是
+「记录」，不是「交接」。
+
+而 MCP 的 `mas_status` 只给了**工单的 ID**：
+
+```json
+"open_tickets": ["T-20261121-104405-7a81"]
+```
+
+一个智能体问状态工具「现在需要我做什么」，拿到的是一串**把手**。它**无从知道**
+这些 ID 说的是什么事、卡在哪、怎么接着干 —— 除非它再去调第二个工具，
+而它未必有第二个工具。
+
+这是本项目从 v0.7.89 起一直在修的**同一个形状**：**能力到了命令行，没到智能体
+那一边**。v0.7.96 是交付物清单没到 MCP，v0.7.97 是闭合判定没到任何地方，
+v0.7.98 是报告和判定互相打架，v0.7.99 是状态页用旧口径 —— 这一次，工单本身
+只在命令行说清楚。
+
+### 第十九个不变量
+
+> **工单不只是一串 ID：命令行和 MCP 读同一份工单摘要，说清卡在哪、为什么停、接着怎么跑。**
+
+### 改了什么
+
+* 新增 `mas/ticket_brief.py:ticket_brief()` —— **唯一**读工单的地方。
+  它给出 `title` / `goal`（是什么）、`run_id` / `runs`（哪次运行）、
+  `blocked_on`（卡在哪条标准，人话）、`reason` / `reason_reading` /
+  `reason_hint`（为什么停：原始值 + 人话 + 提示）、`next_command` /
+  `handback_command` / `handback_workspace_command`（怎么接着跑，**带放宽的
+  预算**，不撞同一堵墙）、`workspace`（在哪改）、`attempts` /
+  `rounds_total`（这个问题烧了多少）。
+* `mas/mcp_server.py` 的 `mas_status` **新增**：
+  * `waiting_tickets` —— 摘要列表；
+  * `waiting_tickets_count` —— 有几张在等；
+  * `waiting_tickets_text` —— 一句话一行的可读版。
+  **ID 列表照旧保留**（`open_tickets`）：别的工具拿的正是它，
+  不能为了好看把把手改掉。
+* `mas/cli.py`：
+  * `mas tickets` 的每张工单**改读共享摘要**（卡在的原因、停下的原因、
+    接着跑的命令都来自同一处）；
+  * `mas status --json` 的 `tickets.waiting_briefs` 也带上同一份摘要。
+* 命令行和 MCP **用同一套话**描述同一张工单 —— 一个人和一个智能体
+  读同一张票，不会得到两个不同的故事。
+
+### 第 41 项门禁 `ticket_brief`
+
+门禁要求：MCP 状态工具**带着工单**而不只是 ID；一份摘要**说清卡在哪和怎么
+继续**；命令行和 MCP **用同一套话**；**ID 列表还在**。
+
+门禁**独立实现两遍判定**（`_brief_verdicts` 与 `_brief_verdicts_independent`，
+后者完全从**工单原始数据**手算，不借用摘要自己的渲染），并**自证能失败**：
+把摘要**故意打坏**成「只给 ID」，门禁必须发现智能体又读不懂工单了。
+
+### 验证
+
+* `mas selftest --only ticket_brief` → 通过（打了 200 次）
+* `pytest tests/test_ticket_brief_800.py` → 16 项通过
+* `pytest tests` → 1687 passed / 5 skipped / 95 subtests
+* `ruff check .` → All checks passed
+
 ## [0.7.99] - 2026-11-21
 
 ### 状态页终于和判定说同一种话

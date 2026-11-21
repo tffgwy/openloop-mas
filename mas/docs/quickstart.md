@@ -39,11 +39,11 @@ bash install.sh
 固定版本（默认装最新版）：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.99
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.0
 ```
 
 ```bash
-MAS_VERSION=0.7.99 bash install.sh
+MAS_VERSION=0.8.0 bash install.sh
 ```
 
 > 下载路径是「标准库优先、`curl` 兜底」，并会读 `HTTPS_PROXY` 与

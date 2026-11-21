@@ -140,11 +140,11 @@ server and the skills, and finishes with an offline self-check.
 Pin a specific release instead of "the latest":
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.99
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.0
 ```
 
 ```bash
-MAS_VERSION=0.7.99 bash install.sh
+MAS_VERSION=0.8.0 bash install.sh
 ```
 
 > The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
@@ -1231,6 +1231,47 @@ use the tool, skip this section.
   verdict now give opposite answers.
   ```bash
   mas selftest --only status_grain
+  ```
+- **The forty-first gate `ticket_brief`** - v0.7.99 put the status page,
+  the report and MCP on the same grain. This release finds **another
+  road with a missing piece**: the MCP `mas_status` gave the waiting
+  tickets as **nothing but a list of ids**.
+
+  ```
+  "open_tickets": ["T-20261121-104405-7a81"]
+  ```
+
+  An agent asking the status tool "what needs me?" got a list of
+  handles: it had no way to learn what any of them was about, what it
+  was stuck on, or how to continue. The command line has always said
+  all of that plainly (the task, the check it failed, why the loop
+  stopped, the command that continues it) - which is the **same shape**
+  this project has been fixing since v0.7.89: a capability that
+  reaches the command line but not the agent.
+
+  Now both surfaces read **one function**
+  (`ticket_brief()` in `mas/ticket_brief.py`):
+
+  * a brief carries **what it is** (title, goal, which run), **what it
+    is stuck on** (the unmet check, in words), **why it stopped**
+    (the raw reason, the reading, the hint) and **what to do next**
+    (the command that continues it, with a widened budget so it does
+    not hit the same wall), plus **where to edit**;
+  * the MCP `mas_status` gains `waiting_tickets` (the briefs),
+    `waiting_tickets_count` and `waiting_tickets_text` (one line each);
+  * the **id list stays** (`open_tickets`) - that is the handle every
+    other tool takes, and a handle is not replaced just because a
+    richer view exists;
+  * the command line and the MCP tool describe the same ticket with
+    the same words.
+
+  The gate **implements the reading twice** (the second time by hand,
+    straight from the raw ticket) and **proves it can fail**: the
+    brief is broken on purpose - back to "an id and nothing else" - and
+    the gate has to notice that an agent can no longer read the
+    tickets.
+  ```bash
+  mas selftest --only ticket_brief
   ```
 - **The 31st gate `report_audit`** - v0.7.76 made every human decision
   (the proposal, the approval, the undo) leave a hash-linked entry next to the

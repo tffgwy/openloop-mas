@@ -577,8 +577,43 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                 "state_dir": config.get("state_dir"),
             },
             "ledger": engine.ledger.summary(),
+            # The ids stay - they are the handle every other tool
+            # takes. But an id on its own is not a handover: it says
+            # *which* ticket, not *what is stuck* or *how to continue*.
+            # The briefs below carry that.
             "open_tickets": [t.get("id") for t in tickets if t.get("state") == "waiting_human"],
         }
+        # The waiting tickets, as something a reader can act on.
+        #
+        # The gap: the status tool listed ticket ids and stopped there.
+        # An agent asking "what needs me?" got a list of handles and
+        # had to call a second tool to learn what any of them meant -
+        # and an agent with only the status tool could never learn.
+        #
+        # The same facts the command line prints ("mas tickets") come
+        # from one function, ``mas.ticket_brief.ticket_brief``, so the
+        # two surfaces cannot describe the same ticket differently.
+        try:
+            from mas.ticket_brief import ticket_briefs
+
+            waiting = [t for t in tickets if t.get("state") == "waiting_human"]
+            payload["waiting_tickets"] = ticket_briefs(waiting)
+            payload["waiting_tickets_count"] = len(waiting)
+            # One line per ticket, for a reader that wants prose
+            # instead of fields.
+            payload["waiting_tickets_text"] = "\n".join(
+                "  %s [%s] %s"
+                % (
+                    b.get("id") or "",
+                    b.get("kind") or "",
+                    b.get("blocked_on") or b.get("reason_reading") or b.get("title") or "",
+                )
+                for b in payload["waiting_tickets"]
+            )
+        except Exception:  # noqa: BLE001 - status must never crash
+            payload["waiting_tickets"] = []
+            payload["waiting_tickets_count"] = 0
+            payload["waiting_tickets_text"] = ""
         # The closure, in the same grain every other surface uses.
         #
         # The gap: the MCP status tool reported the ticket queue and

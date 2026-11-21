@@ -99,6 +99,9 @@ from mas.selftest_shadow import (
 from mas.selftest_status_grain import (
     check_the_status_page_speaks_the_same_grain,
 )
+from mas.selftest_ticket_brief import (
+    check_a_ticket_a_human_can_act_on_an_agent_can_too,
+)
 from mas.selftest_undo_visibility import (
     check_an_undo_is_visible_in_the_audit,
 )
@@ -5549,6 +5552,7 @@ CHECKS = (
     check_the_closure_verdict_reaches_both_surfaces,
     check_the_report_and_the_verdict_agree_on_the_grain,
     check_the_status_page_speaks_the_same_grain,
+    check_a_ticket_a_human_can_act_on_an_agent_can_too,
     check_the_documents_are_still_text,
     check_the_selftest_leaves_the_machine_alone,
 )
