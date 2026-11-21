@@ -118,11 +118,11 @@ bash install.sh
 想装固定版本（而不是"最新版"）：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.98
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.99
 ```
 
 ```bash
-MAS_VERSION=0.7.98 bash install.sh
+MAS_VERSION=0.7.99 bash install.sh
 ```
 
 > 脚本默认会往 `PATH` 里加一条 `~/.mas/bin`（Windows 写当前用户的注册表）。
@@ -1231,6 +1231,27 @@ MIT © OpenLoop MAS contributors
   门禁必须发现被取代的失败又把问题报成未完成。
   ```bash
   mas selftest --only closure_supersede
+  ```
+- **第 40 项门禁 `status_grain`** —— v0.7.98 把**报告**和**判定**统一到了「问题」粒度，
+  这一版发现**第三个说话的人**还在用旧的「尝试」口径：**状态页**。
+  同一台机器上，`mas status` 说「未闭环 1」，
+  `mas report` 和 `mas closure` 说「0 个待解决问题」——
+  **两个答案，一台机器**，而读者只有一个人。
+  更要命的是 MCP：`mas_status` 只报 `open_tickets`，
+  **闭合情况一个字都不提**——从 MCP 调用者那里看，
+  这台机器上的循环「从来没闭合过」，哪怕它早就闭合了。
+  现在**三处读同一个函数**（`mas/report.py` 的 `closure_grain()`）：
+  * 状态页分成三个数说话：**仍在等**（真待办）、**历史失败**（已被取代，不占队列）、**问题总数**；
+  * 「仍在等」按**问题**数（最后那次尝试说了算），
+    「历史失败」按**尝试**数（谁失败过都记着）；
+  * 报告头部从「未闭环：N」改成「**仍在等：N**」，并补一行
+    「历史失败：N 次（其中 M 次已被后来的成功尝试取代，不算待办）」；
+  * MCP 的 `mas_status` 多出一个 `closure` 段，带 `attempts_open` / `attempts_superseded` /
+    `problems_open` 和两个闭环率，和命令行**说同一个数**。
+  门禁**独立实现两遍判定**并**自证能失败**：把状态页读数的函数打坏成旧口径，
+  门禁必须发现状态页和判定给了相反的答案。
+  ```bash
+  mas selftest --only status_grain
   ```
 - **第 31 项门禁 `report_audit`** —— v0.7.76 让每一次人工决定（起草、批准、撤销）
   都在工作区旁边留下一条哈希链，并在主账本里留一份副本；

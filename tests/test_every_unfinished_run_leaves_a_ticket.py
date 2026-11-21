@@ -230,7 +230,11 @@ class UnfinishedRunLeavesATicketTest(unittest.TestCase):
         self._run()
         _code, out = _invoke(["status"], self.state_dir)
         self.assertIn("待处理工单：1 个", out)
-        self.assertIn("未闭环 1", out)
+        # The waiting count, in the grain the closure verdict uses:
+        # the failed attempt of a problem that is still open.
+        self.assertIn("仍在等 1", out)
+        # The history, named as history.
+        self.assertIn("历史失败：1 次", out)
 
     # -------------------------------------------------- no double ticket
     def test_a_closed_run_leaves_no_ticket(self):

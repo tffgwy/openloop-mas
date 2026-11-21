@@ -579,6 +579,64 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             "ledger": engine.ledger.summary(),
             "open_tickets": [t.get("id") for t in tickets if t.get("state") == "waiting_human"],
         }
+        # The closure, in the same grain every other surface uses.
+        #
+        # The gap: the MCP status tool reported the ticket queue and
+        # the ledger and said nothing about closure at all. An agent
+        # asking "is this done?" - the first question anyone asks a
+        # status tool - got no answer from the very tool that looks
+        # like the place to ask it, and had to go and call a different
+        # tool to find out.
+        #
+        # And when it did, the two surfaces disagreed: the command
+        # line counted attempts while the verdict counted problems, so
+        # a machine that had finished its work could still report an
+        # open attempt. The counts below come from the same function
+        # the command line reads, so they cannot drift.
+        try:
+            rows = engine.ledger.entries()
+            verdict = closure_verdict_for(rows, tickets)
+            counts = verdict.get("counts") or {}
+            payload["closure"] = {
+                "ok": bool(verdict.get("ok")),
+                "empty": bool(verdict.get("empty")),
+                "headline": str(verdict.get("headline") or ""),
+                "reasons": list(verdict.get("reasons") or []),
+                # The counts, by grain. The names say which is which.
+                "attempts": int(counts.get("runs") or 0),
+                "attempts_closed": int(counts.get("closed") or 0),
+                "attempts_not_closed": int(counts.get("not_closed") or 0),
+                # The failed attempts that are still waiting.
+                "attempts_open": int(counts.get("not_closed_open") or 0),
+                # The failed attempts a later attempt replaced.
+                "attempts_superseded": int(counts.get("not_closed_superseded") or 0),
+                "problems": int(counts.get("problems") or 0),
+                "problems_open": int(counts.get("problems_open") or 0),
+                "problems_closed": int(counts.get("problems_closed") or 0),
+                # The two rates, each naming its own grain.
+                "attempt_closure_rate": float(verdict.get("closure_rate") or 0.0),
+                "problem_closure_rate": float(verdict.get("problem_closure_rate") or 0.0),
+                "open_threads": list(verdict.get("open_threads") or []),
+            }
+            payload["closure_text"] = format_closure(verdict)
+        except Exception:  # noqa: BLE001 - status must never crash
+            payload["closure"] = {
+                "ok": False,
+                "empty": True,
+                "headline": "无法判定闭合。",
+                "reasons": [],
+                "attempts": 0,
+                "attempts_closed": 0,
+                "attempts_not_closed": 0,
+                "attempts_open": 0,
+                "attempts_superseded": 0,
+                "problems": 0,
+                "problems_open": 0,
+                "problems_closed": 0,
+                "attempt_closure_rate": 0.0,
+                "problem_closure_rate": 0.0,
+                "open_threads": [],
+            }
         # A draft that sits on a conflict is a decision the human still
         # owes. It is invisible from the tickets - those are for the
         # *loop* to ask a question - so an agent reading the status

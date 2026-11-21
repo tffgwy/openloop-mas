@@ -31,6 +31,7 @@ from mas.relay import serve_relay
 from mas.report import (
     artifact_rows,
     build_report,
+    closure_grain,
     closure_verdict_for,
     format_artifacts,
     format_closure,
@@ -533,6 +534,12 @@ def cmd_status(args: argparse.Namespace) -> int:
     # four - the status page has to say so, or the queue and the
     # report disagree about how much is left to do.
     threads = group_threads(runs)
+    # The one rule, in one place: what is still waiting is counted by
+    # problem, not by attempt. The status page used to count attempts
+    # while the closure verdict counted problems, so the same machine
+    # said "未闭合 1" next to "闭合：没有留下任何待办" - and the
+    # status page is the first page a beginner opens.
+    grain = closure_grain(runs, threads)
     payload = {
         "config": {
             "provider": config.get("provider"),
@@ -572,16 +579,33 @@ def cmd_status(args: argparse.Namespace) -> int:
         # actually closed. "entries: 27" says how many lines the log
         # has; "3 runs, 2 closed" says how the work went.
         "runs": {
-            "total": len(runs),
-            "closed": len([r for r in runs if r.get("closed")]),
-            "open": len([r for r in runs if not r.get("closed")]),
+            "total": int(grain["attempts"]),
+            "closed": int(grain["attempts_closed"]),
+            # The failed attempts that are *still waiting*. A failed
+            # attempt that a later attempt replaced is history, not
+            # work in progress - the same rule the closure verdict
+            # uses. Counting it here would make this page say
+            # "未闭合 1" next to "待解决问题 0 个" while the verdict
+            # says the work is closed: one machine, two answers.
+            "open": int(grain["attempts_open"]),
+            # Every attempt that did not close, superseded or not.
+            # The history, kept so nothing is hidden.
+            "not_closed": int(grain["attempts_not_closed"]),
+            # How many of the failures a later attempt replaced.
+            "superseded": int(grain["attempts_superseded"]),
         },
         # The problems, as opposed to the attempts on them.
         "problems": {
-            "total": len(threads),
-            "open": len([t for t in threads if not t.get("closed")]),
-            "closed": len([t for t in threads if t.get("closed")]),
+            "total": int(grain["problems"]),
+            "open": int(grain["problems_open"]),
+            "closed": int(grain["problems_closed"]),
             "items": threads,
+        },
+        # The two rates, each naming its own grain. A page that shows
+        # one rate without its grain is a page that cannot be read.
+        "rates": {
+            "attempt_closure_rate": float(grain["attempt_closure_rate"]),
+            "problem_closure_rate": float(grain["problem_closure_rate"]),
         },
         # The human decisions, and whether their chain is still whole.
         # A status page that does not mention the audit chain cannot
@@ -633,11 +657,21 @@ def cmd_status(args: argparse.Namespace) -> int:
         print("        （离线演示模式：闭环会跑，但调的是内置假模型，不联网、不花钱）")
         print("        要接真模型：mas init --provider openai_compat --model <模型> --base-url <端点>")
     print(f"状态目录：{config.get('state_dir')}")
+    # The grain has to be named, or the two numbers read as a
+    # contradiction. "未闭合 1" next to "待解决问题 0 个" is not two
+    # facts about one machine - it is two grains, and the reader is
+    # left to guess which one means "there is work for me".
+    #
+    # So the line that says what is waiting says the *waiting* count -
+    # the failed attempts whose problem is still open - and the
+    # failures that a later attempt replaced are reported next to it
+    # as history, with their number spelled out. Nothing is hidden;
+    # it is only labelled.
     print(
         f"账本：{payload['ledger']['entries']} 条  "
-        f"运行 {payload['runs']['total']} 次  "
+        f"尝试 {payload['runs']['total']} 次  "
         f"已闭环 {payload['runs']['closed']}  "
-        f"未闭环 {payload['runs']['open']}"
+        f"仍在等 {payload['runs']['open']}"
     )
     # Attempts and problems are different numbers. A single problem
     # that was resumed three times is four runs and one problem, and
@@ -645,8 +679,20 @@ def cmd_status(args: argparse.Namespace) -> int:
     # user concludes that four things need their attention.
     print(
         f"待解决问题：{payload['problems']['open']} 个"
-        f"（共 {payload['problems']['total']} 个问题）"
+        f"（共 {payload['problems']['total']} 个问题，"
+        f"{payload['problems']['closed']} 个已解决）"
     )
+    # The history. A failure that a later attempt replaced is not
+    # work in progress - it is the record of what happened on the way
+    # to the result. Saying so keeps the line above honest.
+    superseded = int(payload["runs"].get("superseded") or 0)
+    if superseded:
+        print(
+            f"历史失败：{payload['runs']['not_closed']} 次"
+            f"（其中 {superseded} 次已被后来的成功尝试取代，不算待办）"
+        )
+    elif payload["runs"]["not_closed"]:
+        print(f"历史失败：{payload['runs']['not_closed']} 次")
     # The deliverables come first among the things to look at: they are
     # what the user came for.
     audit = payload.get("audit") or {}

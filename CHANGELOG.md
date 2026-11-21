@@ -4,6 +4,92 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.99] - 2026-11-21
+
+### 状态页终于和判定说同一种话
+
+v0.7.98 把闭合判定的粒度从「尝试」改成了「问题」，v0.7.97 把判定放进了
+`mas/report.py` 让命令行和 MCP 共用一份。但**判定是唯一一个用新口径的地方**。
+
+`mas status` —— 初学者打开的第一页，也是唯一回答「这台机器现在什么状况」的
+那一页 —— 还在数**每一次失败尝试**。于是同一台机器会同时说出：
+
+```
+账本：尝试 2 次  已闭环 1  未闭合 1
+待解决问题：0 个（共 1 个问题）
+闭环判定：闭合：没有留下任何待办。
+```
+
+三行，两种粒度，屏幕上没有任何一行说明哪个是哪个。读者只能猜「还没等我做的
+是哪个数」，而答案取决于他先读哪一行。**一台机器，两个答案。**
+
+**同一族的第二层**：MCP 的 `mas_status` 工具只报 `open_tickets`，**完全不说闭合
+情况**。一个智能体问「这活儿干完了吗」—— 问状态工具的第一个问题 —— 从最像能
+回答它的地方，得到的是沉默。
+
+### 第十八个不变量
+
+> **还在等的是「问题」不是「尝试」；状态页、报告和 MCP 报同一个数。**
+
+被后来的成功尝试**取代**的失败是**历史**：照数不误，但**不占着队列**。
+
+### 改了什么
+
+* 新增 `mas/report.py:closure_grain()` —— **唯一**算粒度的地方。
+  命令行状态页、报告 Markdown 头部、MCP `mas_status` 三处全部读它，
+  **不再各留一份规则**，也就没有第二处可以漂移。
+  它给出：`attempts` / `attempts_closed` / `attempts_not_closed` /
+  `attempts_open`（仍在等）/ `attempts_superseded`（历史里被取代的）/
+  `problems` / `problems_open` / `problems_closed` /
+  `attempt_closure_rate` / `problem_closure_rate`。
+* `mas/report.py:build_report()` 的 `totals` 改为读 `closure_grain()`，
+  报告与判定从此**不可能**给出两个答案。
+* `mas/cli.py` 状态页：
+  * 账本行改成「尝试 N 次　已闭环 N　**仍在等 N**」—— 「仍在等」是**问题口径**；
+  * 新增一行「历史失败：N 次（其中 M 次已被后来的成功尝试取代，不算待办）」，
+    **历史照旧不丢，只是标明了**；
+  * 「待解决问题」行补上「N 个已解决」；
+  * JSON payload 新增 `rates`（两个率各自带粒度）和 `runs.superseded`。
+* `mas/report.py:render_markdown()` 报告头部：
+  * 「未闭环：N」改成「**仍在等：N**」（等待口径）；
+  * 新增「历史失败：N 次（其中 M 次已被后来的成功尝试取代，不算待办）」。
+  旧写法把「未闭环：1」和「问题闭环率 100%」并排放，读起来像工具自相矛盾。
+* `mas/mcp_server.py` 的 `mas_status` **新增 `closure` 段**（外加 `closure_text`）：
+  `ok` / `empty` / `headline` / `reasons`（**作为数据**给调用方）/
+  `attempts_open` / `attempts_superseded` / `problems_open` /
+  `problem_closure_rate` / `open_threads`。
+  一个智能体现在能**直接**问出「这干完了吗」，并拿到**理由**。
+
+### 第 40 项门禁 `status_grain`
+
+门禁要求：
+
+* 状态页的「仍在等」和闭合判定的 `not_closed_open` **数同一个东西**；
+* 状态页把「还在等」和「历史」**分开说**，并说出被取代的次数；
+* 报告头部**每个数都带粒度**，且不再出现「未闭环：N」这种会和「问题闭环率」
+  打架的写法；
+* MCP `mas_status` **报闭合**，粒度相同，理由作为数据给出；
+* 三处表面读**同一个函数**，不是三份各自抄的规则。
+
+门禁**独立实现两遍判定**（`_grain_verdicts` 与 `_grain_verdicts_independent`，
+后者完全手算「最后一次尝试决定问题」这条规则），并**自证能失败**：把状态页
+**故意打坏**成「每次失败都算待办」（旧口径），门禁必须发现「失败后被成功取代」
+的问题又被状态页攥在手里。
+
+### 验证
+
+* `mas selftest --only status_grain` → 通过（打了 200 次）
+* `pytest tests/test_status_grain_799.py` → 16 项通过
+* `pytest tests` → 1671 passed / 5 skipped / 95 subtests
+* `ruff check .` → All checks passed
+* 口径对照表（真实代码跑出来的，不是推测）：
+
+  | 同一问题的尝试序列 | 问题闭合 | 失败尝试 | 仍在等 | 历史失败 | 状态页 | 判定 |
+  | --- | --- | --- | --- | --- | --- | --- |
+  | 失败 → 成功 | 是 | 1 | **0** | 1（已被取代） | 仍在等 0 | **闭合** |
+  | 成功 → 失败 | 否 | 1 | **1** | 0 | 仍在等 1 | 未闭合 |
+  | 成功 → 成功 | 是 | 0 | 0 | 0 | 仍在等 0 | 闭合 |
+
 ## [0.7.98] - 2026-11-21
 
 ### 一份报告不该握着两个答案

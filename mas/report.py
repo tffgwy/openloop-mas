@@ -642,6 +642,90 @@ def group_threads(runs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return threads
 
 
+def closure_grain(
+    runs: List[Dict[str, Any]],
+    threads: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """The one place that counts what is still waiting.
+
+    The gap
+    -------
+    v0.7.98 made the report and the closure verdict agree on the
+    *grain* - a problem, not an attempt. But the verdict was the only
+    surface that used the new rule. The status page (``mas status``)
+    still counted every failed attempt, so one machine could say:
+
+        账本：尝试 2 次  已闭环 1  未闭合 1
+        待解决问题：0 个（共 1 个问题）
+        闭合判定：闭合：没有留下任何待办。
+
+    Two of those three lines are about *attempts* and one is about
+    *problems*, and nothing on the screen says so. The reader is left
+    to guess which number means "there is work for me" - and the
+    status page is the page a beginner opens first.
+
+    The same drift reached the MCP surface: ``mas_status`` reported
+    ``open_tickets`` and said nothing at all about closure, so an
+    agent asking "is this done?" got no answer from the tool that
+    looks like the place to ask.
+
+    The fix
+    -------
+    One function computes the grain, and every surface that shows
+    or reports it calls that function. There is no second copy of
+    the rule left anywhere to drift.
+
+    The counts it returns, and what each one means:
+
+    * ``attempts``          - every attempt made. History.
+    * ``attempts_closed``   - the attempts that closed.
+    * ``attempts_not_closed`` - every attempt that did not close.
+    * ``attempts_open``     - the failed attempts that belong to a
+      problem that is **still open**. This is the work in progress.
+    * ``attempts_superseded`` - the failed attempts a later attempt
+      replaced. History, not work in progress.
+    * ``problems``          - the distinct problems.
+    * ``problems_open``     - the problems still waiting for a
+      person.
+    * ``problems_closed``   - the problems that are done.
+    * ``problem_closure_rate`` / ``attempt_closure_rate`` - the two
+      rates, each naming its own grain.
+
+    The rule that decides ``attempts_open`` is exactly the one the
+    verdict uses: a failed attempt that a later attempt replaced does
+    not hold the loop open.
+    """
+    if threads is None:
+        threads = group_threads(runs)
+    open_thread_ids = {
+        str(thread.get("thread_id") or "") for thread in threads if not thread.get("closed")
+    }
+    closed = [run for run in runs if run.get("closed")]
+    failed = [run for run in runs if not run.get("closed")]
+    failed_open = [run for run in failed if thread_of(run) in open_thread_ids]
+    failed_superseded = [run for run in failed if run not in failed_open]
+    open_threads = [thread for thread in threads if not thread.get("closed")]
+    return {
+        "attempts": len(runs),
+        "attempts_closed": len(closed),
+        "attempts_not_closed": len(failed),
+        # The failed attempts that are still waiting. A failed attempt
+        # a later attempt replaced is history, not work in progress.
+        "attempts_open": len(failed_open),
+        "attempts_superseded": len(failed_superseded),
+        "problems": len(threads),
+        "problems_open": len(open_threads),
+        "problems_closed": len(threads) - len(open_threads),
+        "attempt_closure_rate": (round(len(closed) / len(runs), 4) if runs else 0.0),
+        "problem_closure_rate": (
+            round((len(threads) - len(open_threads)) / len(threads), 4) if threads else 0.0
+        ),
+        # The problems that are still waiting, by id - so a surface
+        # can name them instead of only counting them.
+        "open_thread_ids": sorted(open_thread_ids),
+    }
+
+
 #: The states a seal can be in, in words. A seal that does not
 #: still hold is not a detail - it is the difference between "this
 #: loop closed" and "this loop closed on bytes that are still the
@@ -1105,7 +1189,6 @@ def build_report(
     closed = [r for r in runs if r["closed"]]
     failed_runs = [r for r in runs if not r["closed"]]
     threads = group_threads(runs)
-    open_threads = [t for t in threads if not t["closed"]]
     # The failed attempts that are still waiting, as opposed to the
     # failed attempts that were *superseded*.
     #
@@ -1125,9 +1208,14 @@ def build_report(
     # The closure verdict is built on the second one, because the
     # question it answers is "is anything still waiting?", not "did
     # every try succeed?".
-    open_thread_ids = {str(t.get("thread_id") or "") for t in open_threads}
+    # The one rule, in one place. Every surface that shows or
+    # reports "what is still waiting" reads these numbers, so they
+    # cannot drift apart from each other.
+    grain = closure_grain(runs, threads)
     failed_open = [
-        r for r in failed_runs if thread_of(r) in open_thread_ids
+        r
+        for r in failed_runs
+        if thread_of(r) in set(grain["open_thread_ids"])
     ]
     failed_superseded = [r for r in failed_runs if r not in failed_open]
     # The sealed conclusions, checked against the disk as it stands
@@ -1204,9 +1292,9 @@ def build_report(
             "not_closed_open": len(failed_open),
             "not_closed_superseded": len(failed_superseded),
             # How many distinct problems the ledger holds.
-            "problems": len(threads),
-            "problems_open": len(open_threads),
-            "problems_closed": len(threads) - len(open_threads),
+            "problems": int(grain["problems"]),
+            "problems_open": int(grain["problems_open"]),
+            "problems_closed": int(grain["problems_closed"]),
             # Two closure rates, because there are two grains.
             #
             # ``closure_rate`` counts attempts: of the runs that were
@@ -1217,12 +1305,8 @@ def build_report(
             # failed. Printing the attempt rate next to a verdict of
             # "closed" reads like a contradiction, and it is one:
             # two grains, one number.
-            "closure_rate": round(len(closed) / len(runs), 4) if runs else 0.0,
-            "problem_closure_rate": (
-                round((len(threads) - len(open_threads)) / len(threads), 4)
-                if threads
-                else 0.0
-            ),
+            "closure_rate": float(grain["attempt_closure_rate"]),
+            "problem_closure_rate": float(grain["problem_closure_rate"]),
             "entries": len(rows),
             # The spend of every run in this report.
             "tokens": sum(int(run.get("tokens") or 0) for run in runs),
@@ -1508,9 +1592,28 @@ def render_markdown(report: Dict[str, Any]) -> str:
     totals = report.get("totals") or {}
     lines: List[str] = ["# OpenLoop MAS 闭环复盘报告", ""]
     lines.append(f"生成时间：{report.get('generated_at', '')}")
+    # The headline has to name the grain of every number on it.
+    #
+    # The old line said "未闭环：1" next to "问题闭环率 100%" and read
+    # like a contradiction: one line counted attempts, the next counted
+    # problems, and nothing said so. The reader had to guess which
+    # number meant "there is work for me".
+    #
+    # So the line that says what is waiting says the *waiting* count -
+    # the failed attempts that belong to a problem that is still open -
+    # and the count of every failure that ever happened is reported
+    # next to it as history, with the number of the ones a later
+    # attempt replaced spelled out.
+    not_closed = int(totals.get("not_closed", 0) or 0)
+    not_closed_open = int(
+        totals.get("not_closed_open")
+        if totals.get("not_closed_open") is not None
+        else not_closed
+    )
+    superseded = int(totals.get("not_closed_superseded", 0) or 0)
     lines.append(
-        f"运行总数：{totals.get('runs', 0)}　已闭环：{totals.get('closed', 0)}　"
-        f"未闭环：{totals.get('not_closed', 0)}　尝试闭环率：{totals.get('closure_rate', 0):.0%}"
+        f"尝试总数：{totals.get('runs', 0)}　已闭环：{totals.get('closed', 0)}　"
+        f"仍在等：{not_closed_open}　尝试闭环率：{totals.get('closure_rate', 0):.0%}"
     )
     # Runs are attempts; problems are what the human actually has to
     # deal with. Saying both stops the report from looking like three
@@ -1521,6 +1624,16 @@ def render_markdown(report: Dict[str, Any]) -> str:
         f"{totals.get('problems_closed', 0)} 个已解决，"
         f"问题闭环率 {totals.get('problem_closure_rate', 0):.0%}）"
     )
+    # The history, named as history. Every failed attempt is here, so
+    # nothing is hidden - but the reader is told which of them a later
+    # attempt replaced, because otherwise "1 次未闭合" next to "问题
+    # 闭环率 100%" reads like the tool contradicting itself.
+    if superseded:
+        lines.append(
+            f"历史失败：{not_closed} 次（其中 {superseded} 次已被后来的成功尝试取代，不算待办）"
+        )
+    elif not_closed:
+        lines.append(f"历史失败：{not_closed} 次")
     lines.append(f"总花费：{int(totals.get('tokens', 0) or 0)} token")
     # The human queue, in the headline. The report says how much the
     # machine did; it has to say how much is still waiting for a

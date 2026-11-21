@@ -140,11 +140,11 @@ server and the skills, and finishes with an offline self-check.
 Pin a specific release instead of "the latest":
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.98
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.7.99
 ```
 
 ```bash
-MAS_VERSION=0.7.98 bash install.sh
+MAS_VERSION=0.7.99 bash install.sh
 ```
 
 > The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
@@ -1196,6 +1196,41 @@ use the tool, skip this section.
   superseded problem is reported as unfinished again.
   ```bash
   mas selftest --only closure_supersede
+  ```
+- **The fortieth gate `status_grain`** - v0.7.98 put the **report** and the
+  **verdict** on the same grain, the grain of the problem. This release
+  finds the **third speaker** still on the old grain of the **attempt**:
+  the **status page**.
+
+  On one machine `mas status` said "1 not closed" while `mas report` and
+  `mas closure` said "0 open problems" - **two answers, one machine**,
+  and the reader is one person. The MCP side was worse: `mas_status`
+  reported only `open_tickets` and said **nothing at all** about closure,
+  so from an MCP caller the loop looked like it had **never** closed,
+  even when it had closed long ago.
+
+  Now **all three read one function** (`closure_grain()` in `mas/report.py`):
+
+  * the status page talks in three numbers: **still waiting** (real work
+    in progress), **historical failures** (superseded, no longer holding
+    the queue), and the **problem count**;
+  * "still waiting" counts **problems** (the last attempt decides),
+    "historical failures" counts **attempts** (everyone who ever failed
+    is remembered);
+  * the report headline changes from "not closed: N" to "**still
+    waiting: N**", plus a line "historical failures: N times (M of them
+    were superseded by a later successful attempt, so they are not work
+    in progress)";
+  * the MCP `mas_status` gains a `closure` section carrying
+    `attempts_open` / `attempts_superseded` / `problems_open` and both
+    closure rates, saying **the same number** as the command line.
+
+  The gate **implements the reading twice** and **proves it can fail**:
+  the function the status page reads is broken on purpose - back to the
+  old grain - and the gate has to notice that the status page and the
+  verdict now give opposite answers.
+  ```bash
+  mas selftest --only status_grain
   ```
 - **The 31st gate `report_audit`** - v0.7.76 made every human decision
   (the proposal, the approval, the undo) leave a hash-linked entry next to the

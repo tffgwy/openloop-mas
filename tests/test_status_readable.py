@@ -87,8 +87,12 @@ class StatusIsReadableTest(unittest.TestCase):
     def test_the_default_output_counts_the_runs(self):
         self._run()
         _code, out = _run_cli(["status"], self.state_dir)
-        self.assertIn("运行 1 次", out)
+        # "尝试" and "问题" are two grains. The page has to name
+        # the grain, or the reader cannot tell which number means
+        # "there is work for me".
+        self.assertIn("尝试 1 次", out)
         self.assertIn("已闭环 1", out)
+        self.assertIn("仍在等 0", out)
 
     def test_the_default_output_lists_the_deliverables(self):
         self._run(goal="写一份上手指南")

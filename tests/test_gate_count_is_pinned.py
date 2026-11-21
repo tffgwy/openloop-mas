@@ -64,6 +64,7 @@ EXPECTED_GATE_NAMES = (
     "mcp_artifacts",
     "closure_verdict",
     "closure_supersede",
+    "status_grain",
     "doc_text_integrity",
     "selftest_isolation",
 )

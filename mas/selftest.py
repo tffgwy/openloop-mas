@@ -96,6 +96,9 @@ from mas.selftest_seal import (
 from mas.selftest_shadow import (
     check_the_program_you_type_is_the_program_that_was_checked,
 )
+from mas.selftest_status_grain import (
+    check_the_status_page_speaks_the_same_grain,
+)
 from mas.selftest_undo_visibility import (
     check_an_undo_is_visible_in_the_audit,
 )
@@ -5545,6 +5548,7 @@ CHECKS = (
     check_the_deliverables_reach_the_mcp_caller,
     check_the_closure_verdict_reaches_both_surfaces,
     check_the_report_and_the_verdict_agree_on_the_grain,
+    check_the_status_page_speaks_the_same_grain,
     check_the_documents_are_still_text,
     check_the_selftest_leaves_the_machine_alone,
 )
