@@ -96,6 +96,9 @@ from mas.selftest_report_trace_roles import (
 from mas.selftest_report_undo import (
     check_the_report_says_which_approvals_were_wrong,
 )
+from mas.selftest_run_detail_grain import (
+    check_the_run_detail_speaks_the_same_grain,
+)
 from mas.selftest_seal import (
     check_a_closure_is_sealed_to_the_bytes_it_decided_on,
 )
@@ -5561,6 +5564,7 @@ CHECKS = (
     check_a_ticket_a_human_can_act_on_an_agent_can_too,
     check_the_ticket_queue_is_a_handover_everywhere,
     check_the_verdict_page_speaks_the_same_grain,
+    check_the_run_detail_speaks_the_same_grain,
     check_the_documents_are_still_text,
     check_the_selftest_leaves_the_machine_alone,
 )

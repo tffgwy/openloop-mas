@@ -68,6 +68,7 @@ EXPECTED_GATE_NAMES = (
     "ticket_brief",
     "queue_brief",
     "closure_grain_text",
+    "run_detail_grain",
     "doc_text_integrity",
     "selftest_isolation",
 )

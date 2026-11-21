@@ -140,11 +140,11 @@ server and the skills, and finishes with an offline self-check.
 Pin a specific release instead of "the latest":
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.2
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.3
 ```
 
 ```bash
-MAS_VERSION=0.8.2 bash install.sh
+MAS_VERSION=0.8.3 bash install.sh
 ```
 
 > The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
@@ -892,7 +892,7 @@ MIT © OpenLoop MAS contributors
 
 ## Gate archaeology
 
-This project now holds **43 gates**, and every one of them grew out of a
+This project now holds **44 gates**, and every one of them grew out of a
 **real incident**. They are listed below newest first - if you just want to
 use the tool, skip this section.
 
@@ -1231,6 +1231,53 @@ use the tool, skip this section.
   verdict now give opposite answers.
   ```bash
   mas selftest --only status_grain
+  ```
+- **The forty-fourth gate `run_detail_grain`** - v0.7.100 made the
+  **status page** and the **report headline** say the grain out loud, and
+  v0.8.2 made the **verdict page** say it. This release finds that the
+  **per-run detail** still spoke the old wording - and that is exactly
+  the section a reader flips to when they want to know *what to do next*.
+
+  ```text
+  attempts: 2  closed: 1  still waiting: 0  attempt rate: 50%   <- headline
+  history: 1 failure (replaced by a later successful attempt, not pending)
+
+  ## run `R-sup1`
+  - not closed reason: stagnation: the deliverable did not change ...
+  - human ticket: `T-sup1` (see it with `mas tickets`, continue with
+    `mas resume <ticket>`)
+  ```
+
+  **One machine, two answers**: the headline says "nothing is waiting",
+  while the detail hands the reader a **`mas resume`** command for a run
+  that a later successful attempt had already replaced. The overview
+  table marked that row `ESC` too, which reads as "still pending".
+
+  Every failure now carries **its own grain** (`superseded` / `open`),
+  decided by the same rule the headline uses:
+  * a replaced attempt is filed as **history** in the detail, its reason
+    is relabelled "the reason at the time", and it **hands out no resume
+    pointer**;
+  * the overview table marks a replaced attempt `HIS` and says
+    "replaced";
+  * the resume pointer goes **only** to a run whose ticket is **still
+    waiting in the queue** - a run keeps the id of the ticket it closed,
+    so "has a ticket id" is not "has work waiting";
+  * **a real pending problem keeps its guidance**: a run that is still
+    waiting still gets its reason, its next-step hint and its
+    `mas resume`;
+  * **"the ticket is lost" is not "the work is done"**: a ticket the
+    ledger records and the queue does not hold reads "it can no longer
+    be found - get it back first", **not** "no need to continue" -
+    `mas resume` raises on a ticket it cannot find, so pointing there
+    only sends the reader into an error.
+
+  The gate **implements the reading twice** and **proves it can fail**:
+  the detail is broken on purpose - made to hand out the resume command
+  again - and the gate has to notice that the page sends the reader to
+  resume work that is already done.
+  ```bash
+  mas selftest --only run_detail_grain
   ```
 - **The forty-third gate `closure_grain_text`** - v0.7.98 put the closure
   verdict on the **problem** grain, v0.7.99 put the verdict in one place,

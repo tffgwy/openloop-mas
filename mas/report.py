@@ -1218,6 +1218,26 @@ def build_report(
         if thread_of(r) in set(grain["open_thread_ids"])
     ]
     failed_superseded = [r for r in failed_runs if r not in failed_open]
+    # Mark every failed attempt with the grain it belongs to, so the
+    # per-run detail can say the same thing the headline does.
+    #
+    # The gap this closes: the headline said "still waiting 0 / history
+    # 1", but the detail of that one failed run still read "not closed
+    # reason: ..." and pointed at `mas resume` - which is how a reader
+    # is sent to resume an attempt that a later attempt already
+    # replaced. The header and the detail were two answers to one
+    # question, and the detail is where the reader goes looking for
+    # what to do next.
+    #
+    # So every failed attempt carries its own grain:
+    #
+    # * ``superseded`` - a later attempt replaced it. History.
+    # * ``open``        - it belongs to a problem that is still open.
+    #   Work that is still waiting.
+    #
+    # The rule is the one in ``closure_grain``; this only *marks* the
+    # runs, so the detail cannot drift away from the headline.
+    _superseded_ids = {str(r.get("run_id") or "") for r in failed_superseded}
     # The sealed conclusions, checked against the disk as it stands
     # now. A report that says "3 closed" and does not say whether
     # those three conclusions still hold is a report about the past
@@ -1240,6 +1260,82 @@ def build_report(
     # person", so a report that never reads the queue reports a busy
     # machine while problems wait.
     queue = ticket_reading(rows, tickets, ledger_complete=ledger_complete)
+    # The tickets that are still waiting for a person. A run that
+    # carries a ticket id is not the same as a run whose problem is
+    # still waiting: a ticket that was resolved leaves the id on the
+    # run it closed, and pointing the reader at `mas resume` for it
+    # sends them to reopen work that is already done.
+    #
+    # So the resume pointer is given only to a run whose ticket is
+    # **still in the queue, waiting**. The queue is the authority on
+    # that, not the run.
+    _waiting_tickets = {
+        str(entry.get("id") or "")
+        for entry in (queue.get("tickets") or [])
+        if str(entry.get("state") or "") == "waiting_human"
+    }
+    # The tickets the queue knows about at all - waiting or resolved.
+    #
+    # A ticket that is **not in the queue** is a different case from a
+    # ticket that is **resolved**, and the difference matters: a
+    # resolved ticket is finished work, while a ticket the queue has
+    # lost is a record the report cannot account for.
+    #
+    # But the queue cannot always tell them apart. A caller that hands
+    # in **no queue at all** (`tickets is None`) has not looked - and
+    # "we did not look" is not "the work is done". A caller that hands
+    # in an **empty queue** has looked and found nothing, and that is a
+    # fact about the ticket.
+    #
+    # So the queue is only allowed to retire a ticket when it was
+    # actually read. Otherwise the run keeps its resume pointer,
+    # because handing out "there is nothing to continue" for work
+    # whose state is simply **unknown** is how a reader gets told to
+    # walk away from an open problem.
+    _queue_read = tickets is not None
+    _known_tickets = {
+        str(entry.get("id") or "") for entry in (queue.get("tickets") or [])
+    }
+    # The tickets the ledger points at. A ticket the ledger records and
+    # the queue does not hold is a **lost** ticket: the escalation
+    # happened, and the record of it is gone. `mas resume` cannot pick
+    # it up - it raises "unknown ticket" - so the report must not send
+    # the reader there.
+    _ledger_tickets = {
+        str(row.get("ticket_id") or "")
+        for row in (rows or [])
+        if str(row.get("ticket_id") or "")
+    }
+    for _run in runs:
+        if _run.get("closed"):
+            _run["failure_grain"] = ""
+        else:
+            _run["failure_grain"] = (
+                "superseded"
+                if str(_run.get("run_id") or "") in _superseded_ids
+                else "open"
+            )
+        # Whether this run still has work waiting behind it. True only
+        # for a run that failed *and* whose ticket is still waiting.
+        _ticket = str(_run.get("ticket_id") or "")
+        _run["ticket_waiting"] = bool(
+            _ticket and _ticket in _waiting_tickets and not _run.get("closed")
+        )
+        # Whether the queue still holds this run's ticket at all. A
+        # ticket the queue has **resolved** is finished work; a ticket
+        # the queue does not mention is work whose state is unknown,
+        # and unknown is not the same as finished.
+        _run["ticket_known"] = bool(
+            _queue_read and _ticket and _ticket in _known_tickets
+        )
+        # The ledger recorded it and the queue - which **was** read -
+        # does not hold it: the ticket is lost, not finished.
+        _run["ticket_lost"] = bool(
+            _queue_read
+            and _ticket
+            and _ticket in _ledger_tickets
+            and _ticket not in _known_tickets
+        )
     # The draft queue. A run that proposed a change instead of making
     # it leaves a draft behind, and the report has to say so: the run
     # may well be closed, but the *file* is still the old one.
@@ -1821,6 +1917,15 @@ def render_markdown(report: Dict[str, Any]) -> str:
         drifted = bool(seal_state) and seal_state != "holds"
         if drifted:
             icon = "DRF"
+        # A failed attempt that a later attempt replaced is history, not
+        # an open item. The table is the first thing anyone reads, and
+        # an "ESC" next to a closed problem reads as "this still needs
+        # me" - which is exactly what the headline says it is not.
+        # "HIS" says the truth in three letters: it happened, and it was
+        # taken over.
+        superseded_here = str(run.get("failure_grain") or "") == "superseded"
+        if superseded_here:
+            icon = "HIS"
         # The task the run was about. A table of run ids and hashes is
         # an audit log; a table that also says what was being done is
         # a report a human can read.
@@ -1837,6 +1942,10 @@ def render_markdown(report: Dict[str, Any]) -> str:
             status_cell = (
                 f"结论已漂移（{status_cell}）"
             )
+        if superseded_here:
+            # The words, not only the mark. A reader who does not know
+            # the marks still gets the truth.
+            status_cell = f"已被取代（{status_cell}）"
         decision = str(run.get("decision") or "-")
         decision_text = decision_reading(decision)
         decision_cell = decision_text if decision_text == decision else (
@@ -1911,22 +2020,52 @@ def render_markdown(report: Dict[str, Any]) -> str:
                 lines.append(
                     "- 交付物：❌ 未通过验收标准（见下方未通过项）"
                 )
+        # The grain of this failure, decided by the same rule the
+        # headline uses.
+        #
+        # A failed attempt that a later attempt replaced is **history**,
+        # not work in progress. The detail used to read like work in
+        # progress anyway: it printed "not closed reason: ..." and
+        # pointed at `mas resume`, so a reader who scrolled to the
+        # detail of the one replaced attempt was told to go and resume
+        # it - while the headline said "still waiting 0".
+        #
+        # One machine, two answers, and the detail is where the reader
+        # goes to find out what to do next. So the detail now says the
+        # same thing the headline says, and a replaced attempt stops
+        # handing out a resume command for work nobody is waiting on.
+        grain = str(run.get("failure_grain") or "")
+        superseded = grain == "superseded"
+        if superseded:
+            lines.append(
+                "- 历史：这次失败已被后来的成功尝试取代"
+                "（不算待办）"
+            )
         # Why the run ended the way it did. The engine writes the reason
         # on the run's end entry - including the specific cause of a
         # stagnation escalation ("the deliverable did not change for N
         # consecutive attempts") - and the report used to drop it
         # entirely. An escalated run whose reason is invisible sends the
         # human looking for the wrong thing.
+        #
+        # A replaced attempt keeps its reason - it is a fact about what
+        # happened - but it is filed under history, and it no longer
+        # hands out a "next step" for work that is not waiting.
         if run.get("error"):
             # In words. The report is the screen a beginner reads
             # after the run, and the reason is the one line that
             # says what to do next - in the engine's vocabulary it
             # says nothing a newcomer can use.
-            lines.append(f"- 未闭合原因：{reason_text(run.get('error'))}")
-            hint = reason_hint(run.get("error"))
-            if hint:
-                lines.append(f"  - 下一步：{hint}")
-        elif run.get("status") == "escalated":
+            if superseded:
+                lines.append(
+                    f"- 当时的原因：{reason_text(run.get('error'))}"
+                )
+            else:
+                lines.append(f"- 未闭合原因：{reason_text(run.get('error'))}")
+                hint = reason_hint(run.get("error"))
+                if hint:
+                    lines.append(f"  - 下一步：{hint}")
+        elif run.get("status") == "escalated" and not superseded:
             lines.append("- 未闭合原因：运行升级人工处理（账本未记录具体原因）")
         if run.get("stagnation"):
             lines.append(
@@ -1934,10 +2073,57 @@ def render_markdown(report: Dict[str, Any]) -> str:
                 "（worker 反复产出相同内容）"
             )
         if run.get("ticket_id"):
-            lines.append(
-                f"- 人工工单：`{run.get('ticket_id')}`"
-                "（`mas tickets` 查看，`mas resume <工单号>` 从这里继续）"
-            )
+            if superseded:
+                # The ticket of a replaced attempt is a record, not a
+                # handle to pull: the attempt it belongs to was taken
+                # over by a later one. Pointing the reader at `mas
+                # resume` here would send them to redo work that is
+                # already done.
+                lines.append(
+                    f"- 当时的人工工单：`{run.get('ticket_id')}`"
+                    "（已被后来的成功尝试取代，不需要续跑）"
+                )
+            elif run.get("ticket_waiting"):
+                lines.append(
+                    f"- 人工工单：`{run.get('ticket_id')}`"
+                    "（`mas tickets` 查看，`mas resume <工单号>` 从这里继续）"
+                )
+            elif run.get("ticket_lost"):
+                # The ledger records this ticket and the queue does not
+                # hold it. `mas resume` would raise "unknown ticket", so
+                # handing out the command would send the reader into an
+                # error. The honest line names the hole: the ticket
+                # cannot be found.
+                lines.append(
+                    f"- 人工工单：`{run.get('ticket_id')}`"
+                    "（工单队列里已经找不到它了，需要先把它找回来）"
+                )
+            elif run.get("ticket_known"):
+                # The ticket is in the queue and it is **not** waiting
+                # for a person any more, so there is nothing to resume.
+                # A run keeps the id of the ticket it closed; handing
+                # out a resume command for it sends the reader to
+                # reopen finished work.
+                lines.append(
+                    f"- 人工工单：`{run.get('ticket_id')}`"
+                    "（已不需要续跑）"
+                )
+            else:
+                # The queue does not mention this ticket at all. That
+                # is **not** the same as a resolved ticket: the state
+                # is unknown - the caller may have handed in no queue
+                # at all - and telling the reader "there is nothing to
+                # continue" for work whose state is unknown is how an
+                # open problem gets walked away from.
+                #
+                # So the pointer stays. The report names the missing
+                # ticket separately, in the queue's own list of
+                # problems; this line only says how to pick the work
+                # up.
+                lines.append(
+                    f"- 人工工单：`{run.get('ticket_id')}`"
+                    "（`mas tickets` 查看，`mas resume <工单号>` 从这里继续）"
+                )
         # Where the work landed. The deliverable used to live only in
         # the engine's memory: the report could print its hash and
         # nothing else, so a closed run pointed at nothing the reader
