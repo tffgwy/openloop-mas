@@ -133,7 +133,9 @@ TOOLS: List[Dict[str, Any]] = [
     ),
     _tool(
         "mas_tickets",
-        "List human escalation tickets.",
+        "List human escalation tickets. Each ticket comes with a brief: "
+        "what it is about, what it is stuck on, why the loop stopped and "
+        "the command that continues it.",
         {
             "type": "object",
             "properties": {"state": {"type": "string", "description": "waiting_human | resolved"}},
@@ -795,7 +797,44 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     if name == "mas_tickets":
         engine = _engine(config)
         state = arguments.get("state")
-        return {"tickets": engine.tickets.list(state)}
+        raw = engine.tickets.list(state)
+        # The queue, read the way every other surface reads it.
+        #
+        # The gap: this tool returned the raw ticket dicts - the id,
+        # the state, and a payload of raw fields. An agent could read
+        # the title and the raw reason, but *why* the loop stopped and
+        # *how to continue* only existed in the command line's human
+        # text layout. This tool is the one an agent asks; the handover
+        # has to live here.
+        #
+        # The raw tickets stay exactly where they were, under
+        # "tickets": that is the engine's own record and anything
+        # already reading it must keep working. The briefs are added
+        # beside them.
+        briefs = []
+        try:
+            from mas.ticket_brief import ticket_briefs
+
+            briefs = ticket_briefs(raw)
+        except Exception:  # noqa: BLE001 - the queue must never crash
+            briefs = []
+        return {
+            "tickets": raw,
+            "briefs": briefs,
+            "briefs_count": len(briefs),
+            "briefs_text": "\n".join(
+                "  %s [%s] %s"
+                % (
+                    b.get("id") or "",
+                    b.get("kind") or "",
+                    b.get("blocked_on")
+                    or b.get("reason_reading")
+                    or b.get("title")
+                    or "",
+                )
+                for b in briefs
+            ),
+        }
 
     if name == "mas_ticket_resolve":
         engine = _engine(config)

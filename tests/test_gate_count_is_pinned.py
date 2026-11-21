@@ -66,6 +66,7 @@ EXPECTED_GATE_NAMES = (
     "closure_supersede",
     "status_grain",
     "ticket_brief",
+    "queue_brief",
     "doc_text_integrity",
     "selftest_isolation",
 )

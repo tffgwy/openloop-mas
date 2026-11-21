@@ -1111,7 +1111,27 @@ def cmd_tickets(args: argparse.Namespace) -> int:
     engine = _engine(config)
     tickets = engine.tickets.list(args.state)
     if args.json:
-        _print({"tickets": tickets}, True)
+        # The queue, read the way every other surface reads it.
+        #
+        # The gap: ``mas tickets --json`` returned the raw ticket
+        # dicts - the id, the state, and a payload of raw fields. A
+        # script (or an agent that shells out to the CLI) could read the
+        # title and the raw reason, but *why* the loop stopped and *how
+        # to continue* only existed in the human text layout, which
+        # JSON does not have. The same facts now travel as data.
+        #
+        # The raw tickets stay exactly where they were, under
+        # "tickets": that is the engine's own record and anything
+        # already reading it must keep working. The briefs are added
+        # beside them.
+        _print(
+            {
+                "tickets": tickets,
+                "briefs": ticket_briefs(tickets),
+                "briefs_count": len(tickets),
+            },
+            True,
+        )
         return 0
     if not tickets:
         if args.state:

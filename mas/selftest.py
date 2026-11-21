@@ -72,6 +72,9 @@ from mas.selftest_onboarding import (
 from mas.selftest_packaged_docs import (
     check_the_documents_the_beginner_reads_travel_with_the_wheel,
 )
+from mas.selftest_queue_brief import (
+    check_the_ticket_queue_is_a_handover_everywhere,
+)
 from mas.selftest_report_audit import (
     check_the_report_reads_the_decision_chains,
 )
@@ -5553,6 +5556,7 @@ CHECKS = (
     check_the_report_and_the_verdict_agree_on_the_grain,
     check_the_status_page_speaks_the_same_grain,
     check_a_ticket_a_human_can_act_on_an_agent_can_too,
+    check_the_ticket_queue_is_a_handover_everywhere,
     check_the_documents_are_still_text,
     check_the_selftest_leaves_the_machine_alone,
 )

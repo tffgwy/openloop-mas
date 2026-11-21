@@ -118,11 +118,11 @@ bash install.sh
 想装固定版本（而不是"最新版"）：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.0
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.1
 ```
 
 ```bash
-MAS_VERSION=0.8.0 bash install.sh
+MAS_VERSION=0.8.1 bash install.sh
 ```
 
 > 脚本默认会往 `PATH` 里加一条 `~/.mas/bin`（Windows 写当前用户的注册表）。
@@ -1001,7 +1001,7 @@ MIT © OpenLoop MAS contributors
 
 ## 门禁考古
 
-这个项目至今有 **32 道门禁**，每一道都是从一个**真实事故**里长出来的。
+这个项目至今有 **42 道门禁**，每一道都是从一个**真实事故**里长出来的。
 下面按门禁编号倒序记录它们各自的来历 —— 如果你只想用，直接跳过这一节就好。
 
 - **第 32 项门禁 `selftest_isolation`** —— 自检本身也是一个程序，
@@ -1252,6 +1252,32 @@ MIT © OpenLoop MAS contributors
   门禁必须发现状态页和判定给了相反的答案。
   ```bash
   mas selftest --only status_grain
+  ```
+- **第 42 项门禁 `queue_brief`** —— v0.8.0 让**状态工具**带上了工单摘要，
+  这一版发现**队列还有第二个家**，而它没跟上：`mas tickets --json`
+  和 MCP 的 `mas_tickets` 工具**仍然只给原始记录**。
+  ```json
+  {"tickets": [{"id": "T-...", "state": "waiting_human",
+                "payload": {"reason": "stagnation: ...", "budget": {...}}}]}
+  ```
+  读者能看见标题和原始理由字符串，但**为什么停**只剩机器码，
+  **怎么继续**（那条带放宽预算、不撞同一堵墙的命令）**根本不在里面** ——
+  它只活在命令行的**人话排版**里。
+  而队列恰恰是最容易被**轮询**的那一面：智能体问「现在该我做什么」，轮的就是队列。
+  **一个专门用来「列工单」的工具，恰恰是唯一接不住工单的那一面。**
+  现在队列也读**同一个函数**（`mas/ticket_brief.py:ticket_brief()`），
+  三面（状态工具、命令行 JSON、MCP 队列）说**同一套话**：
+  * MCP 的 `mas_tickets` 新增 `briefs`（摘要列表）、`briefs_count`
+    和 `briefs_text`（一行一张工单）；
+  * 命令行的 `mas tickets --json` 新增 `briefs` 和 `briefs_count`；
+  * **原始工单一个字没动**：`tickets` 仍然是原来那份原始工单。
+    摘要是**加在旁边**，不是**换掉** —— 已经在读 `tickets` 的人不会坏；
+  * 队列和状态工具对同一张工单**逐字段**说同一件事。
+  门禁**独立实现两遍判定**（后者完全从**原始工单**手算），
+  并**自证能失败**：把摘要**故意打坏**成「没有怎么继续」，
+  门禁必须发现队列又接不住工单了。
+  ```bash
+  mas selftest --only queue_brief
   ```
 - **第 41 项门禁 `ticket_brief`** —— v0.7.99 把**状态页、报告和 MCP**
   统一到了同一个粒度，这一版发现**另一条路还缺一截**：MCP 的 `mas_status`

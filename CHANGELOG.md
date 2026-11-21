@@ -4,6 +4,54 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] - 2026-11-21
+
+### 工单队列在每一面都是交接
+
+v0.8.0 让**状态工具**带上了工单摘要。但队列还有**第二个家**，而它没跟上：
+`mas tickets --json` 和 MCP 的 `mas_tickets` 工具**仍然只给原始记录**。
+
+```json
+{"tickets": [{"id": "T-...", "state": "waiting_human",
+              "payload": {"reason": "stagnation: ...", "budget": {...}}}]}
+```
+
+读者能看见标题和原始理由字符串，但 **为什么停** 只剩机器码，**怎么继续**
+（那条带放宽预算、不撞同一堵墙的命令）**根本不在里面** —— 它只活在命令行的
+**人话排版**里。而队列恰恰是最容易被**轮询**的那一面：智能体问「现在该我做什么」，
+轮的就是队列。
+
+**一个专门用来「列工单」的工具，恰恰是唯一接不住工单的那一面。**
+
+### 第二十个不变量
+
+> **工单队列在每一面都是交接：MCP 与命令行 JSON 读同一份摘要，原始记录照旧保留。**
+
+### 改了什么
+
+* `mas/mcp_server.py` 的 `mas_tickets` 工具：
+  * **新增** `briefs` —— 工单摘要；**新增** `briefs_count`、`briefs_text`
+    （一行一张工单）；
+  * 工具说明直接告诉调用方「每个工单都带摘要」。
+* `mas/cli.py` 的 `mas tickets --json`：
+  * **新增** `briefs` —— 工单摘要；**新增** `briefs_count`；
+* **原始工单一个字没动**：`tickets` 仍然是原来那份原始工单。
+  摘要是**加在旁边**（`briefs`），不是**换掉** —— 已经在读 `tickets` 的人不会坏。
+* 队列与状态工具对同一张工单**逐字段**说同一件事。
+
+### 第 42 项门禁 `queue_brief`
+
+门禁要求：MCP 队列工具**带着摘要**（在原始工单旁边）；命令行 JSON 队列
+同样带着摘要；一份队列摘要**说得出怎么继续**；队列和状态工具**逐字段一致**；
+**原始工单还在原来的键下**（`tickets`，已经在读它的人不能坏）。
+
+门禁**独立实现两遍判定**（后者完全从**原始工单**手算），并**自证能失败**：
+把摘要**故意打坏**成「没有怎么继续」，门禁必须发现队列又接不住工单了。
+
+```bash
+mas selftest --only queue_brief
+```
+
 ## [0.8.0] - 2026-11-21
 
 ### 工单不只是一串 ID

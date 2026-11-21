@@ -140,11 +140,11 @@ server and the skills, and finishes with an offline self-check.
 Pin a specific release instead of "the latest":
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.0
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.1
 ```
 
 ```bash
-MAS_VERSION=0.8.0 bash install.sh
+MAS_VERSION=0.8.1 bash install.sh
 ```
 
 > The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
@@ -892,7 +892,7 @@ MIT © OpenLoop MAS contributors
 
 ## Gate archaeology
 
-This project now holds **32 gates**, and every one of them grew out of a
+This project now holds **42 gates**, and every one of them grew out of a
 **real incident**. They are listed below newest first - if you just want to
 use the tool, skip this section.
 
@@ -1231,6 +1231,48 @@ use the tool, skip this section.
   verdict now give opposite answers.
   ```bash
   mas selftest --only status_grain
+  ```
+- **The forty-second gate `queue_brief`** - v0.8.0 gave the status
+  tool ticket briefs. This release finds that **the queue had a second
+  home** and it had not kept up: `mas tickets --json` and the MCP
+  `mas_tickets` tool **still returned the raw record**.
+
+  ```json
+  {"tickets": [{"id": "T-...", "state": "waiting_human",
+                "payload": {"reason": "stagnation: ...", "budget": {...}}}]}
+  ```
+
+  A reader could see the title and the raw reason string, but *why* the
+  loop stopped was machine code only, and *how to continue* (the command
+  with the widened budget that does not hit the same wall) was **not in
+  there at all** - it lived only in the command line's human text
+  layout. And the queue is the surface most likely to be **polled**: an
+  agent asking "what needs me?" polls the queue.
+  **The one tool whose whole job is "list the tickets" was the one
+  surface where a ticket could not be picked up.**
+
+  The queue now reads **the same function**
+  (`ticket_brief()` in `mas/ticket_brief.py`), and the three surfaces
+  (the status tool, the command line's JSON, the MCP queue) say **the
+  same words**:
+
+  * the MCP `mas_tickets` gains `briefs` (the briefs), `briefs_count`
+    and `briefs_text` (one line per ticket);
+  * the command line's `mas tickets --json` gains `briefs` and
+    `briefs_count`;
+  * **the raw tickets do not move at all**: `tickets` is still the same
+    raw record it has always been. The briefs are added **beside** it,
+    never **in place of** it - anything already reading `tickets` keeps
+    working;
+  * the queue and the status tool describe the same ticket **field by
+    field**.
+
+  The gate **implements the reading twice** (the second time by hand,
+  straight from the raw ticket) and **proves it can fail**: the brief
+  is broken on purpose - made to drop the "how to continue" - and the
+  gate has to notice that the queue could no longer be picked up.
+  ```bash
+  mas selftest --only queue_brief
   ```
 - **The forty-first gate `ticket_brief`** - v0.7.99 put the status page,
   the report and MCP on the same grain. This release finds **another
