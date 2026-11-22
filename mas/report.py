@@ -11,7 +11,7 @@ import contextlib
 import pathlib
 from typing import Any, Dict, List, Optional
 
-from mas.drafts_reading import draft_reading
+from mas.drafts_reading import draft_reading, is_waiting_for_human
 from mas.reason_text import continuation_command, reason_hint, reason_text
 from mas.util import now_iso
 from mas.verdict_text import (
@@ -1698,16 +1698,27 @@ def _draft_section_lines(report: Dict[str, Any]) -> List[str]:
     problems = list(queue.get("problems") or [])
     waiting = int(queue.get("pending_count") or 0)
     approved = int(queue.get("approved_count") or 0)
+    # The waiting ones whose approval was taken back. They are part
+    # of the waiting count - the change is live again and nobody has
+    # said yes - but a reader has to be able to tell them apart from
+    # the changes nobody has looked at yet.
+    undone_waiting = int(queue.get("undone_waiting_count") or 0)
     if not entries and not problems:
         return lines
     lines.append("## 待批草稿")
     lines.append("")
     if entries:
+        undone_note = ""
+        if undone_waiting:
+            undone_note = (
+                "（其中 %d 张的批准被撤销过，改动仍然待批）"
+                % undone_waiting
+            )
         lines.append(
-            "%d 张草稿，其中 %d 张等人批、%d 张已批准。"
+            "%d 张草稿，其中 %d 张等人批%s、%d 张已批准。"
             "草稿是循环**提议**但没有落地的改动 —— "
             "文件在批准之前一个字节都不会变。"
-            % (len(entries), waiting, approved)
+            % (len(entries), waiting, undone_note, approved)
         )
         lines.append("")
         lines.append("| 草稿 | 状态 | 被撤销 | 文件 | 提议运行 | 原因 | 接着干 |")
@@ -1716,10 +1727,20 @@ def _draft_section_lines(report: Dict[str, Any]) -> List[str]:
             path = str(entry.get("path") or "").replace("|", "\\|")[:40]
             reason = str(entry.get("reason") or "").replace("|", "\\|")[:50]
             state_text = str(entry.get("state_reading") or entry.get("state") or "-")
+            if str(entry.get("state") or "") == "undone":
+                # "撤销过" alone reads like a closed case. It is not:
+                # the change is live again and still waiting for a
+                # person to say yes.
+                state_text = "%s（仍待批）" % state_text
             run_id = str(entry.get("run_id") or "")
+            # A draft that is waiting for a human can be approved -
+            # including one whose approval was taken back: that is
+            # exactly what the undo leaves behind. Giving the command
+            # only to the untouched ones told the reader that a
+            # taken-back change was a dead end.
             command = (
                 "mas drafts approve %s" % entry.get("draft_id")
-                if str(entry.get("state") or "") == "pending"
+                if is_waiting_for_human(entry.get("state"))
                 else "-"
             )
             # How often an approval of this draft was taken back. A

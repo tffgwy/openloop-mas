@@ -4,6 +4,72 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.7] - 2026-11-23
+
+### 撤销过的草稿，仍然是一个等人的改动
+
+一张草稿有四种状态。`pending`（没人决定）、`approved`（改动已经落盘）、
+`rejected`（改动作废）—— 这三种一眼就懂。第四种 `undone` 不然。
+
+`undo_draft` 把**基线**写回磁盘，然后把草稿置为 `undone`。
+而 `approve_draft` 接受 `undone` 状态的草稿 —— 撤销的全部意义就是：
+这个改动还能在人想明白之后**再批一次**。
+
+所以 `undone` 的草稿是一个**活着的、等人批准的改动**。
+它没有被处理掉，它也没有死。
+
+但有三处只读 `pending`：
+
+* **机检覆盖层**（`mas.drafts.draft_overlay`）给撤销后的草稿递了一张**空覆盖层**
+  —— 于是机检去读磁盘，而磁盘上正是撤销刚写回的**基线**。
+  机检在判旧字节，循环在提新字节，于是**循环永远无法对自己的提议闭环**，
+  而且没有一个字说明为什么；
+* **队列读法**（`mas.drafts_reading.draft_reading`）把 `undone` 归进 `other`
+  —— 于是队列说「没有东西在等」，而一个改动正在等；
+* **闭环判定**数的是 `drafts_pending` —— 于是「报了闭环但改动还等着」的运行
+  被判成**闭合**。
+
+### 第二十六条不变量
+
+> **一张被撤销过的草稿仍然是一个等人的改动：撤销把基线写回了磁盘，
+> 它仍然可以再批准，所以它必须在每一面都等着人。**
+
+### 改了什么
+
+* `mas/drafts.py`：`draft_overlay()` 收 `pending` **和** `undone` —— 机检拿到
+  提议的字节，而不是撤销刚写回的基线。新增 `DRAFT_WAITING_STATES`。
+* `mas/drafts_reading.py`：新增**唯一读法** `is_waiting_for_human()`，
+  待批口径 = `pending` + `undone`；`closed_with_pending` 同步；
+  新增 `undone_waiting` / `undone_waiting_count`。
+* `mas/report.py`：草稿表的状态格写「撤销过（仍待批）」，
+  待批数里分开说明有几张是撤销过的，**并给出再批准的命令**
+  （以前撤销过的草稿在表里没有命令，看着像死路）。
+* `mas/cli.py`：`mas status` 用统一读法数待批，
+  并多两个计数：`undone_waiting` / `undone_waiting_count`。
+* `mas/mcp_server.py`：每张草稿带 `waiting_for_human`；
+  `mas_drafts` 列出 `waiting_count` / `waiting_draft_ids` / `undone_waiting_count`；
+  `mas_status` 多 `undone_waiting_count`。
+
+代理是那个**要动手**的角色 —— 它需要能直接问「这张草稿还在等人吗」，
+而不是自己从 `state` 去猜。
+
+### 第 48 项门禁 `an_undone_draft_is_still_waiting_everywhere`
+
+```bash
+mas selftest --only an_undone_draft_is_still_waiting_everywhere
+```
+
+门禁**独立实现两遍判定**，并**自证能失败**：把覆盖层的接线**故意打坏**
+（让它不再读 `undone` 草稿），门禁必须发现「机检读到了撤销写回的基线」。
+
+### 怎么验的
+
+```bash
+mas selftest                      # 48 项门禁全绿
+mas status --json                 # 待批里能看见撤销过的草稿
+mas drafts --json                 # 撤销过的草稿仍在待批队列里
+```
+
 ## [0.8.6] - 2026-11-22
 
 ### 被撤销的批准，在每一面都看得见

@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 from mas import __version__
 from mas.config import load_config, load_persisted_config, save_config
 from mas.doctor import run_doctor, summarize
+from mas.drafts_reading import is_waiting_for_human
 from mas.engine import LoopEngine
 from mas.report import (
     artifact_rows,
@@ -569,6 +570,15 @@ def _add_draft_history(
     draft["undos"] = int(history.get("undos") or 0)
     draft["ever_undone"] = bool(history.get("ever_undone"))
     draft["reverted_line_count"] = history.get("reverted_line_count")
+    # Whether the change still waits for a person. A draft whose
+    # approval was taken back waits again: the undo put the baseline
+    # back on the disk and the change can be approved a second time.
+    #
+    # This is the field an agent needs. "The state is ``undone``"
+    # does not say whether there is work left for the human - and an
+    # agent that reads only ``state`` reads a draft that nobody has
+    # decided yet as one that is already handled.
+    draft["waiting_for_human"] = is_waiting_for_human(draft.get("state"))
     return draft
 
 
@@ -745,6 +755,13 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                     )
             payload["undone_drafts"] = undone_rows
             payload["undone_draft_count"] = len(undone_rows)
+            # The undone drafts are also **waiting**. The undo put
+            # the baseline back on the disk and the change can be
+            # approved again, so the change is live and nobody has
+            # said yes to it. Reporting them only under "undone"
+            # gave an agent a number to look at and no answer to
+            # "is there work left for the human?".
+            payload["undone_waiting_count"] = len(undone_rows)
 
             # The chain of human decisions. An agent that is asked
             # "was the approval right?" needs to see that an undo
@@ -1024,7 +1041,31 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         )
         for row in rows:
             _add_draft_history(row, histories)
-        return {"workspace": str(base), "drafts": rows, "count": len(rows)}
+        waiting = [
+            str(row.get("id") or "")
+            for row in rows
+            if row.get("waiting_for_human")
+        ]
+        return {
+            "workspace": str(base),
+            "drafts": rows,
+            "count": len(rows),
+            # The changes that still wait for a person, and the
+            # subset of them whose approval was taken back. An agent
+            # that only reads ``state`` cannot tell "never decided"
+            # from "decided once, then pulled back" - both look like
+            # a state it has to interpret on its own.
+            "waiting_count": len(waiting),
+            "waiting_draft_ids": waiting,
+            "undone_waiting_count": len(
+                [
+                    row
+                    for row in rows
+                    if row.get("waiting_for_human")
+                    and str(row.get("state") or "") == "undone"
+                ]
+            ),
+        }
 
     if name == "mas_draft_stage":
         from mas.drafts import stage_draft

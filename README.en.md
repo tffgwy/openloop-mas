@@ -140,11 +140,11 @@ server and the skills, and finishes with an offline self-check.
 Pin a specific release instead of "the latest":
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.6
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.7
 ```
 
 ```bash
-MAS_VERSION=0.8.6 bash install.sh
+MAS_VERSION=0.8.7 bash install.sh
 ```
 
 > The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current

@@ -80,6 +80,32 @@ def draft_state_reading(state: Any) -> str:
     return DRAFT_STATE_READING.get(key, key)
 
 
+#: The states in which a draft still waits for a human decision.
+#:
+#: ``pending`` is the ordinary case. ``undone`` belongs here too, and
+#: the reason is not a nicety: the undo put the **baseline** back on
+#: the disk, and ``approve_draft`` still accepts a draft in the
+#: ``undone`` state - so the proposal is live and nobody has approved
+#: it yet. Reading only ``pending`` made a queue that holds a live
+#: change look empty.
+DRAFT_WAITING_STATES = ("pending", "undone")
+
+
+def is_waiting_for_human(state: Any) -> bool:
+    """Does a draft in this state still wait for a person to say yes?
+
+    This is the **one** reading of that question. Every surface that
+    answers it - the report, the closure verdict, the status page -
+    calls this function, so the surfaces cannot drift apart.
+
+    The states it accepts are ``pending`` (never decided) and
+    ``undone`` (the approval was taken back, the change is live again
+    and can be approved a second time). ``approved`` and ``rejected``
+    are decided, and a decided draft is not waiting for anybody.
+    """
+    return str(state or "").strip() in DRAFT_WAITING_STATES
+
+
 def _workspace_of(row: Dict[str, Any]) -> str:
     """The workspace a ledger row belongs to."""
     return str(row.get("workspace") or "").strip()
@@ -221,6 +247,11 @@ def draft_reading(
     problems: List[str] = []
     entries: List[Dict[str, Any]] = []
     pending_ids: List[str] = []
+    # The subset of the waiting ones whose approval was taken back.
+    # They are waiting **and** they carry a history, and a reader
+    # needs to tell the two apart: one has never been decided, the
+    # other was decided once and that decision was pulled back.
+    undone_waiting_ids: List[str] = []
     approved_ids: List[str] = []
     other_ids: List[str] = []
 
@@ -229,8 +260,15 @@ def draft_reading(
         if not draft_id:
             continue
         state = _file_state(draft)
-        if state == "pending":
+        if is_waiting_for_human(state):
+            # A draft whose approval was taken back still waits for a
+            # human: the undo wrote the baseline back to the disk and
+            # the change can be approved again. Counting it as
+            # "other" is how a live change disappeared from every
+            # count the reader sees.
             pending_ids.append(draft_id)
+            if state == "undone":
+                undone_waiting_ids.append(draft_id)
         elif state == "approved":
             approved_ids.append(draft_id)
         else:
@@ -293,7 +331,7 @@ def draft_reading(
         still_waiting = [
             p["draft_id"]
             for p in proposals
-            if state_of.get(p["draft_id"], "") == "pending"
+            if is_waiting_for_human(state_of.get(p["draft_id"], ""))
         ]
         if not still_waiting:
             continue
@@ -329,6 +367,13 @@ def draft_reading(
         "drafts": entries,
         "draft_count": len(entries),
         "pending": pending_ids,
+        # The waiting ones whose approval was taken back. They are
+        # part of ``pending`` - they still wait - and they are also
+        # listed here, because a change that was once approved and
+        # then pulled back is not the same thing as a change nobody
+        # has looked at yet.
+        "undone_waiting": undone_waiting_ids,
+        "undone_waiting_count": len(undone_waiting_ids),
         "approved": approved_ids,
         "other": other_ids,
         "pending_count": len(pending_ids),

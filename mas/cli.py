@@ -497,7 +497,17 @@ def cmd_status(args: argparse.Namespace) -> int:
     # not make, so it is work that is waiting for a person - exactly
     # like a ticket, and exactly as invisible if nobody reads it.
     drafts = drafts_of_machine(config, rows)
-    pending_drafts = [d["id"] for d in drafts if d.get("state") == "pending"]
+    # The waiting drafts. A draft whose approval was taken back is
+    # waiting too - the undo put the baseline back on the disk and
+    # the change can be approved again - so it belongs in this count.
+    # The rule lives in one place (``drafts_reading.is_waiting_for_human``)
+    # so the status page, the report and the closure verdict cannot
+    # disagree about what "waiting" means.
+    from mas.drafts_reading import is_waiting_for_human
+
+    pending_drafts = [
+        d["id"] for d in drafts if is_waiting_for_human(d.get("state"))
+    ]
     approved_drafts = [d["id"] for d in drafts if d.get("state") == "approved"]
     # The drafts whose approval was taken back. A draft that was
     # approved, taken back and approved again is "approved" - the
@@ -635,6 +645,15 @@ def cmd_status(args: argparse.Namespace) -> int:
         # their own change to be approved.
         "draft_reading": {
             "pending_count": int(draft_queue.get("pending_count") or 0),
+            # The waiting ones whose approval was taken back. They are
+            # counted in ``pending_count`` as well - they still wait -
+            # and they are listed here so a reader can tell a change
+            # nobody has looked at from a change that was approved
+            # once and then pulled back.
+            "undone_waiting": list(draft_queue.get("undone_waiting") or []),
+            "undone_waiting_count": int(
+                draft_queue.get("undone_waiting_count") or 0
+            ),
             "approved_count": int(draft_queue.get("approved_count") or 0),
             "closed_with_pending": list(
                 draft_queue.get("closed_with_pending") or []

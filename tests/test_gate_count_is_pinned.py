@@ -72,6 +72,7 @@ EXPECTED_GATE_NAMES = (
     "single_run_supersede",
     "replay_listens_to_the_queue",
     "a_taken_back_approval_is_visible_everywhere",
+    "an_undone_draft_is_still_waiting_everywhere",
     "doc_text_integrity",
     "selftest_isolation",
 )

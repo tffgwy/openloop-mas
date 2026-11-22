@@ -70,6 +70,16 @@ DRAFT_REJECTED = "rejected"
 #: time - but the *undo* is the newest fact about it.
 DRAFT_UNDONE = "undone"
 
+#: The states in which a draft is a change that still waits for a human.
+#:
+#: ``pending`` is the ordinary case. ``undone`` belongs here for one
+#: reason that matters: the undo wrote the baseline back to the disk,
+#: and the draft can still be approved a second time - so the change
+#: is live and nobody has said yes to it yet. A machine that reads only
+#: ``pending`` sees a queue with nothing in it while a change is still
+#: standing in front of a person.
+DRAFT_WAITING_STATES = (DRAFT_PENDING, DRAFT_UNDONE)
+
 
 class DraftUndoConflict(ValueError):
     """The file moved *after* the approval, so the undo would cost.
@@ -905,20 +915,38 @@ def undo_draft(
 
 
 def draft_overlay(workspace: Any) -> Dict[str, bytes]:
-    """The pending drafts, as an overlay for the machine checks.
+    """The drafts that are waiting for a human, as an overlay.
 
     A check that reads a file the loop wants to *change* should see the
     changed version - otherwise the check judges the old bytes and the
     loop can never close on its own proposal. The overlay is exactly
     the same idea the parallel candidate ranking uses, and it never
     touches the disk.
+
+    Which drafts belong here
+    -----------------------
+    Not just the ``pending`` ones. A draft whose approval was **taken
+    back** is still a change that waits for a human: the undo wrote the
+    baseline back to the disk, and ``approve_draft`` accepts a draft
+    in the ``undone`` state again - so the proposal is live, and the
+    person who has to say yes has not said it yet.
+
+    Leaving those out made the machine checks judge the **wrong
+    bytes**: the overlay was empty, so a check read the disk - the
+    old content the undo had just put back - while the loop was
+    proposing the new one. The check could never close on its own
+    proposal, and the reason it could not was invisible.
+
+    An **approved** draft is correctly absent: it has already been
+    written to the disk, so the disk *is* the new bytes.
     """
     overlay: Dict[str, bytes] = {}
-    for draft in list_drafts(workspace, DRAFT_PENDING):
-        absolute = str(draft.get("absolute") or "")
-        if not absolute:
-            continue
-        overlay[absolute] = _draft_bytes(workspace, str(draft.get("id") or ""))
+    for state in DRAFT_WAITING_STATES:
+        for draft in list_drafts(workspace, state):
+            absolute = str(draft.get("absolute") or "")
+            if not absolute:
+                continue
+            overlay[absolute] = _draft_bytes(workspace, str(draft.get("id") or ""))
     return overlay
 
 
