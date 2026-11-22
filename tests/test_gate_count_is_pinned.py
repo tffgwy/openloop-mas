@@ -70,6 +70,7 @@ EXPECTED_GATE_NAMES = (
     "closure_grain_text",
     "run_detail_grain",
     "single_run_supersede",
+    "replay_listens_to_the_queue",
     "doc_text_integrity",
     "selftest_isolation",
 )

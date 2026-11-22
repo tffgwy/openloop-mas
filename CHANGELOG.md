@@ -4,6 +4,78 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.5] - 2026-11-22
+
+### 回放也听工单队列的
+
+v0.8.4 让**报告**听了工单队列，但**回放**和 **MCP** 两张面孔还在说旧口径。
+
+`mas replay` 是读者想看「循环到底干了什么」时翻的那一屏，它**只读账本**。
+命令行从 v0.8.4 起就已经把队列交给它了，**回放把它扔了**：
+
+```text
+mas report --run-id R1     ->  | 把事情做完 | 已解决 |      <- 报告面：做完了
+mas replay                  ->  [待处理] 把事情做完            <- 回放面：还没做
+```
+
+**一台机器两个答案**，而且回放恰恰是读者去看「发生了什么」的地方。
+
+MCP 那张面孔更糟：**它根本没读队列**。不是「读了读错」，是压根没打开。
+于是用 Claude / GPT / Kimi 通过 MCP 驱动这台机器的代理，拿到的是一份
+**分不清「做完了」和「还开着」**的回放，而同一个人在同一台终端上看到的是对的答案。
+
+同一个地方还藏着**第三个答案**：报告在**队列没被读**的时候保留了失败运行的
+`mas resume` 指引（因为「没人看过」不等于「没活儿了」），回放却把它丢了 ——
+于是回放告诉读者去放弃一个状态 merely 未知的开放问题。
+
+### 第二十四个不变量
+
+> **工单队列才是「还在等」的权威：报告面、回放面和 MCP 面读同一个队列，
+> 队列没被读就不许替工单退休。**
+
+### 改了什么
+
+* `mas/report.py`：
+  * 新增 `queue_state(tickets)` —— **一处**读队列：读没读、哪些在等、哪些认识；
+  * 新增 `ticket_state_of(ticket_id, state)` —— 工单的**四态**：
+    `waiting`（还等着人）/ `resolved`（已完成）/ `lost`（读过了但没有）/ `unknown`（没读）；
+  * 新增 `ticket_resumable(ticket_id, state, closed)` —— **一处**判「还发不发续跑指引」；
+  * `replay_trace()` 把 `queue_closed_by_success(tickets)` 喂给 `group_threads()`，
+    并给每次运行带上 `ticket_state` 与 `ticket_resumable`；
+  * `build_report()` 的运行明细改用 `ticket_state` 分支，四态各有各的话。
+* `mas/mcp_server.py`：`mas_replay` **读队列**（`engine.tickets.list()`），
+  MCP 面的回放不再和终端说两样话。
+* `mas/cli.py`：`mas replay` 的续跑指引改用 `ticket_resumable()`，
+  和报告面的规则同一处。
+
+### 队列的四种读法，四种话
+
+| 队列读数 | 工单状态 | 续跑指引 | 为什么 |
+| --- | --- | --- | --- |
+| 在等 | `waiting` | **发** | 人还拿着它 |
+| 已解决 | `resolved` | 不发 | 已完成的活，指过去是让人重做 |
+| 读过了但没有 | `lost` | 不发 | `mas resume` 会直接报错 |
+| 根本没读 | `unknown` | **发** | 「没人看过」不等于「没活儿了」 |
+
+### 第 46 项门禁 `replay_listens_to_the_queue`
+
+门禁盯五件事：回放面和报告面在「还有几个问题开着」上**说同一个数**；
+队列说被后来那次尝试关掉的问题，回放面**也说关掉了**；MCP 回放**读了队列**；
+队列**没被读**的回放**保留续跑指引**；队列**弄丢了**的工单**不发**指引。
+
+并且**独立实现两遍判定**（一遍读页面、一遍读原始事实），两者必须一致。
+
+门禁**自证能失败** —— 而且打断的是**接线**，不是共享函数：
+把回放的队列**丢掉**（这正是旧 bug 本身），门禁必须发现回放面和报告面
+又吵起来了。
+
+> 打断共享函数是没用的：报告面和回放面**都**读它，
+> 一起坏掉的时候两边**反而一致**，门禁什么也看不见。
+
+```bash
+mas selftest --only replay_listens_to_the_queue
+```
+
 ## [0.8.4] - 2026-11-22
 
 ### 单次运行的报告也听工单队列的

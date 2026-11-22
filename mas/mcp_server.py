@@ -911,7 +911,20 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         run_id = arguments.get("run_id")
         if run_id:
             rows = [row for row in rows if row.get("run_id") == run_id]
-        return replay_trace(rows)
+        # The queue is read here too.
+        #
+        # The gap this closes
+        # ------------------
+        # The MCP replay built its threads from the ledger alone, so it
+        # reported a problem as open while the report - reading the
+        # queue - reported the same problem as closed. An agent driving
+        # Claude, GPT or Kimi through MCP got a different answer from
+        # the same machine than a human got from the terminal, and
+        # neither of them could tell the other was wrong.
+        #
+        # The replay and the report now read the queue through the same
+        # function, so they cannot drift apart.
+        return replay_trace(rows, engine.tickets.list())
 
     if name == "mas_export":
         engine = _engine(config)

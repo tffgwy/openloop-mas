@@ -625,6 +625,104 @@ def queue_closed_by_success(tickets: Optional[List[Dict[str, Any]]]) -> Dict[str
     return closed_by
 
 
+def queue_state(
+    tickets: Optional[List[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    """What the human queue says, read in one place.
+
+    The gap this closes
+    ------------------
+    v0.8.4 made the **report** listen to the queue. But the rule was
+    written out three times - once in the report, once in the replay,
+    once in the MCP server - and the three copies did not agree.
+
+    The replay (``mas replay``) built its threads from the ledger
+    alone, so it called a problem "待处理" while the report called the
+    same problem "已解决". The MCP tool did the same, and it did not
+    even read the queue. Two surfaces, one machine, two answers - and
+    the reader had no way to tell which one was right.
+
+    So the reading lives here, and every surface calls it.
+
+    Three facts, and the difference between them matters:
+
+    * ``read`` - was the queue handed in at all? "No queue" is not
+      "an empty queue": a caller that did not look has not looked.
+    * ``waiting`` - the tickets that are waiting for a person *now*.
+    * ``known`` - the tickets the queue holds at all, waiting or
+      resolved. A ticket that is not here is **lost**, not finished.
+
+    And the ticket states are read from the same place, so a surface
+    cannot decide "waiting" one way and "resolved" another.
+    """
+    read = tickets is not None
+    queue = [t for t in (tickets or []) if isinstance(t, dict)]
+    waiting = {
+        str(t.get("id") or "")
+        for t in queue
+        if str(t.get("state") or "") == "waiting_human" and str(t.get("id") or "")
+    }
+    known = {str(t.get("id") or "") for t in queue if str(t.get("id") or "")}
+    return {
+        "read": read,
+        "waiting": waiting,
+        "known": known,
+        "tickets": queue,
+    }
+
+
+def ticket_resumable(
+    ticket_id: str,
+    state: Dict[str, Any],
+    closed: bool = False,
+) -> bool:
+    """Whether this run still hands the reader a ``mas resume`` command.
+
+    The rule the report already follows, written down once:
+
+    * ``waiting``  - yes. A person still holds it.
+    * ``unknown``  - yes. The queue was never read, so nothing is
+      known - and "nothing is known" must not read as "nothing to do".
+    * ``resolved`` - no. It is finished work; resuming it reopens a
+      problem nobody is holding.
+    * ``lost``     - no. ``mas resume`` raises on a ticket it cannot
+      find, so pointing there only sends the reader into an error.
+    * ``none``     - no. There is no ticket to resume.
+
+    And a closed run never hands one out, whatever its ticket says.
+    """
+    if closed:
+        return False
+    return ticket_state_of(ticket_id, state) in ("waiting", "unknown")
+
+
+def ticket_state_of(
+    ticket_id: str,
+    state: Dict[str, Any],
+) -> str:
+    """The state of one ticket, in one word.
+
+    ``waiting``  - the queue holds it and a person still has it.
+    ``resolved`` - the queue holds it and it is finished work.
+    ``lost``     - the queue was read and does not hold it.
+    ``unknown``  - the queue was never read, so nothing is known.
+
+    The four are kept apart because they answer four different
+    questions. "The queue does not have it" and "the queue says it is
+    done" are not the same, and collapsing them is how a reader gets
+    told that an open problem needs no work.
+    """
+    if not ticket_id:
+        return "none"
+    if not state.get("read"):
+        return "unknown"
+    if ticket_id in (state.get("waiting") or set()):
+        return "waiting"
+    if ticket_id in (state.get("known") or set()):
+        return "resolved"
+    return "lost"
+
+
 def group_threads(
     runs: List[Dict[str, Any]],
     closed_by_ticket: Optional[Dict[str, str]] = None,
@@ -1357,11 +1455,19 @@ def build_report(
     # So the resume pointer is given only to a run whose ticket is
     # **still in the queue, waiting**. The queue is the authority on
     # that, not the run.
-    _waiting_tickets = {
-        str(entry.get("id") or "")
-        for entry in (queue.get("tickets") or [])
-        if str(entry.get("state") or "") == "waiting_human"
-    }
+    # The queue, read **once**, in one place.
+    #
+    # The report used to work out "is this ticket waiting / known /
+    # lost" here, the replay worked it out there, and the MCP server
+    # worked it out a third time - by not working it out at all. The
+    # three copies did not agree, and a reader could get "待处理" from
+    # one surface and "已解决" from another about the same problem.
+    #
+    # So the reading lives in ``queue_state()`` and every surface calls
+    # it. The sets below are kept because the report's own branches
+    # read them; they are the same sets, from the same place.
+    _queue = queue_state(tickets)
+    _waiting_tickets = set(_queue.get("waiting") or set())
     # The tickets the queue knows about at all - waiting or resolved.
     #
     # A ticket that is **not in the queue** is a different case from a
@@ -1380,10 +1486,8 @@ def build_report(
     # because handing out "there is nothing to continue" for work
     # whose state is simply **unknown** is how a reader gets told to
     # walk away from an open problem.
-    _queue_read = tickets is not None
-    _known_tickets = {
-        str(entry.get("id") or "") for entry in (queue.get("tickets") or [])
-    }
+    _queue_read = bool(_queue.get("read"))
+    _known_tickets = set(_queue.get("known") or set())
     # The tickets the ledger points at. A ticket the ledger records and
     # the queue does not hold is a **lost** ticket: the escalation
     # happened, and the record of it is gone. `mas resume` cannot pick
@@ -1437,6 +1541,11 @@ def build_report(
             and _ticket in _ledger_tickets
             and _ticket not in _known_tickets
         )
+        # The state of this run's ticket, in one word. The four states
+        # answer four different questions, and every surface that
+        # shows a run reads them from here - so the replay and the
+        # report cannot describe the same ticket differently.
+        _run["ticket_state"] = ticket_state_of(_ticket, _queue)
     # The draft queue. A run that proposed a change instead of making
     # it leaves a draft behind, and the report has to say so: the run
     # may well be closed, but the *file* is still the old one.
@@ -2195,47 +2304,56 @@ def render_markdown(report: Dict[str, Any]) -> str:
                     "（已被后来的成功尝试取代，不需要续跑）"
                 )
 
-            elif run.get("ticket_waiting"):
-                lines.append(
-                    f"- 人工工单：`{run.get('ticket_id')}`"
-                    "（`mas tickets` 查看，`mas resume <工单号>` 从这里继续）"
-                )
-            elif run.get("ticket_lost"):
-                # The ledger records this ticket and the queue does not
-                # hold it. `mas resume` would raise "unknown ticket", so
-                # handing out the command would send the reader into an
-                # error. The honest line names the hole: the ticket
-                # cannot be found.
-                lines.append(
-                    f"- 人工工单：`{run.get('ticket_id')}`"
-                    "（工单队列里已经找不到它了，需要先把它找回来）"
-                )
-            elif run.get("ticket_known"):
-                # The ticket is in the queue and it is **not** waiting
-                # for a person any more, so there is nothing to resume.
-                # A run keeps the id of the ticket it closed; handing
-                # out a resume command for it sends the reader to
-                # reopen finished work.
-                lines.append(
-                    f"- 人工工单：`{run.get('ticket_id')}`"
-                    "（已不需要续跑）"
-                )
             else:
-                # The queue does not mention this ticket at all. That
-                # is **not** the same as a resolved ticket: the state
-                # is unknown - the caller may have handed in no queue
-                # at all - and telling the reader "there is nothing to
-                # continue" for work whose state is unknown is how an
-                # open problem gets walked away from.
+                # The state of the ticket, read from one place. The
+                # four states answer four different questions, and the
+                # line has to say the right one - a reader who is sent
+                # to ``mas resume`` for a ticket the queue has lost
+                # walks into an error, and a reader who is told "no
+                # need to continue" about a ticket nobody has looked
+                # at walks away from open work.
                 #
-                # So the pointer stays. The report names the missing
-                # ticket separately, in the queue's own list of
-                # problems; this line only says how to pick the work
-                # up.
-                lines.append(
-                    f"- 人工工单：`{run.get('ticket_id')}`"
-                    "（`mas tickets` 查看，`mas resume <工单号>` 从这里继续）"
-                )
+                # The states come from ``ticket_state_of()``, the same
+                # function the replay and the MCP server read, so the
+                # three surfaces cannot describe one ticket
+                # differently.
+                _state = str(run.get("ticket_state") or "")
+                if _state == "lost":
+                    # The ledger records this ticket and the queue does
+                    # not hold it. `mas resume` would raise "unknown
+                    # ticket", so handing out the command would send
+                    # the reader into an error. The honest line names
+                    # the hole: the ticket cannot be found.
+                    lines.append(
+                        f"- 人工工单：`{run.get('ticket_id')}`"
+                        "（工单队列里已经找不到它了，需要先把它找回来）"
+                    )
+                elif _state == "resolved":
+                    # The ticket is in the queue and it is **not**
+                    # waiting for a person any more, so there is
+                    # nothing to resume. A run keeps the id of the
+                    # ticket it closed; handing out a resume command
+                    # for it sends the reader to reopen finished work.
+                    lines.append(
+                        f"- 人工工单：`{run.get('ticket_id')}`"
+                        "（已不需要续跑）"
+                    )
+                else:
+                    # ``waiting`` - a person still holds it - or
+                    # ``unknown``, which is **not** the same as a
+                    # resolved ticket: the state was never looked at,
+                    # and telling the reader "there is nothing to
+                    # continue" for work whose state is unknown is how
+                    # an open problem gets walked away from.
+                    #
+                    # So the pointer stays. The report names the
+                    # missing ticket separately, in the queue's own
+                    # list of problems; this line only says how to pick
+                    # the work up.
+                    lines.append(
+                        f"- 人工工单：`{run.get('ticket_id')}`"
+                        "（`mas tickets` 查看，`mas resume <工单号>` 从这里继续）"
+                    )
         # Where the work landed. The deliverable used to live only in
         # the engine's memory: the report could print its hash and
         # nothing else, so a closed run pointed at nothing the reader
@@ -2453,16 +2571,21 @@ def replay_trace(
     problems" - so the trace groups the steps by run, and the runs by
     the problem they belong to.
     """
-    # The tickets that are still waiting for a person. "No queue at
-    # all" is not "the queue is empty" - a caller that did not look
-    # cannot retire a ticket, so the handover hint stays.
-    _waiting_ticket_ids = {
-        str(t.get("id") or "")
-        for t in (tickets or [])
-        if isinstance(t, dict)
-        and str(t.get("state") or "") == "waiting_human"
-        and str(t.get("id") or "")
-    }
+    # The queue, read **once**, in one place.
+    #
+    # The gap this closes
+    # ------------------
+    # v0.8.4 taught the **report** to listen to the queue. The replay
+    # did not: it built its threads from the ledger alone, so it read
+    # "待处理" for a problem the report called "已解决". The queue was
+    # handed in - the command line had been passing it since v0.8.4 -
+    # and the replay threw it away.
+    #
+    # So the reading lives in ``queue_state()`` and every surface calls
+    # it. "No queue at all" is not "the queue is empty" - a caller that
+    # did not look cannot retire a ticket, so the handover hint stays.
+    _queue = queue_state(tickets)
+    _waiting_ticket_ids = set(_queue.get("waiting") or set())
     steps: List[Dict[str, Any]] = []
     for row in rows:
         steps.append(
@@ -2510,6 +2633,25 @@ def replay_trace(
                     and not summary.get("closed")
                     and str(summary["ticket_id"]) in _waiting_ticket_ids
                 ),
+                # The state of this run's ticket, in one word: the
+                # same four states the report uses. A replay that
+                # described a ticket differently from the report would
+                # be the same "two answers" bug the gate exists for.
+                "ticket_state": ticket_state_of(
+                    str(summary["ticket_id"] or ""), _queue
+                ),
+                # Whether this run still hands out a ``mas resume``
+                # command. The replay used to answer this one way and
+                # the report another: the report kept the pointer
+                # when the queue had not been read, and the replay
+                # dropped it - so a reader of the replay was told
+                # "nothing to continue" about work whose state was
+                # simply unknown.
+                "ticket_resumable": ticket_resumable(
+                    str(summary["ticket_id"] or ""),
+                    _queue,
+                    closed=bool(summary.get("closed")),
+                ),
                 "artifact_path": summary["artifact_path"],
                 "tokens": summary["tokens"],
                 # Did a person close this run? The replay says so
@@ -2521,7 +2663,10 @@ def replay_trace(
         )
     # The problems behind the runs, so a reader sees "one problem, two
     # attempts" instead of two flat runs.
-    threads = group_threads([run_summary(g["run_id"], g["rows"]) for g in group_runs(rows)])
+    threads = group_threads(
+        [run_summary(g["run_id"], g["rows"]) for g in group_runs(rows)],
+        queue_closed_by_success(tickets),
+    )
     return {
         "steps": steps,
         "steps_count": len(steps),

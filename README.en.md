@@ -140,11 +140,11 @@ server and the skills, and finishes with an offline self-check.
 Pin a specific release instead of "the latest":
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.4
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.5
 ```
 
 ```bash
-MAS_VERSION=0.8.4 bash install.sh
+MAS_VERSION=0.8.5 bash install.sh
 ```
 
 > The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
@@ -892,7 +892,7 @@ MIT © OpenLoop MAS contributors
 
 ## Gate archaeology
 
-This project now holds **45 gates**, and every one of them grew out of a
+This project now holds **46 gates**, and every one of them grew out of a
 **real incident**. They are listed below newest first - if you just want to
 use the tool, skip this section.
 
@@ -1231,6 +1231,69 @@ use the tool, skip this section.
   verdict now give opposite answers.
   ```bash
   mas selftest --only status_grain
+  ```
+- **The forty-sixth gate `replay_listens_to_the_queue`** - v0.8.4 made the
+  **report** listen to the ticket queue. This release finds that the
+  **replay** and the **MCP** faces still spoke the old wording.
+  ```bash
+  mas replay
+  ```
+
+  `mas replay` is the screen a reader opens to see **what the loop did**, and
+  it built its threads from the ledger alone. The command line had been
+  handing it the queue since v0.8.4 - and the replay threw it away:
+
+  ```text
+  mas report --run-id R1     ->  | do the thing | resolved |   <- report: done
+  mas replay                  ->  [pending] do the thing         <- replay: not done
+  ```
+
+  **One machine, two answers** - and the replay is exactly where a reader
+  goes to find out what happened.
+
+  The MCP face was worse: it **never opened the queue at all**. Not "read it
+  and got it wrong" - never opened it. So an agent driving Claude, GPT or
+  Kimi through MCP got a replay that could not tell a finished problem from
+  an open one, while the same person at the same terminal saw the right
+  answer.
+
+  A **third** answer hid in the same place. The report kept a failed run's
+  `mas resume` pointer when the queue had **not been read** - because "nobody
+  looked" is not "there is nothing to do". The replay dropped it, so the
+  replay told a reader to walk away from an open problem whose state was
+  merely **unknown**.
+
+  Now the queue is read in **one** place (`queue_state()` in
+  `mas/report.py`), and a ticket has **one** four-way state
+  (`ticket_state_of()`):
+
+  | the queue | ticket state | resume pointer | why |
+  | --- | --- | --- | --- |
+  | waiting | `waiting` | **yes** | a person still holds it |
+  | resolved | `resolved` | no | finished work; pointing there redoes it |
+  | read, but absent | `lost` | no | `mas resume` would raise on it |
+  | never read | `unknown` | **yes** | "nobody looked" is not "nothing to do" |
+
+  The gate watches five things: the replay and the report count the **same**
+  open problems; a problem the queue says a later attempt closed reads as
+  closed **in the replay too**; the MCP replay **reads the queue**; a replay
+  whose queue was **never read** keeps its resume pointer; and a ticket the
+  queue has **lost** gets no pointer.
+
+  And it **implements the reading twice** (once from the page, once from the
+  raw facts) - the two must agree.
+
+  The gate **proves it can fail**, and it breaks the **wiring**, not the
+  shared function: the replay's queue is **thrown away** again - which is
+  the old bug itself - and the gate has to notice that the two surfaces are
+  arguing again.
+
+  > Breaking the shared function would not work: the report **and** the
+  > replay both read it, so when both break they **agree** - and the gate
+  > sees nothing.
+
+  ```bash
+  mas selftest --only replay_listens_to_the_queue
   ```
 - **The forty-fifth gate `single_run_supersede`** - the first four gates
   put the **grain** on every surface, and this release finds that the most

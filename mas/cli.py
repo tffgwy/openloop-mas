@@ -2559,7 +2559,14 @@ def cmd_replay(args: argparse.Namespace) -> int:
         # command. A ticket the queue has resolved is finished work,
         # and `mas resume` on it would reopen a problem nobody is
         # holding any more.
-        if ticket_id and not block.get("closed") and block.get("ticket_waiting"):
+        #
+        # The rule lives in ``mas.report.ticket_resumable()``: the
+        # replay and the report read it from one place, so they cannot
+        # hand out different advice about the same ticket. A ticket
+        # the queue has lost gets no command - `mas resume` would raise
+        # "unknown ticket" - and a ticket nobody has looked at keeps
+        # its pointer, because "unknown" is not "nothing to do".
+        if ticket_id and block.get("ticket_resumable"):
             print(
                 f"   → 接着干：mas resume {ticket_id} --note \"你的意见\""
             )

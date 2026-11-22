@@ -78,6 +78,9 @@ from mas.selftest_packaged_docs import (
 from mas.selftest_queue_brief import (
     check_the_ticket_queue_is_a_handover_everywhere,
 )
+from mas.selftest_replay_queue import (
+    check_the_replay_listens_to_the_queue_too,
+)
 from mas.selftest_report_audit import (
     check_the_report_reads_the_decision_chains,
 )
@@ -5569,6 +5572,7 @@ CHECKS = (
     check_the_verdict_page_speaks_the_same_grain,
     check_the_run_detail_speaks_the_same_grain,
     check_the_queue_decides_and_not_the_ledger_alone,
+    check_the_replay_listens_to_the_queue_too,
     check_the_documents_are_still_text,
     check_the_selftest_leaves_the_machine_alone,
 )
