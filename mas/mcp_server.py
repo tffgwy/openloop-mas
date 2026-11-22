@@ -28,6 +28,7 @@ from mas.report import (
     replay_trace,
 )
 from mas.teams import list_teams, load_team
+from mas.undos import draft_histories
 from mas.util import force_utf8_output
 
 PROTOCOL_VERSION = "2024-11-05"
@@ -543,6 +544,34 @@ def _workspace_roots(config: Dict[str, Any], workspace: Any) -> List[pathlib.Pat
     return _all_workspace_roots(config)
 
 
+def _add_draft_history(
+    draft: Dict[str, Any],
+    histories: Dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Put what the audit record says about a draft onto the draft.
+
+    The draft file holds only the newest state of a draft, so it
+    cannot say "this was approved and then taken back". After a second
+    approval the state is ``approved`` again, and the wrongness of the
+    first approval is gone from the file - it lives only in the audit
+    chain.
+
+    The command line shows that fact next to the draft. So does this
+    surface, and both read it from the same place: one reading, one
+    answer, whatever surface the reader came in through.
+
+    A draft with no history gets ``0`` and ``false`` - the record
+    says nothing happened, which is not the same as "it was never
+    taken back", but it is the truth about the record.
+    """
+    history = histories.get(str(draft.get("id") or "")) or {}
+    draft["approvals"] = int(history.get("approvals") or 0)
+    draft["undos"] = int(history.get("undos") or 0)
+    draft["ever_undone"] = bool(history.get("ever_undone"))
+    draft["reverted_line_count"] = history.get("reverted_line_count")
+    return draft
+
+
 def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
     config = load_config()
     arguments = arguments or {}
@@ -962,7 +991,7 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         return {"config": config}
 
     if name == "mas_drafts":
-        from mas.drafts import drafts_in, find_draft
+        from mas.drafts import draft_roots, drafts_in, find_draft
 
         action = str(arguments.get("action", "list"))
         state = arguments.get("state")
@@ -972,8 +1001,29 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
             found = find_draft(base, draft_id)
             if found is None:
                 return {"error": "draft_not_found", "message": "draft not found: %s" % draft_id}
-            return {"draft": found[1]}
+            draft = dict(found[1])
+            _add_draft_history(draft, draft_histories(draft_roots(base), [draft_id]))
+            return {"draft": draft}
         rows = drafts_in(base, str(state) if state else None)
+        # The history of each draft, read from the audit chain.
+        #
+        # The gap this closes: the command line showed "this approval
+        # was taken back" next to a draft, and this tool did not. An
+        # agent asked "is this draft still good?" read the draft's own
+        # state - ``approved`` - and never learned that the approval
+        # had been taken back once and given again. The draft file
+        # cannot hold that fact: it keeps only the newest state, so
+        # after a second approval the wrongness of the first one is
+        # gone from it.
+        #
+        # So the reading is done in one place (``mas.undos``) and
+        # both surfaces call it.
+        histories = draft_histories(
+            draft_roots(base),
+            [str(row.get("id") or "") for row in rows if row.get("id")],
+        )
+        for row in rows:
+            _add_draft_history(row, histories)
         return {"workspace": str(base), "drafts": rows, "count": len(rows)}
 
     if name == "mas_draft_stage":

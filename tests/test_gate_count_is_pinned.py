@@ -71,6 +71,7 @@ EXPECTED_GATE_NAMES = (
     "run_detail_grain",
     "single_run_supersede",
     "replay_listens_to_the_queue",
+    "a_taken_back_approval_is_visible_everywhere",
     "doc_text_integrity",
     "selftest_isolation",
 )

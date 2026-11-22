@@ -118,11 +118,11 @@ bash install.sh
 想装固定版本（而不是"最新版"）：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.5
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.6
 ```
 
 ```bash
-MAS_VERSION=0.8.5 bash install.sh
+MAS_VERSION=0.8.6 bash install.sh
 ```
 
 > 脚本默认会往 `PATH` 里加一条 `~/.mas/bin`（Windows 写当前用户的注册表）。
@@ -1001,7 +1001,7 @@ MIT © OpenLoop MAS contributors
 
 ## 门禁考古
 
-这个项目至今有 **46 道门禁**，每一道都是从一个**真实事故**里长出来的。
+这个项目至今有 **47 道门禁**，每一道都是从一个**真实事故**里长出来的。
 下面按门禁编号倒序记录它们各自的来历 —— 如果你只想用，直接跳过这一节就好。
 
 - **第 32 项门禁 `selftest_isolation`** —— 自检本身也是一个程序，
@@ -1252,6 +1252,44 @@ MIT © OpenLoop MAS contributors
   门禁必须发现状态页和判定给了相反的答案。
   ```bash
   mas selftest --only status_grain
+  ```
+- **第 47 项门禁 `a_taken_back_approval_is_visible_everywhere`** —— v0.7.85 让**命令行**
+  学会了读审计链，这一版发现**MCP 面**还在说旧口径，
+  而且**报告**和**状态页**各漏了一半。
+  ```bash
+  mas drafts --json
+  ```
+  一张草稿被批准、被撤销、又被批准一次之后，**草稿自己**只记最新状态 ——
+  那次错批只活在审计链里：
+  ```text
+  mas drafts --json   ->  ever_undone=True, undos=1        <- 命令行面：撤销过
+  mas_drafts (MCP)    ->  ever_undone=None, undos=None      <- MCP 面：什么都没说
+  ```
+  **一台机器两个答案** —— 而**代理才是那个要动手的角色**。
+  用 Claude / GPT / Kimi 通过 MCP 驱动这台机器的代理，问「这张草稿还算数吗」，
+  读到的 `state` 是 `approved`，永远学不到这次批准被收回过。
+  同一族里还有两个洞：**报告**的草稿表只写「已批准」，读者得跨章节自己去对照；
+  **状态页**只数 `pending` / `approved`，**根本没有**「批准被撤销过」这一格，
+  撤销后再没批过的草稿从所有计数里消失。
+  现在**读链只有一处**（`mas/undos.py` 的 `draft_histories()`），
+  命令行、MCP 面、报告、状态页**四处都调它**：
+  * MCP 面的 `mas_drafts`（`list` 和 `show`）每张草稿带上
+    `approvals` / `undos` / `ever_undone` / `reverted_line_count`；
+  * 报告的草稿表多一列「**被撤销**」，值形如 `1 次`；
+  * 状态页多两个计数（`undone` / `with_history`），
+    文字页多一段「⚠ 批准被撤销过：N 个草稿的批准被撤回过」。
+  链在**做决定的那个工作区**里，所以状态页的根目录**从草稿自己身上取**
+  （每张草稿都写着自己的 `workspace`），跟草稿清单扫的那三处是同一套规则 ——
+  放在自己工作区里的草稿不会被列出来却漏掉撤销。
+  门禁盯四件事：MCP 面说得出「这张草稿被撤销过」；命令行与 MCP 面**说同一个数**；
+  报告**点名**那张草稿；状态页**数得出**它。
+  并且**独立实现两遍判定**（一遍读页面、一遍读原始审计链），两者必须一致。
+  门禁**自证能失败** —— 而且打断的是**接线**，不是共享函数：
+  把 **MCP 面的读链**断掉（这正是旧 bug 本身），门禁必须发现两面吵起来了。
+  > 打断共享函数是没用的：所有面**都**读它，
+  > 一起坏掉的时候它们**反而一致**，门禁什么也看不见。
+  ```bash
+  mas selftest --only a_taken_back_approval_is_visible_everywhere
   ```
 - **第 46 项门禁 `replay_listens_to_the_queue`** —— v0.8.4 让**报告**听了工单队列，
   这一版发现**回放**和 **MCP** 两张面孔还在说旧口径。

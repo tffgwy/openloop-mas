@@ -4,6 +4,74 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.6] - 2026-11-22
+
+### 被撤销的批准，在每一面都看得见
+
+v0.7.85 让**命令行**学会了读审计链：一张草稿被批准、被撤销、又被批准一次之后，
+`mas drafts` 会说「这个草稿的批准被撤销过 1 次」。
+
+但**草稿自己**只记最新状态 —— 那次错批只活在审计链里。
+于是 **MCP** 那张面孔还在说旧口径：
+
+```text
+mas drafts --json   ->  ever_undone=True, undos=1        <- 命令行面：撤销过
+mas_drafts (MCP)    ->  ever_undone=None, undos=None      <- MCP 面：什么都没说
+```
+
+**一台机器两个答案** —— 而**代理才是那个要动手的角色**。
+用 Claude / GPT / Kimi 通过 MCP 驱动这台机器的代理，问「这张草稿还算数吗」，
+读到的 `state` 是 `approved`，永远学不到这次批准被收回过。
+
+同一族里还有两个洞：
+
+* **报告**的草稿表只写「已批准」，看不出这张草稿被撤销过 —— 读者得跨章节
+  自己去「被撤销的批准」那一节对照；
+* **状态页**只数 `pending` / `approved`，**根本没有**「批准被撤销过」这一格，
+  于是撤销后再没批过的草稿从所有计数里消失了。
+
+### 第二十五个不变量
+
+> **一个被撤销的批准必须在所有面上都看得见：草稿自身只记最新状态，
+> 「曾经错过」只在审计链里。**
+
+### 改了什么
+
+* `mas/undos.py`：新增 `draft_histories(roots, draft_ids)` —— **一处**读链：
+  一次读多个草稿的批准次数、撤销次数、是否曾被撤销、累计退回行数。
+* `mas/mcp_server.py`：`mas_drafts` 的 `list` 与 `show` **都读链**，
+  每张草稿带上 `approvals` / `undos` / `ever_undone` / `reverted_line_count`。
+* `mas/report.py`：草稿表多一列「**被撤销**」，值形如 `1 次`。
+* `mas/cli.py`：`mas drafts` 改用共享读法；`mas status` 多两个计数
+  （`undone` / `with_history`），文字页多一段「⚠ 批准被撤销过」。
+
+### 顺带补上的一个洞：读链的位置
+
+`mas status` 起初**只**从 `<state_dir>/artifacts` 读审计链，但草稿清单扫**三处**
+（artifacts / 配置工作区 / 账本命名的工作区）。
+
+于是一张放在**自己的工作区**里的草稿 —— 被批准、被撤销、又被批准一次 ——
+会被**列出来**，但它的撤销**不被计数**：状态页展示了这个改动，却藏起了那次错批。
+
+链在**做决定的那个工作区**里，所以根目录改成**从草稿自己身上取**（每张草稿
+都写着自己的 `workspace`）。这跟 `mas.drafts` 的三处扫描是同一套规则 ——
+一处规则，两处不再漂移。
+
+回归测试：`tests/test_draft_undo_visibility_886.py::WorkspaceOutsideArtifactsTest`
+（修复前红、修复后绿）。
+
+### 第 47 项门禁 `a_taken_back_approval_is_visible_everywhere`
+
+门禁盯四件事：MCP 面说得出「这张草稿被撤销过」；命令行与 MCP 面**说同一个数**；
+报告**点名**那张草稿；状态页**数得出**它。
+
+并且**独立实现两遍判定**（一遍读页面、一遍读原始审计链），两者必须一致。
+
+门禁**自证能失败** —— 而且打断的是**接线**，不是共享函数：
+把 **MCP 面的读链**断掉（这正是旧 bug 本身），门禁必须发现两面吵起来了。
+共享函数坏了会让**所有面一起坏**，两面反而一致，门禁就看不出问题 ——
+所以要断的是接线，不是函数。
+
 ## [0.8.5] - 2026-11-22
 
 ### 回放也听工单队列的

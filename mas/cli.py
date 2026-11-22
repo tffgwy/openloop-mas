@@ -499,6 +499,52 @@ def cmd_status(args: argparse.Namespace) -> int:
     drafts = drafts_of_machine(config, rows)
     pending_drafts = [d["id"] for d in drafts if d.get("state") == "pending"]
     approved_drafts = [d["id"] for d in drafts if d.get("state") == "approved"]
+    # The drafts whose approval was taken back. A draft that was
+    # approved, taken back and approved again is "approved" - the
+    # draft file holds only the newest state - so the fact that it
+    # was once wrong lives in the decision record. The status page
+    # counts those drafts in neither "pending" nor "approved"
+    # buckets, and a status page that cannot see a wrong approval is
+    # a status page that sends the reader back to a change they
+    # already had to take back once.
+    from mas.undos import draft_histories
+
+    # Where the histories are read from.
+    #
+    # The drafts are found in three places (see
+    # ``mas.drafts.all_drafts_of_machine``): the artifacts folder, the
+    # workspace the user named, and the workspaces the ledger names.
+    # A history lives in the **chain of the workspace the decision was
+    # made in**, so the roots are taken from the drafts themselves -
+    # each draft says which workspace it belongs to. Reading only the
+    # artifacts folder would find the chains of the default runs and
+    # miss the ones of a run that was given a workspace of its own:
+    # the draft would be listed and its taken-back approval would not
+    # be counted - a status page that shows the change and hides the
+    # mistake.
+    _history_roots: List[pathlib.Path] = []
+    for draft in drafts:
+        _own = str(draft.get("workspace") or "").strip()
+        if not _own:
+            continue
+        _root = pathlib.Path(os.path.expanduser(os.path.expandvars(_own)))
+        if _root not in _history_roots:
+            _history_roots.append(_root)
+    _histories = draft_histories(
+        _history_roots,
+        [str(d.get("id") or "") for d in drafts if d.get("id")],
+    )
+    undone_drafts = [
+        str(d.get("id") or "")
+        for d in drafts
+        if str(d.get("id") or "") in _histories
+        and _histories[str(d.get("id") or "")].get("ever_undone")
+    ]
+    taken_back_drafts = [
+        str(d.get("id") or "")
+        for d in drafts
+        if str(d.get("id") or "") in _histories
+    ]
     # The payload of every waiting ticket. The continuation command
     # needs the reason and the budget of the stopped run to build a
     # command that can actually work.
@@ -577,6 +623,12 @@ def cmd_status(args: argparse.Namespace) -> int:
             "total": len(drafts),
             "pending": pending_drafts,
             "approved": approved_drafts,
+            # The drafts whose approval was taken back at least once.
+            "undone": undone_drafts,
+            # The drafts that have any decision record at all. A
+            # draft in neither list has never been approved, so
+            # nothing was ever taken back from it.
+            "with_history": taken_back_drafts,
         },
         # The reconciliation of the queue against the ledger: how many
         # drafts are waiting, and how many closed runs are waiting for
@@ -761,6 +813,37 @@ def cmd_status(args: argparse.Namespace) -> int:
             print(f"    →  mas drafts approve {draft.get('id')}")
     else:
         print("待批草稿：0 个")
+    # The drafts whose approval was taken back. This is a fact about
+    # a *past* mistake, not about work waiting - but a status page
+    # that cannot show it makes the reader believe every change that
+    # is on the disk was approved once and only once.
+    undone_draft_items = [
+        d for d in drafts if str(d.get("id") or "") in set(undone_drafts)
+    ]
+    if undone_draft_items:
+        print(
+            "⚠ 批准被撤销过：%d 个草稿的批准被撤回过"
+            "（文件上的状态只记最新一次）" % len(undone_draft_items)
+        )
+        for draft in undone_draft_items:
+            history = _histories.get(str(draft.get("id") or "")) or {}
+            reverted = history.get("reverted_line_count")
+            size = (
+                "，累计 %d 行改动退回原样" % int(reverted)
+                if isinstance(reverted, (int, float))
+                else ""
+            )
+            label = str(draft.get("path") or "")
+            print(
+                "  %s  %s（批准 %d 次、撤销 %d 次%s）"
+                % (
+                    draft.get("id"),
+                    label,
+                    int(history.get("approvals") or 0),
+                    int(history.get("undos") or 0),
+                    size,
+                )
+            )
     # The closed runs that are waiting for their own change. This is
     # the fact a reader must not have to infer: the run reported a
     # closed loop, and the file is still the old one.
@@ -1642,38 +1725,12 @@ def _draft_histories(
     A missing chain is not an error - it only means this workspace
     has no decisions yet.
     """
-    from mas.undos import draft_history, workspace_rows
+    from mas.undos import draft_histories
 
-    wanted = {str(row.get("id") or "") for row in rows if row.get("id")}
-    if not wanted:
-        return {}
-    histories: Dict[str, Dict[str, Any]] = {}
-    for root in roots:
-        try:
-            chain_rows = workspace_rows(root)
-        except Exception:  # noqa: BLE001 - a broken chain must not break the listing
-            continue
-        if not chain_rows:
-            continue
-        for draft_id in wanted:
-            if draft_id in histories:
-                continue
-            history = draft_history(chain_rows, draft_id)
-            if not history.get("approvals"):
-                continue
-            records = history.get("records") or []
-            reverted = None
-            if records:
-                counts = [
-                    record.get("reverted_line_count")
-                    for record in records
-                    if isinstance(record.get("reverted_line_count"), (int, float))
-                ]
-                if counts:
-                    reverted = sum(int(count) for count in counts)
-            history["reverted_line_count"] = reverted
-            histories[draft_id] = history
-    return histories
+    return draft_histories(
+        roots,
+        [str(row.get("id") or "") for row in rows if row.get("id")],
+    )
 
 
 def cmd_drafts(args: argparse.Namespace) -> int:

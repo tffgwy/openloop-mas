@@ -1550,6 +1550,22 @@ def build_report(
     # it leaves a draft behind, and the report has to say so: the run
     # may well be closed, but the *file* is still the old one.
     draft_queue = draft_reading(rows, drafts, runs=runs)
+    # Which drafts had an approval taken back. The draft file holds
+    # only the newest state, so "this approval was wrong once" is not
+    # in the draft - it is in the decision record. The report already
+    # has that record (the ``undos`` section); this puts the fact on
+    # the draft row as well, so a reader of the draft table does not
+    # have to cross-reference two sections to learn that a change they
+    # are looking at was rejected once.
+    _taken_back = {
+        str(entry.get("draft_id") or ""): int(entry.get("taken_back") or 0)
+        for entry in (undos.get("drafts") or [])
+        if str(entry.get("draft_id") or "")
+    }
+    for _entry in (draft_queue.get("drafts") or []):
+        _count = int(_taken_back.get(str(_entry.get("draft_id") or ""), 0) or 0)
+        _entry["taken_back"] = _count
+        _entry["ever_undone"] = _count > 0
     return {
         "generated_at": now_iso(),
         "runs": runs,
@@ -1694,8 +1710,8 @@ def _draft_section_lines(report: Dict[str, Any]) -> List[str]:
             % (len(entries), waiting, approved)
         )
         lines.append("")
-        lines.append("| 草稿 | 状态 | 文件 | 提议运行 | 原因 | 接着干 |")
-        lines.append("|---|---|---|---|---|---|")
+        lines.append("| 草稿 | 状态 | 被撤销 | 文件 | 提议运行 | 原因 | 接着干 |")
+        lines.append("|---|---|---|---|---|---|---|")
         for entry in entries:
             path = str(entry.get("path") or "").replace("|", "\\|")[:40]
             reason = str(entry.get("reason") or "").replace("|", "\\|")[:50]
@@ -1706,11 +1722,18 @@ def _draft_section_lines(report: Dict[str, Any]) -> List[str]:
                 if str(entry.get("state") or "") == "pending"
                 else "-"
             )
+            # How often an approval of this draft was taken back. A
+            # draft that is "已批准" now but was taken back once was
+            # wrong once, and the table has to say so - the state
+            # column cannot hold it.
+            taken_back = int(entry.get("taken_back") or 0)
+            undo_cell = "%d 次" % taken_back if taken_back else "-"
             lines.append(
-                "| %s | %s | %s | %s | %s | %s |"
+                "| %s | %s | %s | %s | %s | %s | %s |"
                 % (
                     entry.get("draft_id") or "-",
                     state_text,
+                    undo_cell,
                     path or "-",
                     run_id or "-",
                     reason or "-",

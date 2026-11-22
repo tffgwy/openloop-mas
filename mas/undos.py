@@ -224,6 +224,72 @@ def draft_history(
     }
 
 
+def draft_histories(
+    roots: Iterable[Any],
+    draft_ids: Iterable[Any],
+) -> Dict[str, Dict[str, Any]]:
+    """What the audit record says about each draft in a list.
+
+    The gap this closes
+    ------------------
+    A draft file holds only the **newest** state of a draft, so it
+    cannot say "this was approved and then taken back". After a
+    second approval the state is ``approved`` again and the wrongness
+    of the first approval is gone from the file.
+
+    The command line learned to read that fact from the audit chain.
+    The **MCP** surface never did: ``mas_drafts`` handed back the raw
+    draft dicts, so an agent saw ``approved`` where the person at the
+    keyboard saw "the approval was taken back once". Two surfaces,
+    one machine, two answers about the same draft - and the agent is
+    the one that acts on it.
+
+    So the reading lives here, once. Every surface that shows drafts
+    calls it.
+
+    What it reads
+    -------------
+    The **audit chain** of each workspace. A missing chain is not an
+    error - it only means that workspace has no decisions yet, and
+    then the draft simply has no history.
+
+    What it does not do
+    -------------------
+    It never writes, never changes a draft's state, and never
+    invents a history: a draft with no chain entry has no history, and
+    the fields say ``0`` rather than pretending.
+    """
+    wanted = {str(item) for item in (draft_ids or []) if str(item)}
+    if not wanted:
+        return {}
+    histories: Dict[str, Dict[str, Any]] = {}
+    for root in roots or []:
+        try:
+            chain_rows_ = workspace_rows(root)
+        except Exception:  # noqa: BLE001 - a broken chain must not break the listing
+            continue
+        if not chain_rows_:
+            continue
+        for draft_id in wanted:
+            if draft_id in histories:
+                continue
+            history = draft_history(chain_rows_, draft_id)
+            if not history.get("approvals"):
+                continue
+            # The lines the undos took back, summed over the whole
+            # history of this draft. A record that predates the
+            # field carries no number, and a missing number is a
+            # missing number - it is not zero.
+            counts = [
+                record.get("reverted_line_count")
+                for record in (history.get("records") or [])
+                if isinstance(record.get("reverted_line_count"), (int, float))
+            ]
+            history["reverted_line_count"] = sum(int(count) for count in counts) if counts else None
+            histories[draft_id] = history
+    return histories
+
+
 def chain_rows(workspace: Any) -> List[Dict[str, Any]]:
     """The decision rows of one workspace's audit chain."""
     from mas.audit import chain_for

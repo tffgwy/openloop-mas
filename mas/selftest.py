@@ -63,6 +63,9 @@ from mas.selftest_closure_verdict import (
 from mas.selftest_doc_text import (
     check_the_documents_are_still_text,
 )
+from mas.selftest_draft_undo_visibility import (
+    check_a_taken_back_approval_is_visible_everywhere,
+)
 from mas.selftest_isolation import (
     check_the_selftest_leaves_the_machine_alone,
 )
@@ -5573,6 +5576,7 @@ CHECKS = (
     check_the_run_detail_speaks_the_same_grain,
     check_the_queue_decides_and_not_the_ledger_alone,
     check_the_replay_listens_to_the_queue_too,
+    check_a_taken_back_approval_is_visible_everywhere,
     check_the_documents_are_still_text,
     check_the_selftest_leaves_the_machine_alone,
 )

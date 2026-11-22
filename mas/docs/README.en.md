@@ -140,11 +140,11 @@ server and the skills, and finishes with an offline self-check.
 Pin a specific release instead of "the latest":
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.5
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.6
 ```
 
 ```bash
-MAS_VERSION=0.8.5 bash install.sh
+MAS_VERSION=0.8.6 bash install.sh
 ```
 
 > The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
@@ -892,7 +892,7 @@ MIT © OpenLoop MAS contributors
 
 ## Gate archaeology
 
-This project now holds **46 gates**, and every one of them grew out of a
+This project now holds **47 gates**, and every one of them grew out of a
 **real incident**. They are listed below newest first - if you just want to
 use the tool, skip this section.
 
@@ -1231,6 +1231,56 @@ use the tool, skip this section.
   verdict now give opposite answers.
   ```bash
   mas selftest --only status_grain
+  ```
+- **The forty-seventh gate `a_taken_back_approval_is_visible_everywhere`** - v0.7.85
+  taught the **command line** to read the audit chain. This release finds that
+  the **MCP face** still spoke the old wording, and that the **report** and the
+  **status page** each missed half of it.
+  ```bash
+  mas drafts --json
+  ```
+  After a draft is approved, taken back and approved again, the draft file
+  holds only the **newest** state - the wrong approval lives in the audit chain
+  alone:
+  ```text
+  mas drafts --json   ->  ever_undone=True, undos=1        <- command line: taken back
+  mas_drafts (MCP)    ->  ever_undone=None, undos=None      <- MCP: says nothing at all
+  ```
+  **One machine, two answers** - and the **agent** is the one that acts on it.
+  An agent driving this machine through MCP with Claude, GPT or Kimi, asking
+  "is this draft still good?", reads `approved` and never learns that the
+  approval was taken back once. Two more holes in the same family: the
+  report's draft table said only "已批准", so a reader had to cross-reference
+  another section; the status page counted drafts as `pending` or `approved`
+  and had no bucket at all for "an approval of this was taken back", so a
+  draft whose approval was taken back and never given again fell out of every
+  count.
+  Now the chain is read in **one place** (`mas/undos.py`:
+  `draft_histories()`), and the command line, the MCP face, the report and the
+  status page **all call it**:
+  * the MCP face (`mas_drafts`, both `list` and `show`) gives every draft
+    `approvals` / `undos` / `ever_undone` / `reverted_line_count`;
+  * the report's draft table gains a "**被撤销**" column, reading `1 次`;
+  * the status page gains two counts (`undone` / `with_history`) and a line
+    of words: "⚠ 批准被撤销过：N 个草稿的批准被撤回过".
+  The chain lives in the **workspace the decision was made in**, so the status
+  page takes its roots **from the drafts themselves** (every draft names its
+  own `workspace`) - the same rule the draft listing walks. A draft that
+  lives in a workspace of its own is no longer listed without its
+  taken-back approval.
+  The gate watches four things: the MCP face can say "this draft was taken
+  back"; the command line and the MCP face say the **same** number; the report
+  **names** the draft; the status page **counts** it. And it reads the facts
+  **twice**, independently - once from the pages, once from the raw audit
+  chain - and the two readings have to agree.
+  The gate proves it can fail, and the break is on the **wiring**, not on the
+  shared function: cut the **MCP face's** read of the chain (which is exactly
+  the old bug) and the gate has to notice that the two faces are arguing.
+  > Breaking the shared function would not do: every face reads it, so
+  > when it breaks they break **together** - they agree, and the gate sees
+  > nothing.
+  ```bash
+  mas selftest --only a_taken_back_approval_is_visible_everywhere
   ```
 - **The forty-sixth gate `replay_listens_to_the_queue`** - v0.8.4 made the
   **report** listen to the ticket queue. This release finds that the
