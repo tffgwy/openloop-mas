@@ -141,9 +141,10 @@ class LedgerRemembersTheTaskTest(unittest.TestCase):
         cells = re.split(r"(?<!\\)\|", table_rows[0])
         # 11 cells + 2 empty edges. The table grew a "source" column,
         # which says whether the answer came from the loop or from a
-        # person, and a "taken back approvals" column, which says how
-        # many of this run's own approvals a person took back.
-        self.assertEqual(len(cells), 13)
+        # person, a "taken back approvals" column, which says how
+        # many of this run's own approvals a person took back, and a
+        # "backend" column, which says which backend really answered.
+        self.assertEqual(len(cells), 14)
 
     def test_the_artifacts_listing_names_the_task(self):
         code, out = _run_cli(

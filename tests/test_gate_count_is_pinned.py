@@ -75,6 +75,7 @@ EXPECTED_GATE_NAMES = (
     "an_undone_draft_is_still_waiting_everywhere",
     "a_decision_hangs_on_its_run",
     "a_run_knows_its_approval",
+    "a_run_knows_its_backend",
     "doc_text_integrity",
     "selftest_isolation",
 )

@@ -94,6 +94,15 @@ STATUS_ESCALATED = "escalated"
 STATUS_BUDGET = "budget_exhausted"
 STATUS_ERROR = "error"
 
+#: The keys the engine keeps for itself.
+#:
+#: They never leave the engine: the plan and the reflection travel to
+#: the model on the next call, and a token count or a backend name is
+#: bookkeeping, not work. They are listed in one place so a new
+#: internal key cannot leak into a prompt by being added to one call
+#: site and forgotten at the other three.
+INTERNAL_KEYS = ("_usage", "_raw", "_provider_used", "_model_used")
+
 
 def _required_flag(value: Any) -> bool:
     """Read the ``required`` flag of a criterion without guessing.
@@ -712,6 +721,13 @@ class LoopEngine:
                     # belongs to the budget.
                     plan_usage = dict(plan_payload.get("_usage") or {})
                     tokens += int(plan_usage.get("total_tokens", 0) or 0)
+                    # The backend that answered travels with the plan:
+                    # a plan made by the backup after the primary died
+                    # is a fact about the run, and the ledger is where
+                    # facts about runs live. It is read *before* the
+                    # internal keys are stripped, because that is
+                    # exactly where it lives.
+                    plan_backend = self._backend_fields(plan_payload)
                     # The internal bookkeeping never leaves the engine.
                     # The plan goes into the state of every later
                     # prompt, so the raw provider text would ride along
@@ -719,7 +735,7 @@ class LoopEngine:
                     plan_payload = {
                         key: value
                         for key, value in plan_payload.items()
-                        if key not in ("_usage", "_raw")
+                        if key not in INTERNAL_KEYS
                     }
                     # The ledger still shows what the planner call cost -
                     # the audit trail has to carry the spend of every
@@ -734,6 +750,7 @@ class LoopEngine:
                             # exactly once, otherwise the book cannot be
                             # reconciled with the bill.
                             "tokens": int(plan_usage.get("total_tokens", 0) or 0),
+                            **plan_backend,
                         },
                     )
 
@@ -842,6 +859,7 @@ class LoopEngine:
                     reflect_usage = dict(reflection.get("_usage") or {})
                     reflect_tokens = int(reflect_usage.get("total_tokens", 0) or 0)
                     tokens += reflect_tokens
+                    reflect_backend = self._backend_fields(reflection)
                     # The reflector is a paid call and the ledger never
                     # mentioned it: the book showed a run that revised
                     # itself again and again and never said what the
@@ -852,15 +870,16 @@ class LoopEngine:
                             "reflection": {
                                 key: value
                                 for key, value in reflection.items()
-                                if key not in ("_usage", "_raw")
+                                if key not in INTERNAL_KEYS
                             },
                             "tokens": reflect_tokens,
+                            **reflect_backend,
                         },
                     )
                     reflection = {
                         key: value
                         for key, value in reflection.items()
-                        if key not in ("_usage", "_raw")
+                        if key not in INTERNAL_KEYS
                     }
                 else:
                     # The previous iteration's issues are resolved. Keeping
@@ -1254,6 +1273,17 @@ class LoopEngine:
                 ),
                 "issues": list(issues),
                 "tokens_total": int(tokens),
+                # Every backend that answered this run, and whether the
+                # run had to fall over to one of them.
+                #
+                # The gap this closes: the ledger said "provider:
+                # dead-primary" on every row of a run that was actually
+                # delivered by the backup, so a reader of the book
+                # could not tell that the machine had survived an
+                # outage. The run's own end entry is where that fact
+                # belongs - it is a fact about the *run*, not about one
+                # call.
+                **self._run_backends(run_id),
             },
         )
 
@@ -1345,6 +1375,7 @@ class LoopEngine:
                         {"angle": "direct", "selected": True, "passed": None}
                     ],
                     "tokens": work_tokens,
+                    **self._backend_fields(work),
                 },
             )
             return {
@@ -1488,6 +1519,18 @@ class LoopEngine:
             )
 
         summary[best_index]["selected"] = True
+        # Every backend that answered the pool. A candidate pool is
+        # served by whichever backend was alive when it ran, so the
+        # list can hold more than one name - and the winning
+        # candidate's own backend is named separately, because that is
+        # the one that produced the deliverable.
+        pool_backends = self._backends_of(
+            [
+                item
+                for item in results
+                if isinstance(item, dict)
+            ]
+        )
         self._log(
             state["run_id"], state["task_id"], state["attempt"], "candidates",
             {
@@ -1498,6 +1541,10 @@ class LoopEngine:
                 # The whole pool was billed - the winner and the
                 # candidates that lost the race.
                 "tokens": int(tokens),
+                # The backend that produced the delivered candidate.
+                **self._backend_fields(results[best_index]),
+                # And every backend the pool was served by.
+                "backends": pool_backends,
             },
         )
         artifact = strip_reasoning(results[best_index]["text"])
@@ -1881,6 +1928,16 @@ class LoopEngine:
         aggregate["_usage"] = {"total_tokens": tokens + failed_tokens}
         aggregate["errors"] = errors
         aggregate["personas"] = personas
+        # Which backends answered the panel. A panel of three can be
+        # served by three different backends when the chain fails over
+        # mid-panel, and the report has to be able to say so.
+        aggregate["_backends"] = self._backends_of(
+            [
+                member
+                for member in panel
+                if isinstance(member, dict)
+            ]
+        )
         # Kept so a targeted re-ask can merge into the same panel instead
         # of replacing it with a single reviewer.
         aggregate["_panel"] = panel
@@ -1914,6 +1971,14 @@ class LoopEngine:
                 # final state entry - its money was booked with the
                 # round that actually made the call.
                 "tokens": int(tokens or 0),
+                # Which backends answered the panel. A panel can be
+                # served by more than one backend, and the reader has
+                # to be able to see that the review was not all one
+                # machine talking to itself.
+                "backends": aggregate.get("_backends") or [],
+                # And the backend of the single reviewer, in the
+                # panel-of-one case, where there is only one.
+                **self._backend_fields(aggregate),
             },
         )
 
@@ -1940,6 +2005,10 @@ class LoopEngine:
                 "missing": 0 if answered else 1,
                 "reviewers": 1,
                 "mode": self.review_mode,
+                # Which backend answered. A panel of one is still
+                # served by a backend, and the report reads the panel
+                # and the single reviewer the same way.
+                "_backends": self._backends_of([payload]),
             }
         )
         return payload
@@ -2246,6 +2315,83 @@ class LoopEngine:
         entry.update(payload)
         self.ledger.append(entry)
 
+    @staticmethod
+    def _backend_fields(source: Dict[str, Any]) -> Dict[str, Any]:
+        """Read the answering backend out of a provider answer.
+
+        The answer carries it under two different names on purpose:
+        a text answer keeps it at the top level, a JSON answer keeps
+        it under the internal prefix so it cannot ride along into the
+        next prompt. Both are read here, in one place, so a call site
+        cannot forget one of them.
+        """
+        provider = str(
+            source.get("_provider_used") or source.get("provider_used") or ""
+        )
+        model = str(source.get("_model_used") or source.get("model_used") or "")
+        if not provider and not model:
+            return {}
+        return {"provider_used": provider, "model_used": model}
+
+    def _backends_of(self, sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Every backend that answered, in the order they answered.
+
+        A review panel can be served by different backends - one
+        member answered by Claude, another by Kimi - so the truth is a
+        list, not a single name. The list is deduplicated by name and
+        model, and it keeps the order the answers came in.
+        """
+        seen: List[Dict[str, Any]] = []
+        for source in sources:
+            fields = self._backend_fields(source or {})
+            if not fields:
+                continue
+            pair = (fields["provider_used"], fields["model_used"])
+            if any(
+                (item.get("provider_used"), item.get("model_used")) == pair
+                for item in seen
+            ):
+                continue
+            seen.append(fields)
+        return seen
+
+    def _run_backends(self, run_id: str) -> Dict[str, Any]:
+        """Every backend this run was served by, and whether it fell over.
+
+        The run's own end entry has to be able to say "the primary was
+        down and the backup delivered this". The per-call rows carry
+        the detail; this is the summary a reader of one run asks for.
+
+        Rows written before this release carry no backend at all, and
+        they are not guessed at: an old run says nothing about its
+        backend rather than claiming the configured one answered.
+        """
+        primary = str(self.provider.name or "")
+        backends: List[Dict[str, Any]] = []
+        failed_over = False
+        for row in self.ledger.entries():
+            if str(row.get("run_id") or "") != run_id:
+                continue
+            fields = self._backend_fields(row)
+            if not fields:
+                continue
+            pair = (fields["provider_used"], fields["model_used"])
+            if not any(
+                (item.get("provider_used"), item.get("model_used")) == pair
+                for item in backends
+            ):
+                backends.append(fields)
+            if primary and fields["provider_used"] != primary:
+                failed_over = True
+        if not backends:
+            return {}
+        return {
+            "backends": backends,
+            # The backend that answered the most calls, and whether the
+            # run had to fall over at least once.
+            "failed_over": failed_over,
+        }
+
     def _output_budget(self, role: str, attempt: int) -> int:
         """How many output tokens a role may use on this attempt.
 
@@ -2288,13 +2434,20 @@ class LoopEngine:
 
     def _call_text(self, role: str, state: Dict[str, Any], extra: str = "") -> Dict[str, Any]:
         with call_ceiling(self._remaining_budget_sec()):
-            return self.provider.complete(
+            response = self.provider.complete(
                 system=self.roles.system(role),
                 prompt=self.roles.prompt(role, state, extra=extra),
                 role=role,
                 expect_json=False,
                 max_tokens=self._output_budget(role, int(state.get("attempt") or 1)),
             )
+        # Which backend answered. A chain that failed over says so here,
+        # and a single provider simply names itself - so every caller
+        # can read the same two keys without asking what kind of
+        # provider it was given.
+        response.setdefault("provider_used", self.provider.name)
+        response.setdefault("model_used", self.provider.model)
+        return response
 
     def _call_json(self, role: str, state: Dict[str, Any], extra: str = "") -> Dict[str, Any]:
         with call_ceiling(self._remaining_budget_sec()):
@@ -2312,6 +2465,16 @@ class LoopEngine:
             data = normalize_verdict(data)
         data["_usage"] = response.get("usage", {})
         data["_raw"] = response.get("text", "")
+        # The backend that answered, kept under the internal prefix so
+        # it never rides along into a prompt: the plan and the
+        # reflection travel to the model on the next call, and a
+        # backend name is bookkeeping, not work.
+        data["_provider_used"] = str(
+            response.get("provider_used") or self.provider.name or ""
+        )
+        data["_model_used"] = str(
+            response.get("model_used") or self.provider.model or ""
+        )
         return data
 
     def _consult_lead(
@@ -2347,7 +2510,7 @@ class LoopEngine:
                 "lead": {
                     key: value
                     for key, value in answer.items()
-                    if key not in ("_usage", "_raw")
+                    if key not in INTERNAL_KEYS
                 },
                 "tokens": int(usage.get("total_tokens", 0) or 0),
             },

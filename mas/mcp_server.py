@@ -717,6 +717,65 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                 "problem_closure_rate": 0.0,
                 "open_threads": [],
             }
+        # Which backend really answered the work.
+        #
+        # The gap: the status tool named the *configured* provider,
+        # so an agent driving Claude, GPT or Kimi through MCP was told
+        # it was talking to an endpoint that had actually been down -
+        # the run had been delivered by a backup, and nobody could
+        # tell. An agent that checks "who actually served me?" gets
+        # the truth here, from the same reader the report uses.
+        try:
+            from mas.report import backends_of_run, group_runs
+
+            items: List[Dict[str, Any]] = []
+            for group in group_runs(rows):
+                facts = backends_of_run(group.get("rows") or [])
+                if not facts:
+                    continue
+                items.append(
+                    {
+                        "run_id": str(group.get("run_id") or ""),
+                        "backend_used": str(
+                            (facts.get("primary_backend") or {}).get(
+                                "provider_used"
+                            )
+                            or ""
+                        ),
+                        "model_used": str(
+                            (facts.get("primary_backend") or {}).get(
+                                "model_used"
+                            )
+                            or ""
+                        ),
+                        "configured_provider": str(
+                            facts.get("configured_provider") or ""
+                        ),
+                        "backends": list(facts.get("backends") or []),
+                        "failed_over": bool(facts.get("failed_over")),
+                    }
+                )
+            payload["backends"] = {
+                "runs_known": len(items),
+                "failed_over": len(
+                    [i for i in items if i.get("failed_over")]
+                ),
+                "names": sorted(
+                    {
+                        str(i.get("backend_used") or "")
+                        for i in items
+                        if str(i.get("backend_used") or "")
+                    }
+                ),
+                "items": items,
+            }
+        except Exception:  # noqa: BLE001 - status must never crash
+            payload["backends"] = {
+                "runs_known": 0,
+                "failed_over": 0,
+                "names": [],
+                "items": [],
+            }
         # A draft that sits on a conflict is a decision the human still
         # owes. It is invisible from the tickets - those are for the
         # *loop* to ask a question - so an agent reading the status

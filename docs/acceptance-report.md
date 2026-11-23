@@ -2674,3 +2674,70 @@ True  the other run sees nothing
 True  the command line agrees with the report
 True  the MCP surface agrees with the report
 ```
+
+## U. v0.9.0 — 这次运行自己知道是哪个后端真正交付了它
+
+### 问题
+
+项目承诺「一个端点报错就死掉的循环不是闭环，是一次宕机」。
+切换机制本来就在（`ProviderChain`：先打首选，首选 502，备用接管，跑完），
+但**没有人看得见它发生过**。
+
+`mas/engine.py:_log()` 写下的 `provider` 来自 `self.provider.name`，
+而对一条链来说那是**首选**—— 刚刚挂掉的那个端点。
+一次实际由备用交付的运行，它的每一行账本都写着死掉的端点；
+`mas/report.py` 当时压根没有「后端」这个概念，于是照抄一遍。
+
+### 根因（实测探针）
+
+`%TEMP%\probe_chain4.py`：一条 `ProviderChain([Dead(502), Backup])` 跑真实闭环。
+
+```
+run ok: closed True
+ role=planner     provider=dead-primary   used=backup-kimi    model_used=kimi-k2
+ role=candidates  provider=dead-primary   used=backup-kimi    model_used=kimi-k2
+ role=review      provider=dead-primary   used=backup-kimi    model_used=kimi-k2
+```
+
+根因定位：`mas/orchestration.py` 的 `ProviderChain.complete()` **本来就正确**地
+写了 `provider_used` / `model_used`；是 `mas/engine.py` 的 `_call_text()` /
+`_call_json()` 把这两个字段**丢掉了**，而 `_log()` 又无条件写
+`self.provider.name`（= 链头 = 首选后端）。
+
+### 第二十九条不变量
+
+> **首选后端挂掉、备用后端接管之后，这次运行必须自己知道：实际交付它的是哪个后端、
+> 首选当时不可用；报告表、运行详情、命令行与 MCP 得说同一件事，
+> 而没有发生切换的运行不能谎称切换过。**
+
+### 改了什么
+
+| 文件 | 改了什么 |
+| --- | --- |
+| `mas/engine.py` | 新增 `INTERNAL_KEYS`；`_call_text()` / `_call_json()` 透传后端；`_log()` 各调用点带上真正应答的后端；`run_end` 行带上本次运行的全部后端与是否切换过 |
+| `mas/report.py` | 新增 `backend_of_row()` / `backends_of_run()`；`run_summary()` 多出后端字段；报告运行表多一列「后端」；运行详情明说实际交付后端与首选不可用；`replay_trace()` 同步 |
+| `mas/cli.py` | `status` 页与 `--json` 载荷多出 `backends` 段，文本页打印「实际交付后端」 |
+| `mas/mcp_server.py` | `mas_status` 多出 `backends` 段；`mas_report` / `mas_replay` 走同一套读法 |
+| `mas/selftest_run_knows_its_backend.py` | 第 51 项门禁 |
+| `tests/test_run_knows_its_backend_890.py` | 回归测试 |
+
+**老账本没有后端字段时，宁可不说，也不猜。**
+
+### 本轮实测证据
+
+探针 `%TEMP%\probe_chain4.py`（真实闭环 + 首选 502）：
+
+| 检查 | 结果 |
+| --- | --- |
+| 账本每行 | `provider=dead-primary`（配置的那个）+ `provider_used=backup-kimi` / `model_used=kimi-k2` |
+| 运行摘要 | `backend_used=backup-kimi`、`failed_over=True` |
+| 报告 Markdown | 含 `backup-kimi`、含 `kimi-k2`、含 `dead-primary`（首选语境） |
+
+第 51 项门禁 `a_run_knows_its_backend`（`mas/selftest_run_knows_its_backend.py`）：
+
+* 用例里有**两次真实闭环运行**：一次正常、一次首选挂掉；
+  **没有切换的那次必须不能谎称切换过** ——
+  否则一个「永远返回全部」的过滤器看起来和真正生效的一模一样；
+* 独立实现两遍判定（`_verdicts` / `_verdicts_independent`）；
+* 自证能失败：把引擎的接线打坏（后端不再带进账本），
+  门禁实测报红的是「运行知道是哪个后端交付了它」。

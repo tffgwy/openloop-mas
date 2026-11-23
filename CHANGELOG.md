@@ -4,6 +4,62 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-11-24
+
+### 首选后端挂掉之后，这次运行必须自己知道是谁交付了它
+
+项目承诺的是「一个端点报错就死掉的循环不是闭环，是一次宕机」。
+切换机制本来就在：`ProviderChain` 先打首选，首选回 502，备用接管，整次运行跑完。
+
+但**没有人看得见这件事发生过**。
+
+`mas/engine.py:_log()` 写下的 `provider` 来自 `self.provider.name`，
+而对一条链来说这个名字是**首选**—— 那个刚刚挂掉的端点。
+于是一次实际由备用交付的运行，它的每一行账本都写着那个死掉的端点，
+而 `mas/report.py` 压根没有「后端」这个概念，于是照抄一遍。
+
+读者既看不出机器**自己扛过了一次宕机**，也看不出它**没有扛过**：
+首选交付的运行和备用交付的运行，说的是同一句话。
+
+### 第二十九条不变量
+
+> **首选后端挂掉、备用后端接管之后，这次运行必须自己知道：实际交付它的是哪个后端、
+> 首选当时不可用；报告表、运行详情、命令行与 MCP 得说同一件事，
+> 而没有发生切换的运行不能谎称切换过。**
+
+### 改了什么
+
+* `mas/engine.py`：新增 `INTERNAL_KEYS`（把 `_provider_used` / `_model_used`
+  和 `_usage` / `_raw` 一起圈住，四个调用点不再各写一遍，内部的账务键
+  不会漏进下一个提示词）；`_call_text()` / `_call_json()` 透传
+  `provider_used` / `model_used`；`_log()` 的各个调用点带上真正应答的后端；
+  `run_end` 行带上这次运行用过的全部后端与是否切换过；
+* `mas/report.py`：新增 `backend_of_row()` 与 `backends_of_run()`；
+  `run_summary()` 多出 `backends` / `backend_used` / `model_used` /
+  `configured_provider` / `failed_over`；报告运行表多一列「后端」；
+  运行详情明说「实际交付后端：X（首选 Y 当时不可用，已自动切换）」；
+  `replay_trace()` 的 `run_blocks` 带上同样的事实；
+* `mas/cli.py`：`status` 页与 `--json` 载荷多出 `backends` 段，
+  文本页打印「实际交付后端」，切换过的运行明确提示首选不可用；
+* `mas/mcp_server.py`：`mas_status` 多出 `backends` 段
+  （`mas_report` / `mas_replay` 走同一套读法，自动一致）。
+
+**老账本没有后端字段时，宁可不说，也不猜。**
+一份 v0.8.9 及更早的账本不会声称「是配置的后端答的」——
+它只是不知道，而它就该说不知道。
+
+### 门禁
+
+第 51 项门禁 `a_run_knows_its_backend`
+（`mas/selftest_run_knows_its_backend.py`）：
+
+* 用例里有**两次真实闭环运行**：一次正常、一次首选挂掉；
+  只有一次切换过，**没有切换的那次必须不能谎称切换过**
+  （否则一个「永远返回全部」的过滤器就能伪装成生效）；
+* 独立实现两遍判定：一遍读页面，一遍直接读账本原始行；
+* 自证能失败：把引擎的接线打坏（后端不再带进账本），
+  门禁必须发现运行已经不知道自己是被谁交付的。
+
 ## [0.8.9] - 2026-11-23
 
 ### 一次批准被撤回了，这次运行必须自己知道

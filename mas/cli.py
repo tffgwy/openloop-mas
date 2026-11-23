@@ -30,6 +30,7 @@ from mas.reason_text import continuation_command, reason_hint, reason_text
 from mas.relay import serve_relay
 from mas.report import (
     artifact_rows,
+    backends_of_run,
     build_report,
     closure_grain,
     closure_verdict_for,
@@ -589,6 +590,37 @@ def cmd_status(args: argparse.Namespace) -> int:
         [t for t in tickets if t.get("state") == "waiting_human"]
     )
     runs = run_summaries(rows)
+    # Which backend really answered each run.
+    #
+    # The status page prints "provider: openai_compat / gpt-4o" -
+    # the *configured* backend. When that endpoint was down and a
+    # backup delivered the work, the page claimed the dead endpoint
+    # served it. A reader who wants to know whether their machine is
+    # actually talking to the model they paid for has to be able to
+    # see this.
+    run_backends: List[Dict[str, Any]] = []
+    for group in group_runs(rows):
+        facts = backends_of_run(group.get("rows") or [])
+        if not facts:
+            continue
+        run_backends.append(
+            {
+                "run_id": str(group.get("run_id") or ""),
+                "backend_used": str(
+                    (facts.get("primary_backend") or {}).get("provider_used")
+                    or ""
+                ),
+                "model_used": str(
+                    (facts.get("primary_backend") or {}).get("model_used")
+                    or ""
+                ),
+                "configured_provider": str(
+                    facts.get("configured_provider") or ""
+                ),
+                "backends": list(facts.get("backends") or []),
+                "failed_over": bool(facts.get("failed_over")),
+            }
+        )
     # The drafts reconciled against the ledger. A run that closed
     # while its change is still waiting for a human is the sharpest
     # fact this page can tell: the machine says "done", the disk says
@@ -715,6 +747,24 @@ def cmd_status(args: argparse.Namespace) -> int:
             "missing": len([a for a in artifacts if not a["exists"]]),
             "items": artifacts,
         },
+        # The backends that really answered. The "provider" line above
+        # is the configured one; this is the truth about what served
+        # the work, and whether the machine had to fall over to a
+        # backup.
+        "backends": {
+            "runs_known": len(run_backends),
+            "failed_over": len(
+                [r for r in run_backends if r.get("failed_over")]
+            ),
+            "names": sorted(
+                {
+                    str(r.get("backend_used") or "")
+                    for r in run_backends
+                    if str(r.get("backend_used") or "")
+                }
+            ),
+            "items": run_backends,
+        },
     }
     # The audit chain of the human decisions. A failure here must not
     # break the status page - it is reported as a finding instead.
@@ -802,6 +852,23 @@ def cmd_status(args: argparse.Namespace) -> int:
         print(f"  [{flag}] {item['title'] or '-'}  {item['chars']} 字  {item['path']}")
     if payload["artifacts"]["missing"]:
         print(f"  ⚠ 有 {payload['artifacts']['missing']} 份交付物文件已不在原处。")
+    # Which backend actually answered. The provider line at the top
+    # is what was configured; this is what really served the work.
+    # A run that fell over to a backup says so - otherwise the reader
+    # has no way of knowing the endpoint they configured was down and
+    # the machine quietly kept working on a backup.
+    backend_items = list(payload["backends"].get("items") or [])
+    if backend_items:
+        failover_count = int(payload["backends"].get("failed_over") or 0)
+        names = "、".join(
+            payload["backends"].get("names") or []
+        )
+        print(f"实际交付后端：{names}")
+        if failover_count:
+            print(
+                f"  ⚠ 有 {failover_count} 次运行的首选后端不可用，"
+                "已自动切换到备用后端完成"
+            )
     if waiting:
         print(f"待处理工单：{len(waiting)} 个")
         for ticket_id in waiting:

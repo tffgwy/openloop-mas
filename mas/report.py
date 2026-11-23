@@ -68,6 +68,78 @@ def ledger_spend(rows: List[Dict[str, Any]]) -> int:
     return total
 
 
+def backend_of_row(row: Dict[str, Any]) -> Dict[str, str]:
+    """Which backend answered the call this row books.
+
+    The row carries the answering backend under ``provider_used`` /
+    ``model_used``. A row written before this release carries nothing,
+    and nothing is guessed for it: an old row says nothing about its
+    backend rather than claiming the configured one answered.
+    """
+    provider = str(row.get("provider_used") or "")
+    model = str(row.get("model_used") or "")
+    if not provider and not model:
+        return {}
+    return {"provider_used": provider, "model_used": model}
+
+
+def backends_of_run(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Every backend a run was served by, and whether it fell over.
+
+    The gap this closes
+    ------------------
+    The ledger recorded the *configured* backend on every row, so a
+    run that was actually delivered by the backup after the primary
+    died said nothing about it. A reader of the report could not tell
+    that the machine had survived an outage on its own - and the
+    project promises exactly that ("a loop that dies because one
+    endpoint returned an error is not a closed loop, it is an
+    outage").
+
+    So the reading is made here, in one place, and every surface that
+    shows a run calls it - so the report, the command line and the MCP
+    surface cannot describe the same run differently.
+    """
+    backends: List[Dict[str, str]] = []
+    for row in rows or []:
+        fields = backend_of_row(row)
+        if not fields:
+            continue
+        pair = (fields["provider_used"], fields["model_used"])
+        if any(
+            (item.get("provider_used"), item.get("model_used")) == pair
+            for item in backends
+        ):
+            continue
+        backends.append(fields)
+    if not backends:
+        return {}
+    # The backend the run was *configured* with. The chain starts
+    # there, so it is the one a failover away from the truth.
+    configured = str(
+        next(
+            (
+                str(row.get("provider") or "")
+                for row in (rows or [])
+                if str(row.get("provider") or "")
+            ),
+            "",
+        )
+    )
+    used = [item["provider_used"] for item in backends]
+    failed_over = bool(configured) and any(
+        name != configured for name in used
+    )
+    return {
+        "backends": backends,
+        "configured_provider": configured,
+        # The backend that answered most of the run's calls - the one
+        # that really carried the work.
+        "primary_backend": backends[0],
+        "failed_over": failed_over,
+    }
+
+
 STATUS_ICON = {
     "closed": "OK",
     "escalated": "ESC",
@@ -580,6 +652,11 @@ def run_summary(
     run_decisions.setdefault("records", [])
     run_decisions.setdefault("unmatched", [])
 
+    # Which backend really answered this run. The rows say it; the run
+    # has to be able to say it too, because the run is what a reader
+    # opens.
+    run_backends = backends_of_run(rows)
+
     return {
         "run_id": run_id,
         "status": status,
@@ -701,6 +778,22 @@ def run_summary(
         "finished_at": str(rows[-1].get("ts")) if rows else "",
         "artifacts": artifacts,
         "entries": len(rows),
+        # Which backends served this run. ``backends`` is every one of
+        # them, in the order they answered; ``failed_over`` says the
+        # run survived an outage on its own. A run from before this
+        # release carries neither - it says nothing rather than
+        # guessing.
+        "backends": list(run_backends.get("backends") or []),
+        "backend_used": str(
+            (run_backends.get("primary_backend") or {}).get("provider_used") or ""
+        ),
+        "model_used": str(
+            (run_backends.get("primary_backend") or {}).get("model_used") or ""
+        ),
+        "configured_provider": str(
+            run_backends.get("configured_provider") or ""
+        ),
+        "failed_over": bool(run_backends.get("failed_over")),
     }
 
 
@@ -1121,6 +1214,69 @@ def _run_source(run: Dict[str, Any]) -> str:
     if run.get("closed"):
         return "🤖 机器闭环"
     return "—"
+
+
+def _backend_cell(run: Dict[str, Any]) -> str:
+    """Which backend served one run, in a table cell.
+
+    A run that was delivered by a backup says so - the fact is the
+    whole point of the column. A run whose backend the ledger does
+    not know (one written before this release) says nothing rather
+    than claiming the configured backend answered it.
+    """
+    used = str(run.get("backend_used") or "")
+    if not used:
+        return "—"
+    model = str(run.get("model_used") or "")
+    label = used + ("/" + model if model else "")
+    if run.get("failed_over"):
+        configured = str(run.get("configured_provider") or "")
+        mark = "↩ "
+        if configured:
+            mark = "↩ " + configured + " → "
+        return mark + label
+    return label
+
+
+def _backend_detail_lines(run: Dict[str, Any]) -> List[str]:
+    """What the run's own section says about its backend.
+
+    A run that was delivered by a backup has to say so in words: the
+    reader is looking at the result of a failover and deserves to
+    know that the primary was down when it happened.
+    """
+    backend_used = str(run.get("backend_used") or "")
+    if not backend_used:
+        return []
+    model = str(run.get("model_used") or "")
+    label = backend_used + (("/" + model) if model else "")
+    lines: List[str] = []
+    if run.get("failed_over"):
+        configured = str(run.get("configured_provider") or "") or "?"
+        lines.append(
+            "- 🔁 实际交付后端：`%s`"
+            "（首选 `%s` 当时不可用，已自动切换）" % (label, configured)
+        )
+    else:
+        lines.append("- 后端：`%s`" % label)
+    backends = [
+        item for item in (run.get("backends") or []) if isinstance(item, dict)
+    ]
+    if len(backends) > 1:
+        names = "、".join(
+            "`%s`"
+            % (
+                str(item.get("provider_used") or "")
+                + (
+                    "/" + str(item.get("model_used") or "")
+                    if str(item.get("model_used") or "")
+                    else ""
+                )
+            )
+            for item in backends
+        )
+        lines.append("  - 本次运行用到过的后端：%s" % names)
+    return lines
 
 
 def _thread_source(thread: Dict[str, Any]) -> str:
@@ -1819,6 +1975,23 @@ def build_report(
             "runs_closed_with_pending_drafts": int(
                 draft_queue.get("closed_with_pending_count") or 0
             ),
+            # The runs that survived an outage on their own: the
+            # primary backend was down and a backup delivered the
+            # work. The report used to say nothing about this at all,
+            # so a reader could not tell that the machine had quietly
+            # kept working while an endpoint was down.
+            "runs_failed_over": len(
+                [run for run in runs if run.get("failed_over")]
+            ),
+            # How many backends answered across this whole report.
+            "backends": len(
+                {
+                    str(item.get("provider_used") or "")
+                    for run in runs
+                    for item in (run.get("backends") or [])
+                    if isinstance(item, dict) and str(item.get("provider_used") or "")
+                }
+            ),
         },
     }
 
@@ -2303,9 +2476,9 @@ def render_markdown(report: Dict[str, Any]) -> str:
     lines.append("")
     lines.append(
         "| 运行 ID | 任务 | 状态 | 决策 | 迭代 | 停滞 | "
-        "产物 SHA | 条目 | token | 来源 | 撤销的批准 |"
+        "产物 SHA | 条目 | token | 来源 | 撤销的批准 | 后端 |"
     )
-    lines.append("|---|---|---|---|---|---|---|---|---|---|---|")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for run in runs:
         status = str(run.get("status") or "-")
         icon = STATUS_ICON.get(status, "-")
@@ -2356,13 +2529,17 @@ def render_markdown(report: Dict[str, Any]) -> str:
         # clean run over a change a person had to take back.
         taken_back = int(run.get("taken_back_approvals") or 0)
         taken_back_cell = str(taken_back) if taken_back else "-"
+        # Which backend really answered. A run that fell over to a
+        # backup is a different fact from a run that never needed one,
+        # and the overview table is the first thing anybody reads.
+        backend_cell = _backend_cell(run)
         lines.append(
             f"| `{run.get('run_id')}` | {goal or '-'} | {icon} {status_cell} | "
             f"{decision_cell} | "
             f"{run.get('iterations', 0)} | {int(run.get('stagnation') or 0)} | "
             f"`{(run.get('artifact_sha') or '')[:12]}` | "
             f"{run.get('entries', 0)} | {int(run.get('tokens') or 0)} | "
-            f"{_run_source(run)} | {taken_back_cell} |"
+            f"{_run_source(run)} | {taken_back_cell} | {backend_cell} |"
         )
     lines.append("")
 
@@ -2403,6 +2580,7 @@ def render_markdown(report: Dict[str, Any]) -> str:
         lines.append(f"- 开始：{run.get('started_at') or '-'}")
         lines.append(f"- 结束：{run.get('finished_at') or '-'}")
         lines.append(f"- 花费：{int(run.get('tokens') or 0)} token")
+        lines.extend(_backend_detail_lines(run))
         # Say which half failed. "Not closed" alone hides the difference
         # between a wrong deliverable and a good deliverable that ran
         # out of budget.
@@ -2917,6 +3095,18 @@ def replay_trace(
                 "taken_back_approvals": int(
                     summary.get("taken_back_approvals") or 0
                 ),
+                # Which backend really delivered this run. The replay
+                # is what an agent reads through MCP, so a run that
+                # was carried by a backup after the primary died has
+                # to say so here - otherwise the agent sees a clean
+                # run and never learns the machine had failed over.
+                "backend_used": str(summary.get("backend_used") or ""),
+                "model_used": str(summary.get("model_used") or ""),
+                "configured_provider": str(
+                    summary.get("configured_provider") or ""
+                ),
+                "backends": list(summary.get("backends") or []),
+                "failed_over": bool(summary.get("failed_over")),
                 "decisions": summary.get("decisions") or {},
             }
         )
