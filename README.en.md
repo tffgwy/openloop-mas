@@ -140,11 +140,11 @@ server and the skills, and finishes with an offline self-check.
 Pin a specific release instead of "the latest":
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.8
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.9
 ```
 
 ```bash
-MAS_VERSION=0.8.8 bash install.sh
+MAS_VERSION=0.8.9 bash install.sh
 ```
 
 > The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
@@ -893,9 +893,67 @@ MIT © OpenLoop MAS contributors
 
 ## Gate archaeology
 
-This project now holds **47 gates**, and every one of them grew out of a
+This project now holds **50 gates**, and every one of them grew out of a
 **real incident**. They are listed below newest first - if you just want to
 use the tool, skip this section.
+
+- **The 50th gate `a_run_knows_its_approval`** - an approval was taken back,
+  and the run has to know it by itself.
+
+  The 49th gate let the **ledger** answer "which of my runs once had a
+  wrong approval?". The **run** could not answer it.
+
+  `mas/report.py:group_runs()` deliberately keeps the decision rows out
+  of the run rows - a human decision about a draft is not a round of the
+  loop, and folding it in would invent a run with no goal and no
+  closure. That reasoning is right about the **grouping** and left a
+  hole in the **reading**: the run summary counted five entries, said
+  "closed", and had no word for the fact that one of its own approvals
+  had been taken back.
+
+  So the reader who opened the one run that had been wrong was shown a
+  clean, successful run.
+
+  The decisions are not folded in. They are filed **beside** the run
+  that proposed them, and read as that run's own facts: the run table
+  gains a "taken back approvals" column, the run's own detail says it
+  in words, and the command line and the MCP surface say the same
+  thing.
+
+  A decision with no thread belongs to no run - it is never spread over
+  every run.
+
+- **The 49th gate `a_decision_hangs_on_its_run`** - the answer to a
+  proposal has to hang on the run that proposed it.
+
+  A draft is a **proposal**; a human decision about it is the
+  **answer**. The answer was filed without the question:
+  `mas/drafts.py:ledger_row_for()` hard-coded `"run_id": ""` and
+  `"task_id": ""` on every decision row.
+
+  So the question everybody actually asks could not be asked at all:
+
+  > which of my runs once had a wrong approval?
+
+  The draft now remembers the run that proposed it, the decision row
+  copies that thread out, and the report, the draft list, the command
+  line and the MCP surface can all be asked about one run.
+
+- **The 48th gate `an_undone_draft_is_still_waiting_everywhere`** - an
+  approval that was taken back leaves the change waiting for a human
+  again, and every surface has to say so.
+
+  An undone draft is a **live** change that is waiting for a person.
+  Three places read only `pending`, so the machine check judged the
+  **old** bytes while the loop proposed the new ones, the queue said
+  "nothing is waiting", and the closure page said "closed".
+
+- **The 47th gate `a_taken_back_approval_is_visible_everywhere`** - an
+  approval that was taken back has to be visible everywhere.
+
+  The report said which approvals were wrong, but the draft queue, the
+  status page and the MCP surface did not - so a reader who asked the
+  one surface that showed it was the only one who knew.
 
 - **The 32nd gate `selftest_isolation`** - the self-test is a program too,
   and it **approves drafts**, **undoes** them, **writes files**. Approving is

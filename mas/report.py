@@ -233,25 +233,157 @@ def _reflection_for(
 
 
 def group_runs(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Group ledger rows into runs, keeping the order of first appearance."""
+    """Group ledger rows into runs, keeping the order of first appearance.
+
+    The decision rows are still not *in* a run - a human decision
+    about a draft is not a round of the loop, and folding it in would
+    invent a run with no closure and no goal. But since v0.8.8 they
+    name the run that proposed them, so they are kept **beside** the
+    run on the group, under "decisions". That way the run can be
+    asked what it proposed and what a person did about it, without
+    the decision turning into a run of its own.
+    """
     runs: Dict[str, List[Dict[str, Any]]] = {}
+    decisions: Dict[str, List[Dict[str, Any]]] = {}
     order: List[str] = []
     for row in rows:
-        if str(row.get("role") or "") in DRAFT_DECISION_ROLES:
+        role = str(row.get("role") or "")
+        run_id = str(row.get("run_id") or "unknown")
+        if role in DRAFT_DECISION_ROLES:
             # A human decision about a draft is not a run. Folding it
             # into one would invent a run with no closure and no goal,
             # and the report would list it as an unfinished problem.
+            #
+            # It is still filed under the run that proposed it, when
+            # it says which one. A decision with no thread belongs to
+            # no run - it stays in the report's own section.
+            if run_id and run_id != "unknown":
+                decisions.setdefault(run_id, []).append(row)
             continue
-        run_id = str(row.get("run_id") or "unknown")
         if run_id not in runs:
             runs[run_id] = []
             order.append(run_id)
         runs[run_id].append(row)
-    return [{"run_id": run_id, "rows": runs[run_id]} for run_id in order]
+    groups: List[Dict[str, Any]] = []
+    for run_id in order:
+        groups.append(
+            {
+                "run_id": run_id,
+                "rows": runs[run_id],
+                "decisions": decisions.get(run_id, []),
+            }
+        )
+    return groups
 
 
-def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Summarise one run from its ledger rows."""
+def run_summaries(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Summarise every run of a ledger, decisions included."""
+    return [
+        run_summary(
+            group["run_id"],
+            group["rows"],
+            decisions_of_run(group.get("decisions") or [], group["run_id"]),
+        )
+        for group in group_runs(rows or [])
+    ]
+
+
+def decisions_of_run(rows: List[Dict[str, Any]], run_id: str) -> Dict[str, Any]:
+    """The human decisions this run's own proposals led to.
+
+    The gap this closes
+    ------------------
+    v0.8.8 hung every decision on the run that proposed it, so the
+    ledger could be asked "which of my runs once had a wrong
+    approval?". The *report* could not answer it, and neither could
+    the run itself.
+
+    ``group_runs`` deliberately leaves the decision rows out of the
+    run rows - a human decision about a draft is not a round of the
+    loop, and folding it in would invent a run with no goal and no
+    closure. That reasoning is right about the *grouping*, and it
+    left a hole in the *reading*: the run summary counted five
+    entries, said "closed", and had no word for the fact that one of
+    its own approvals was taken back. A reader who opened the one
+    run that had been wrong was shown a clean, successful run.
+
+    So the decisions are read here, from the rows of the run itself,
+    and hung on the run as its own facts.
+
+    The pairing is not re-implemented
+    ---------------------------------
+    ``mas.undos`` already pairs an undo with the approval it takes
+    back - positionally, off a stack, with an undo that has nothing
+    standing to cancel reported as unmatched rather than paired with
+    a neighbour. This function reads that answer; it does not
+    re-decide it.
+
+    A decision with no thread is not counted here
+    ----------------------------------------------
+    A decision row written before v0.8.8 has no run to hang on. It
+    belongs to no run, so it belongs to none of them: it stays in the
+    report's own "taken back approvals" section, where it was
+    already visible. What is *not* allowed is for it to be spread
+    over every run - that would make each run claim a decision that
+    was never its own.
+    """
+    from mas.undos import pair_decisions, undo_totals
+
+    wanted = str(run_id or "")
+    if not wanted:
+        return {
+            "records": [],
+            "unmatched": [],
+            "totals": undo_totals([]),
+            "taken_back": 0,
+            "reverted_lines": 0,
+            "forced": 0,
+            "draft_ids": [],
+        }
+
+    # The rows of this run: the decision rows the ledger filed under
+    # this run's thread. Only rows that name *this* run count - a
+    # row without a thread belongs to no run.
+    mine = [
+        row
+        for row in (rows or [])
+        if isinstance(row, dict)
+        and str(row.get("role") or "") in DRAFT_DECISION_ROLES
+        and str(row.get("run_id") or "") == wanted
+    ]
+
+    records, unmatched = pair_decisions(mine)
+    totals = undo_totals(records)
+    draft_ids: List[str] = []
+    for record in records:
+        draft_id = str(record.get("draft_id") or "")
+        if draft_id and draft_id not in draft_ids:
+            draft_ids.append(draft_id)
+    return {
+        "records": records,
+        "unmatched": unmatched,
+        "totals": totals,
+        "taken_back": len(records),
+        "reverted_lines": int(totals.get("reverted_lines") or 0),
+        "forced": int(totals.get("forced") or 0),
+        "draft_ids": draft_ids,
+    }
+
+
+def run_summary(
+    run_id: str,
+    rows: List[Dict[str, Any]],
+    decisions: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Summarise one run from its ledger rows.
+
+    ``decisions`` are the human decisions this run's own proposals
+    led to. They are passed in rather than read here, because the
+    run's rows no longer hold them: ``group_runs`` leaves the
+    decision rows out on purpose, and that is right about grouping
+    and wrong about reading - a run that once had a wrong approval
+    has to be able to say so.
+    """
     closure = None
     planner = None
     candidates = None
@@ -440,9 +572,23 @@ def run_summary(run_id: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     seal = _seal_of(end)
     seal_check = _seal_state(seal, str(end.get("artifact_path") or "") if end else "")
 
+    run_decisions = dict(decisions or {})
+    run_decisions.setdefault("taken_back", 0)
+    run_decisions.setdefault("reverted_lines", 0)
+    run_decisions.setdefault("forced", 0)
+    run_decisions.setdefault("draft_ids", [])
+    run_decisions.setdefault("records", [])
+    run_decisions.setdefault("unmatched", [])
+
     return {
         "run_id": run_id,
         "status": status,
+        # The human decisions this run's own proposals led to. A run
+        # whose approval was taken back must be able to say so from
+        # its own page - the fact used to live only in a section of
+        # the report about the whole machine.
+        "decisions": run_decisions,
+        "taken_back_approvals": int(run_decisions.get("taken_back") or 0),
         # The whole loop, round by round. ``rounds`` is the number of
         # rounds that were actually judged.
         "timeline": timeline,
@@ -1215,7 +1361,7 @@ def ticket_reading(
     keeps the reader from trusting the queue.
     """
     queue = [t for t in (tickets or []) if isinstance(t, dict)]
-    runs = [run_summary(group["run_id"], group["rows"]) for group in group_runs(rows or [])]
+    runs = run_summaries(rows or [])
     closed_runs = {
         str(run.get("run_id") or ""): bool(run.get("closed")) for run in runs
     }
@@ -1367,7 +1513,7 @@ def build_report(
     and says nothing about the change that is still waiting for a
     person.
     """
-    runs = [run_summary(run["run_id"], run["rows"]) for run in group_runs(rows)]
+    runs = run_summaries(rows)
     closed = [r for r in runs if r["closed"]]
     failed_runs = [r for r in runs if not r["closed"]]
     # The queue is the authority on which problems are finished, and
@@ -2157,9 +2303,9 @@ def render_markdown(report: Dict[str, Any]) -> str:
     lines.append("")
     lines.append(
         "| 运行 ID | 任务 | 状态 | 决策 | 迭代 | 停滞 | "
-        "产物 SHA | 条目 | token | 来源 |"
+        "产物 SHA | 条目 | token | 来源 | 撤销的批准 |"
     )
-    lines.append("|---|---|---|---|---|---|---|---|---|---|")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|")
     for run in runs:
         status = str(run.get("status") or "-")
         icon = STATUS_ICON.get(status, "-")
@@ -2205,13 +2351,18 @@ def render_markdown(report: Dict[str, Any]) -> str:
         decision_cell = decision_text if decision_text == decision else (
             f"{decision_text}（{decision}）" if decision_text else decision
         )
+        # How many of this run's own approvals were taken back. A run
+        # that says "OK" next to a withdrawn approval is showing a
+        # clean run over a change a person had to take back.
+        taken_back = int(run.get("taken_back_approvals") or 0)
+        taken_back_cell = str(taken_back) if taken_back else "-"
         lines.append(
             f"| `{run.get('run_id')}` | {goal or '-'} | {icon} {status_cell} | "
             f"{decision_cell} | "
             f"{run.get('iterations', 0)} | {int(run.get('stagnation') or 0)} | "
             f"`{(run.get('artifact_sha') or '')[:12]}` | "
             f"{run.get('entries', 0)} | {int(run.get('tokens') or 0)} | "
-            f"{_run_source(run)} |"
+            f"{_run_source(run)} | {taken_back_cell} |"
         )
     lines.append("")
 
@@ -2398,6 +2549,55 @@ def render_markdown(report: Dict[str, Any]) -> str:
                         f"- 人工工单：`{run.get('ticket_id')}`"
                         "（`mas tickets` 查看，`mas resume <工单号>` 从这里继续）"
                     )
+        # The human decisions this run's own proposals led to.
+        #
+        # A run that once had a wrong approval must be able to say so
+        # from its own page. The report had a section for the taken
+        # back approvals of the whole machine, and the one reader who
+        # opened the run that had been wrong was shown a clean,
+        # successful run - "closed", "OK", five entries, no word for
+        # the fact that a person had to pull one of its approvals back
+        # by hand.
+        #
+        # So the run says it here, in the run's own words and with
+        # the run's own numbers: how many of its approvals were taken
+        # back, how many lines were given back, which drafts they
+        # were about.
+        decisions = run.get("decisions") or {}
+        taken_back = int(decisions.get("taken_back") or 0)
+        unmatched_here = decisions.get("unmatched") or []
+        if taken_back:
+            reverted = int(decisions.get("reverted_lines") or 0)
+            forced = int(decisions.get("forced") or 0)
+            draft_ids = [
+                str(d) for d in (decisions.get("draft_ids") or []) if str(d)
+            ]
+            detail = "%d 次" % taken_back
+            if reverted:
+                detail += "，退回 %d 行" % reverted
+            if forced:
+                detail += "，其中 %d 次是强制撤销" % forced
+            lines.append(
+                "- ⏪ 人工决定：这次运行有 **%s** 的批准被人撤回了"
+                "——那次批准是错的，机器自己不会知道，是人撤回来的。" % detail
+            )
+            if draft_ids:
+                lines.append(
+                    "  - 涉及草稿：%s"
+                    % "、".join("`%s`" % d for d in draft_ids)
+                )
+            for record in decisions.get("records") or []:
+                path = str(record.get("path") or "")
+                if not path:
+                    continue
+                lines.append(
+                    "  - 撤回了 `%s` 的改动" % path
+                )
+        if unmatched_here:
+            lines.append(
+                "  - 另有 %d 次撤销在这次运行里找不到对应的批准，"
+                "没有计入上面的次数" % len(unmatched_here)
+            )
         # Where the work landed. The deliverable used to live only in
         # the engine's memory: the report could print its hash and
         # nothing else, so a closed run pointed at nothing the reader
@@ -2657,7 +2857,11 @@ def replay_trace(
     # The runs in the trace, each with the outcome the ledger booked.
     run_blocks: List[Dict[str, Any]] = []
     for group in group_runs(rows):
-        summary = run_summary(group["run_id"], group["rows"])
+        summary = run_summary(
+            group["run_id"],
+            group["rows"],
+            decisions_of_run(group.get("decisions") or [], group["run_id"]),
+        )
         run_blocks.append(
             {
                 "run_id": summary["run_id"],
@@ -2703,12 +2907,23 @@ def replay_trace(
                 # before reading the steps.
                 "handback": bool(summary.get("handback")),
                 "human_note": str(summary.get("human_note") or ""),
+                # The human decisions this run's own proposals led
+                # to. The replay is what an agent reads through MCP,
+                # and an agent that asks "what happened to this run?"
+                # must get the same answer the report gives - which
+                # includes the fact that one of the run's own
+                # approvals was taken back. Without this the agent
+                # saw a clean, closed run and had no way to know.
+                "taken_back_approvals": int(
+                    summary.get("taken_back_approvals") or 0
+                ),
+                "decisions": summary.get("decisions") or {},
             }
         )
     # The problems behind the runs, so a reader sees "one problem, two
     # attempts" instead of two flat runs.
     threads = group_threads(
-        [run_summary(g["run_id"], g["rows"]) for g in group_runs(rows)],
+        run_summaries(rows),
         queue_closed_by_success(tickets),
     )
     return {
@@ -3175,7 +3390,11 @@ def artifact_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     items: List[Dict[str, Any]] = []
     for group in group_runs(rows):
-        summary = run_summary(group["run_id"], group["rows"])
+        summary = run_summary(
+            group["run_id"],
+            group["rows"],
+            decisions_of_run(group.get("decisions") or [], group["run_id"]),
+        )
         path = str(summary.get("artifact_path") or "")
         if not path:
             # A run that produced no deliverable is not a deliverable.

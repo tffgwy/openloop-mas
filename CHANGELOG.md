@@ -4,6 +4,53 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.9] - 2026-11-23
+
+### 一次批准被撤回了，这次运行必须自己知道
+
+v0.8.8 让**账本**能回答「我这几次运行里，哪几次一度批错了」。
+但**运行自己**答不了。
+
+`mas/report.py:group_runs()` 一直把决策行**排除在运行之外**。
+这个判断是**对的**：人对草稿的决定不是一轮循环，
+把它塞进去会凭空造出一个没有目标、没有闭合的运行。
+
+但这个判断在**读**的时候留了个洞。运行摘要数了五条记录、
+说了句「已闭环」，对「人把它的批准收回去过」**一个字都没有**。
+
+于是读者打开**唯一出过错的**那次运行，看到的是一次**干干净净的成功**。
+
+### 第二十八条不变量
+
+> **一次批准被撤回了，这次运行必须自己知道：人对它提议的那个批准是错的，
+> 运行的自己页面不能只说「已闭环」，报告表、运行详情、命令行与 MCP 得说同一件事。**
+
+### 改了什么
+
+* `mas/report.py`：`group_runs()` 把决策行按 `run_id` 挂在 group 的
+  `decisions` 上 —— **仍然不是运行行**，分组语义一点没变；
+* `mas/report.py`：新增 `decisions_of_run()`（沿用 `mas.undos` 的堆栈配对，
+  不重写）与 `run_summaries()`；`run_summary()` 多出 `decisions`
+  与 `taken_back_approvals`；
+* `mas/report.py`：报告运行表多一列「撤销的批准」；
+  运行详情里明说 —— 几次、退回几行、涉及哪张草稿、撤回了哪个文件；
+* `mas/report.py`：`replay_trace()` 的 `run_blocks` 带上同样的事实；
+* `mas/cli.py`：`status` 页与 `report` 页走同一套读法。
+
+**没有 `run_id` 的老决策行不属于任何运行**：不被摊到每一次运行头上
+（那会让每次运行都认领一个不属于它的决定），
+继续留在报告自己的「被撤销的批准」段里。
+
+### 门禁
+
+第 50 项门禁 `a_run_knows_its_approval`
+（`mas/selftest_run_knows_approval.py`）：
+
+* 独立实现两遍判定；
+* 自证能失败：把 `group_runs()` 的接线打坏（不再把决策挂在运行上），
+  门禁必须发现运行已经不知道自己的批准被撤回过；
+* 用例里放**两次真实的闭环运行**，只有一次出过错。
+
 ## [0.8.7] - 2026-11-23
 
 ### 撤销过的草稿，仍然是一个等人的改动

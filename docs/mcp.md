@@ -88,6 +88,11 @@ env = { PYTHONPATH = "<install-dir>/app" }
 | `mas_audit` | 检查人工决定的审计链：有没有被改过、账本副本与链是否一致 | `workspace`（可选） |
 | `mas_undos` | 列出**被收回的批准**（批错过、又收回去的）；可按运行过滤 | `workspace`、`draft_id`、`run_id`（可选） |
 
+`mas_report` 与 `mas_replay` 返回的 `runs[]` 里，每一次运行都带
+`taken_back_approvals`（这次运行自己的批准被人收回了几次）
+与 `decisions`（那次运行的详细事实）。**一次批准被撤回了，
+这次运行自己知道** —— 不必再去翻报告的全局段落。
+
 ### 4.0.1 agent 能提草稿，但不能自己批
 
 `mas_draft_stage` 让 agent **提**改动，`mas_draft_resolve` 让人**批**。

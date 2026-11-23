@@ -111,6 +111,9 @@ from mas.selftest_report_undo import (
 from mas.selftest_run_detail_grain import (
     check_the_run_detail_speaks_the_same_grain,
 )
+from mas.selftest_run_knows_approval import (
+    check_a_run_knows_its_approval,
+)
 from mas.selftest_seal import (
     check_a_closure_is_sealed_to_the_bytes_it_decided_on,
 )
@@ -5585,6 +5588,7 @@ CHECKS = (
     check_a_taken_back_approval_is_visible_everywhere,
     check_an_undone_draft_is_still_waiting_everywhere,
     check_a_decision_hangs_on_its_run,
+    check_a_run_knows_its_approval,
     check_the_documents_are_still_text,
     check_the_selftest_leaves_the_machine_alone,
 )

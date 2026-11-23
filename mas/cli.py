@@ -33,6 +33,7 @@ from mas.report import (
     build_report,
     closure_grain,
     closure_verdict_for,
+    decisions_of_run,
     format_artifacts,
     format_closure,
     group_runs,
@@ -41,6 +42,7 @@ from mas.report import (
     queue_closed_by_success,
     render_markdown,
     replay_trace,
+    run_summaries,
     run_summary,
     verdict_word,
 )
@@ -478,7 +480,11 @@ def cmd_status(args: argparse.Namespace) -> int:
     # status page about the plumbing.
     artifacts = []
     for group in group_runs(rows):
-        summary = run_summary(group["run_id"], group["rows"])
+        summary = run_summary(
+            group["run_id"],
+            group["rows"],
+            decisions_of_run(group.get("decisions") or [], group["run_id"]),
+        )
         path = str(summary.get("artifact_path") or "")
         if not path:
             continue
@@ -582,9 +588,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     waiting_briefs = ticket_briefs(
         [t for t in tickets if t.get("state") == "waiting_human"]
     )
-    runs = [
-        run_summary(group["run_id"], group["rows"]) for group in group_runs(rows)
-    ]
+    runs = run_summaries(rows)
     # The drafts reconciled against the ledger. A run that closed
     # while its change is still waiting for a human is the sharpest
     # fact this page can tell: the machine says "done", the disk says

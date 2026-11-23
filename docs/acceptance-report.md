@@ -2606,3 +2606,71 @@ True  the decisions of one run can be asked for by name
 True  the MCP surface can be asked about one run as well
 ```
 
+## T. v0.8.9 — 这次运行自己知道它的批准被撤回过
+
+### 问题
+
+v0.8.8 让**账本**能回答「哪些运行一度批错了」。
+但**运行自己**答不了。
+
+`mas/report.py:group_runs()` 一直把决策行**排除在运行之外**。
+这个判断是**对的**：人对草稿的决定不是一轮循环，
+塞进去会造出一个没有目标、没有闭合的运行。
+
+但它在**读**的时候留了个洞：运行摘要数了五条记录、
+说了句「已闭环」，对「人把它的批准收回去过」**一个字都没有**。
+
+读者打开**唯一出过错的**那次运行，看到的是一次**干干净净的成功**。
+
+### 修正
+
+| 文件 | 改动 |
+| --- | --- |
+| `mas/report.py` | `group_runs()` 把决策行按 `run_id` 挂在 group 的 `decisions` 上（**仍然不是运行行**）；新增 `decisions_of_run()` 读这次运行自己的决定；新增 `run_summaries()`；`run_summary()` 多出 `decisions` 与 `taken_back_approvals` |
+| `mas/report.py` | 报告运行表多一列「撤销的批准」；运行详情里明说：几次、退回几行、涉及哪张草稿、撤回了哪个文件 |
+| `mas/report.py` | `replay_trace()` 的 `run_blocks` 带上 `taken_back_approvals` 与 `decisions` |
+| `mas/cli.py` | `status` 页与 `report` 页走同一套 `decisions_of_run()` / `run_summaries()` |
+| `mas/selftest_run_knows_approval.py` | 第 50 项门禁 |
+| `tests/test_run_knows_approval_889.py` | 回归测试 |
+
+**配对没有重写**：沿用 `mas/undos.pair_decisions` / `undo_totals`
+的堆栈式配对，没有对应批准的撤销报 unmatched 而不乱配。
+
+**没有线程的老决策行不属于任何运行**：不被摊到每一次运行头上，
+继续留在报告自己的「被撤销的批准」段里。
+
+### 本轮实测证据
+
+探针（`%TEMP%\probe889h.py` / `probe889i.py`，mock provider，两次真闭环）：
+
+| 检查 | 结果 |
+| --- | --- |
+| 跑完真闭环后 stage→approve→undo | 账本 `draft_approve` / `draft_undo` 行均带 `run_id` |
+| `group_runs()` | `rows=5`（决策行**不在**里面），`decisions=2`（挂在 group 上） |
+| `run_summaries()` | 目标运行 `taken_back_approvals=1`、`reverted_lines=1`、`draft_ids=['D-6178cb31']` |
+| 另一次运行 | `taken_back_approvals=0` |
+| 报告运行表 | 「撤销的批准」列打印 `1`，另一行打印 `-` |
+| 运行详情段 | 「⏪ 人工决定：这次运行有 **1 次，退回 1 行** 的批准被人撤回了」+ 涉及草稿 + 撤回了哪个文件 |
+| `mas report --run-id <运行>` | 与全量报告**逐字一致** |
+| MCP `mas_report` / `mas_replay` | `runs[].taken_back_approvals` 与报告一致 |
+
+### 门禁
+
+第 50 项门禁 `a_run_knows_its_approval`（`mas/selftest_run_knows_approval.py`）。
+
+* 独立实现两遍判定（`_verdicts` / `_verdicts_independent`）；
+* 自证能失败：把 `group_runs()` 的接线打坏（不再把决策挂在运行上），
+  门禁实测报红的是「运行知道自己的批准被撤回过」；
+* 用例里放**两次真实的闭环运行**，只有一次出过错 ——
+  只放一条的话，一个「永远返回全部」的过滤器看起来和真正生效的一模一样。
+
+门禁自证的实测结果（打坏后的判定）：
+
+```text
+False the run knows its own approval was taken back    <- 打红
+True  the run table shows the number
+True  the run's own detail says it in words
+True  the other run sees nothing
+True  the command line agrees with the report
+True  the MCP surface agrees with the report
+```
