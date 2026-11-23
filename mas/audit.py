@@ -59,6 +59,12 @@ LEDGER_ROLES = ("draft_approve", "draft_undo")
 COPY_FIELDS = (
     "draft_id",
     "path",
+    # The thread the decision belongs to. These two are copied like
+    # every other field, so the cross-check catches a decision whose
+    # thread was edited on one side only - and a decision that lost
+    # its thread is a decision nobody can find by asking about a run.
+    "run_id",
+    "task_id",
     "baseline_sha256",
     "approved_sha256",
     "current_sha256",

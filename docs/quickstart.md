@@ -39,11 +39,11 @@ bash install.sh
 固定版本（默认装最新版）：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.7
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.8
 ```
 
 ```bash
-MAS_VERSION=0.8.7 bash install.sh
+MAS_VERSION=0.8.8 bash install.sh
 ```
 
 > 下载路径是「标准库优先、`curl` 兜底」，并会读 `HTTPS_PROXY` 与
@@ -412,6 +412,12 @@ mas report --json
 
 ```bash
 mas undos
+```
+
+只想问**某一次运行**一度批错了什么，就带上运行号：
+
+```bash
+mas undos --run-id R-1
 ```
 
 如果你在 CI 里读报告，JSON 载荷里就有数字，不用拆 Markdown：

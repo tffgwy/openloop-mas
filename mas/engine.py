@@ -1302,7 +1302,11 @@ class LoopEngine:
             written: List[Dict[str, Any]] = []
             write_errors: List[str] = []
             if state.get("write_paths"):
-                applied = self._apply_writes(artifact)
+                applied = self._apply_writes(
+                    artifact,
+                    run_id=str(state.get("run_id") or ""),
+                    task_id=str(state.get("task_id") or ""),
+                )
                 artifact = applied["artifact"]
                 written = applied["written"]
                 write_errors = applied["errors"]
@@ -1504,7 +1508,11 @@ class LoopEngine:
             # versions of the same file, and the file check would then
             # pass on whichever version happened to be written last -
             # the check would no longer describe the delivered artifact.
-            applied = self._apply_writes(artifact)
+            applied = self._apply_writes(
+                artifact,
+                run_id=str(state.get("run_id") or ""),
+                task_id=str(state.get("task_id") or ""),
+            )
             artifact = applied["artifact"]
             written = applied["written"]
             errors.extend(applied["errors"])
@@ -1678,7 +1686,12 @@ class LoopEngine:
         policy = str(self.config.get("edit_policy") or "draft").strip().lower()
         return policy if policy in ("draft", "overwrite") else "draft"
 
-    def _apply_writes(self, artifact: str) -> Dict[str, Any]:
+    def _apply_writes(
+        self,
+        artifact: str,
+        run_id: str = "",
+        task_id: str = "",
+    ) -> Dict[str, Any]:
         """Write the files a candidate asked for, honouring the edit policy.
 
         With the default policy, a write that would *replace* an
@@ -1691,6 +1704,13 @@ class LoopEngine:
         The returned dict has the same shape as
         ``mas.filewrite.apply_write_blocks`` plus a "drafts" list, so
         the callers do not have to know which path was taken.
+
+        The run and the task are passed in, because the draft has to
+        remember **which run proposed it**. A change that waits for a
+        human is a change a person has to find later - and "which run
+        wanted this?" is the first question they ask. A draft that
+        does not know its own run makes that question unanswerable
+        from the draft alone.
         """
         workspace = self._write_workspace()
         if self._edit_policy() != "draft":
@@ -1731,6 +1751,8 @@ class LoopEngine:
                         data,
                         reason="the loop proposed a change to an existing file",
                         source="engine",
+                        run_id=str(run_id or ""),
+                        task_id=str(task_id or ""),
                     )
                 except (ValueError, OSError) as exc:
                     errors.append(str(exc))

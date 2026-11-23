@@ -270,6 +270,11 @@ def record_decision(
     payload: Dict[str, Any] = {
         "draft_id": str(draft.get("id") or ""),
         "path": str(draft.get("path") or ""),
+        # The thread the decision belongs to. It is read off the draft
+        # itself - the draft remembers the run that proposed it - so
+        # the decision is filed under the thread that caused it.
+        "run_id": str(draft.get("run_id") or ""),
+        "task_id": str(draft.get("task_id") or ""),
     }
     payload.update(fields)
     entry = audit_chain(workspace).append(event, **payload)
@@ -281,11 +286,18 @@ def record_decision(
 
 
 def ledger_row_for(entry: Dict[str, Any], workspace: Any) -> Dict[str, Any]:
-    """The main ledger's copy of one chain entry."""
+    """The main ledger's copy of one chain entry.
+
+    The run and the task are taken from the entry, not written as
+    empty strings. They used to be hard-coded empty, and that is what
+    made a human decision untraceable: a decision row sat in the
+    ledger with no thread to hang on, so "this run once had a wrong
+    approval" could not be asked of the ledger at all.
+    """
     row: Dict[str, Any] = {
         "role": str(entry.get("event") or "event"),
-        "run_id": "",
-        "task_id": "",
+        "run_id": str(entry.get("run_id") or ""),
+        "task_id": str(entry.get("task_id") or ""),
         "iteration": 0,
         "event": str(entry.get("event") or "event"),
         "workspace": str(workspace),
@@ -326,6 +338,8 @@ def stage_draft(
     data: bytes,
     reason: str = "",
     source: str = "",
+    run_id: str = "",
+    task_id: str = "",
 ) -> Dict[str, Any]:
     """Record a proposed change to an existing file as a draft.
 
@@ -336,6 +350,12 @@ def stage_draft(
     The draft is refused for a file that does not exist: a draft for a
     missing file is not an *edit*, it is a creation, and a creation is
     what the normal write path is for.
+
+    The draft remembers **which run proposed it**. That is not
+    bookkeeping for its own sake: a human decision about the draft
+    (an approval, or an approval taken back) has to hang on the thread
+    that proposed it, or "this thread once had a wrong approval" is a
+    question the ledger cannot answer.
     """
     base = pathlib.Path(workspace)
     target = base / str(relative_path or "").strip().replace("\\", "/")
@@ -359,6 +379,12 @@ def stage_draft(
         "state": DRAFT_PENDING,
         "reason": str(reason or ""),
         "source": str(source or ""),
+        # The run and the task that proposed this change. The draft is
+        # the join between "who proposed it" and "what was decided
+        # about it", so the two ends of that join have to be written
+        # down here - at the moment the proposal is made.
+        "run_id": str(run_id or ""),
+        "task_id": str(task_id or ""),
         "created_at": now_iso(),
         "resolved_at": None,
         # The hash is taken over the *bytes*, and the basis is recorded
@@ -397,6 +423,11 @@ def stage_draft(
         baseline_sha256=_digest_bytes(before),
         approved_sha256=_digest_bytes(data),
         note=str(reason or ""),
+        # The proposing run is recorded in the chain as well, so the
+        # chain alone can answer "which run proposed this" - the
+        # ledger copy of the decision needs a thread to hang on.
+        run_id=str(run_id or ""),
+        task_id=str(task_id or ""),
     )
     return payload
 

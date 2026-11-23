@@ -63,6 +63,9 @@ from typing import Any, Dict, Iterable, List, Optional
 #: The ledger role that records "the loop proposed a change".
 DRAFT_ROLE = "draft"
 
+#: The ledger roles that record a human decision about a draft.
+DECISION_ROLES = ("draft_approve", "draft_undo")
+
 #: The states a draft can be in, in words.
 DRAFT_STATE_READING: Dict[str, str] = {
     "pending": "等人批",
@@ -237,6 +240,24 @@ def draft_reading(
         by_run.setdefault(entry["run_id"], []).append(entry)
         by_draft[entry["draft_id"]] = entry
 
+    # The decisions about each draft, from the ledger. A decision row
+    # also names the run the decision belongs to, so the ledger
+    # accounts for a draft even when the *proposal* row is gone - and
+    # a draft that was staged by hand (not by a run) has no proposal
+    # row at all. Reading only the proposal rows made such a draft
+    # look like the ledger had never heard of it, which is not what
+    # the ledger says.
+    decision_runs: Dict[str, str] = {}
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("role") or "") not in DECISION_ROLES:
+            continue
+        draft_id = str(row.get("draft_id") or "")
+        run_id = str(row.get("run_id") or "")
+        if draft_id and run_id and draft_id not in decision_runs:
+            decision_runs[draft_id] = run_id
+
     # The state of each draft, from the queue.
     state_of: Dict[str, str] = {}
     for draft in queue:
@@ -274,6 +295,17 @@ def draft_reading(
         else:
             other_ids.append(draft_id)
         entry = by_draft.get(draft_id) or {}
+        # The run that proposed it. Two sources say so: the draft
+        # remembers the run it was made by, and the ledger row says
+        # which run staged it. The draft's own memory is read first -
+        # it is written at the moment the proposal is made, so it
+        # survives even when the ledger row is lost - and the ledger
+        # fills in for a draft that was made before this field
+        # existed.
+        own_run = str(draft.get("run_id") or "")
+        ledger_run = str(entry.get("run_id") or "")
+        run_id = own_run or ledger_run
+        task_id = str(draft.get("task_id") or "") or str(entry.get("task_id") or "")
         entries.append(
             {
                 "draft_id": draft_id,
@@ -288,13 +320,25 @@ def draft_reading(
                 "before_bytes": int(draft.get("before_bytes") or 0),
                 "after_bytes": int(draft.get("after_bytes") or 0),
                 "changed": bool(draft.get("changed")),
-                # The run that proposed it, from the ledger. A draft
-                # the ledger never mentions has no run - and that is
-                # itself a finding.
-                "run_id": str(entry.get("run_id") or ""),
-                "task_id": str(entry.get("task_id") or ""),
+                # The run that proposed it. A draft the ledger never
+                # mentions has no run - and that is itself a finding.
+                "run_id": run_id,
+                "task_id": task_id,
+                # Where the run came from. "draft" means the draft
+                # itself remembered it, "ledger" means the ledger row
+                # said so, "" means neither did - and the two saying
+                # different things is a finding of its own.
+                "run_source": (
+                    "draft" if own_run else ("ledger" if ledger_run else "")
+                ),
                 "ts": str(entry.get("ts") or ""),
-                "in_ledger": draft_id in by_draft,
+                # Whether the ledger accounts for this draft. The
+                # proposal row is one way; a decision row is another.
+                # A draft the ledger has never heard of is the finding.
+                "in_ledger": (
+                    draft_id in by_draft or draft_id in decision_runs
+                ),
+                "in_ledger_rows": draft_id in by_draft,
             }
         )
 
@@ -318,6 +362,25 @@ def draft_reading(
         problems.append(
             "草稿 %s 不在账本里：队列里有它，"
             "但账本里没有提议它的运行" % entry["draft_id"]
+        )
+
+    # The draft and the ledger naming different runs. Two sources say
+    # which run proposed a change, and when they disagree, one of them
+    # is wrong. The reader has to know, because "which run wanted
+    # this?" is exactly the question a thread needs answered.
+    for entry in entries:
+        own = str(entry.get("run_id") or "")
+        draft_id = str(entry.get("draft_id") or "")
+        ledger_run = str((by_draft.get(draft_id) or {}).get("run_id") or "")
+        if not ledger_run:
+            # No proposal row - the decision row is what the ledger
+            # has, and it has to agree with the draft.
+            ledger_run = str(decision_runs.get(draft_id) or "")
+        if not own or not ledger_run or own == ledger_run:
+            continue
+        problems.append(
+            "草稿 %s 的提议运行对不上：草稿自己记的是 %s，账本记的是 %s"
+            % (draft_id, own, ledger_run)
         )
 
     # The sharp one: a closed run whose proposals are still waiting.

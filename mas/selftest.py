@@ -63,6 +63,9 @@ from mas.selftest_closure_verdict import (
 from mas.selftest_doc_text import (
     check_the_documents_are_still_text,
 )
+from mas.selftest_draft_decision_run import (
+    check_a_decision_hangs_on_its_run,
+)
 from mas.selftest_draft_undo_pending import (
     check_an_undone_draft_is_still_waiting_everywhere,
 )
@@ -5581,6 +5584,7 @@ CHECKS = (
     check_the_replay_listens_to_the_queue_too,
     check_a_taken_back_approval_is_visible_everywhere,
     check_an_undone_draft_is_still_waiting_everywhere,
+    check_a_decision_hangs_on_its_run,
     check_the_documents_are_still_text,
     check_the_selftest_leaves_the_machine_alone,
 )

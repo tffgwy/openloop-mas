@@ -86,6 +86,7 @@ env = { PYTHONPATH = "<install-dir>/app" }
 | `mas_files` | 索引工作区：每个文件是什么格式、能读出什么 | `path`（可选，默认所有工作区）、`workspace` |
 | `mas_preview` | 预览一个文件（PDF / Word / 文本…） | `path`（必填）、`workspace`、`max_chars` |
 | `mas_audit` | 检查人工决定的审计链：有没有被改过、账本副本与链是否一致 | `workspace`（可选） |
+| `mas_undos` | 列出**被收回的批准**（批错过、又收回去的）；可按运行过滤 | `workspace`、`draft_id`、`run_id`（可选） |
 
 ### 4.0.1 agent 能提草稿，但不能自己批
 

@@ -140,11 +140,11 @@ server and the skills, and finishes with an offline self-check.
 Pin a specific release instead of "the latest":
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.7
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.8
 ```
 
 ```bash
-MAS_VERSION=0.8.7 bash install.sh
+MAS_VERSION=0.8.8 bash install.sh
 ```
 
 > The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
@@ -433,6 +433,7 @@ mas drafts token
 |---|---|---|
 | `mas_draft_stage` | **stage** a change (with a diff and a reason) | **No** - the original keeps every byte |
 | `mas_drafts` | list the drafts, read one diff | No |
+| `mas_undos` | list the **approvals that were taken back**; filter by run | read only |
 | `mas_draft_resolve` | approve or reject | **Only with the human token** |
 | `mas_files` | index the workspace | read only |
 | `mas_preview` | preview one file | read only |

@@ -2551,3 +2551,58 @@ Windows 上被掩盖。CI 把它翻了出来。
 - 上述修复的正确性判断基于「文本哈希与字节哈希对合法 UTF-8 恒等」这一**实测事实**，
   而不是平台假设；
 - `work/` 下的临时脚本与 E2E 目录在 `.gitignore` 内（`.gitignore:10`），不进版本库。
+
+## S. v0.8.8 — 决策挂回提议它的那次运行
+
+### 问题
+
+`mas/drafts.py:ledger_row_for()` 把每一行决策的 `run_id` / `task_id`
+**写死成空字符串**。依赖提议运行的线程不是没记，是被丢了；
+报告草稿表的「提议运行」列对每一行都打印 `-`。
+
+### 修正
+
+| 文件 | 改动 |
+| --- | --- |
+| `mas/drafts.py` | `stage_draft()` 记下 `run_id` / `task_id`；`record_decision()` 从草稿拷下线程；`ledger_row_for()` 不再写空串 |
+| `mas/engine.py` | `_apply_writes()` 接过 `run_id` / `task_id` 并传给草稿 |
+| `mas/audit.py` | `COPY_FIELDS` 加入 `run_id` / `task_id`，单边篡改会被交叉校验拓住 |
+| `mas/drafts_reading.py` | 草稿自记优先、账本回填；两边不一致就是一条问题；账本有决策行也算「在账本里」 |
+| `mas/undos.py` | 撤销记录带线程 |
+| `mas/cli.py` | `mas drafts list` 显示「提议运行」；`mas undos` 新增 `--run-id` |
+| `mas/mcp_server.py` | `mas_undos` 新增 `run_id` 参数与过滤 |
+
+### 本轮实测证据
+
+| 检查 | 结果 |
+| --- | --- |
+| 探针：两条线程 `R-A` / `R-B` 各做一次批准 + 撤销 | 账本 `draft_approve` / `draft_undo` 行均带 `run_id` / `task_id` |
+| `mas undos --run-id R-A --json` | 只返回 `R-A` 的记录；`R-B` 不在里面；`totals` 随过滤重算 |
+| `mas undos --run-id R-ZZ --json` | 返回空记录、零总数 |
+| MCP `mas_undos` + `run_id` | 与命令行答案一致 |
+| `mas drafts list` | 每张草稿下写明「提议运行：R-A」 |
+| 报告 Markdown | 草稿表「提议运行」列有值（不是 `-`） |
+
+### 门禁
+
+第 49 项门禁 `a_decision_hangs_on_its_run`（`mas/selftest_draft_decision_run.py`）。
+
+* 独立实现两遍判定（`_verdicts` / `_verdicts_independent`）；
+* 自证能失败：把决策行的接线打坏（不再拷线程）后，
+  门禁实测报红的是两条：「账本的决策行带线程」与
+  「审计链与账本一致」；
+* 用例里放两条线程（`R-mine` / `R-other`）—— 只放一条的话，
+  一个「永远返回全部」的过滤器看起来和真正生效的一样。
+
+门禁自证的实测结果（打坏后的判定）：
+
+```text
+True  the draft remembers the run that proposed it
+False the ledger's decision rows carry the run      <- 打红
+False the audit chain agrees with the ledger        <- 打红
+True  the report's draft table shows the proposing run
+True  the draft list shows the proposing run
+True  the decisions of one run can be asked for by name
+True  the MCP surface can be asked about one run as well
+```
+

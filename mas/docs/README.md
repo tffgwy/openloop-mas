@@ -118,11 +118,11 @@ bash install.sh
 想装固定版本（而不是"最新版"）：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.7
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.8.8
 ```
 
 ```bash
-MAS_VERSION=0.8.7 bash install.sh
+MAS_VERSION=0.8.8 bash install.sh
 ```
 
 > 脚本默认会往 `PATH` 里加一条 `~/.mas/bin`（Windows 写当前用户的注册表）。
@@ -371,6 +371,7 @@ agent 侧的 MCP 工具：
 |---|---|---|
 | `mas_draft_stage` | **提**一份改动（带 diff 和理由） | **不能** —— 原文件一个字节都不动 |
 | `mas_drafts` | 看有哪些草稿、看某一份的 diff | 不能 |
+| `mas_undos` | 列出**被收回的批准**；可按运行过滤 | 只读 |
 | `mas_draft_resolve` | 批准或驳回 | **要人类令牌** |
 | `mas_files` | 索引工作区 | 只读 |
 | `mas_preview` | 预览一个文件 | 只读 |
@@ -917,6 +918,7 @@ mas status        # 本机状态
 mas ledger        # 闭环账本
 mas ledger --undone   # 只看被撤销过的那几条批准
 mas undos        # 哪些批准被撤回了：配对 + 改了多少行
+mas undos --run-id R-1   # 只看某一次运行的批准与撤销
 mas report        # 闭环复盘报告（Markdown）
 mas replay        # 回放运行轨迹
 mas export        # 导出账本为 Markdown 表格
@@ -1001,8 +1003,34 @@ MIT © OpenLoop MAS contributors
 
 ## 门禁考古
 
-这个项目至今有 **47 道门禁**，每一道都是从一个**真实事故**里长出来的。
+这个项目至今有 **49 道门禁**，每一道都是从一个**真实事故**里长出来的。
 下面按门禁编号倒序记录它们各自的来历 —— 如果你只想用，直接跳过这一节就好。
+
+- **第 49 项门禁 `a_decision_hangs_on_its_run`** —— 一次批准是错的，
+  这条线程得能查出来。
+
+  草稿是**提议**，人对它的批准是**回答**。
+  但这个回答**把问题丢了**：
+  `mas/drafts.py:ledger_row_for()` 把每一行决策的 `run_id` / `task_id`
+  **写死成空字符串**。
+
+  账本里那行只说「有人批了 D-abc」，
+  提议这个改动的线程不是没记，是**被丢了**。
+  报告草稿表的「提议运行」列本来就有，
+  却对每一行都打印 `-`。
+
+  所以每个人真正会问的那句话问不出来：
+
+  > 我这几次运行里，哪几次一度批错了？
+
+  现在草稿在**提议那一刻**就记下了线程，决策行把它拷贝出去，
+  撤销记录也带着它——而线程还进了**交叉校验字段**，
+  单边篡改会被拓住。
+
+  ```bash
+  mas drafts list --workspace <工作区>   # 每张草稿下写明「提议运行」
+  mas undos --run-id R-1                     # 只看 R-1 的批准与撤销
+  ```
 
 - **第 32 项门禁 `selftest_isolation`** —— 自检本身也是一个程序，
   它会**批准草稿**、**撤销**、**写文件**。

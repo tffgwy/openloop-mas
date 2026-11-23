@@ -1019,7 +1019,7 @@ def cmd_undos(args: argparse.Namespace) -> int:
     cancels. Nothing is guessed: an undo with no standing approval is
     reported as unmatched rather than paired with a neighbour.
     """
-    from mas.undos import format_undos, undo_report
+    from mas.undos import format_undos, undo_report, undo_totals
 
     config = load_config()
     engine = _engine(config)
@@ -1044,6 +1044,28 @@ def cmd_undos(args: argparse.Namespace) -> int:
     if chain_rows:
         rows = chain_rows
     report = undo_report(rows)
+
+    # Only the decisions of one run. A reader who wants to know
+    # "which of my runs once had a wrong approval?" should not have
+    # to read the whole machine's decisions to find it - and the
+    # decision rows carry their thread, so the answer is a filter.
+    run_id = str(getattr(args, "run_id", "") or "").strip()
+    if run_id:
+        records = [
+            record
+            for record in (report.get("records") or [])
+            if str(record.get("run_id") or "") == run_id
+        ]
+        unmatched = [
+            row
+            for row in (report.get("unmatched") or [])
+            if str(row.get("run_id") or "") == run_id
+        ]
+        report = {
+            "records": records,
+            "unmatched": unmatched,
+            "totals": undo_totals(records),
+        }
 
     if draft_id:
         from mas.undos import draft_history
@@ -1081,6 +1103,7 @@ def cmd_undos(args: argparse.Namespace) -> int:
         _print(
             {
                 "workspace": str(base),
+                "run_id": run_id or None,
                 "records": report.get("records"),
                 "unmatched": report.get("unmatched"),
                 "totals": report.get("totals"),
@@ -1901,6 +1924,13 @@ def cmd_drafts(args: argparse.Namespace) -> int:
                 f"  {row.get('id')}  {row.get('state')}  "
                 f"{row.get('path')}  {changed}"
             )
+            # Which run proposed it. A change that waits for a person
+            # is a change somebody has to find later, and "which run
+            # wanted this?" is the first question they ask - so the
+            # answer is on the line, not in another command.
+            run_id = str(row.get("run_id") or "")
+            if run_id:
+                print(f"        提议运行：{run_id}")
             if row.get("reason"):
                 print(f"        理由：{row.get('reason')}")
             if row.get("state") == "undone":
@@ -2992,6 +3022,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--workspace",
         default="",
         help="工作区文件夹（默认本机 artifacts 目录）",
+    )
+    undos.add_argument(
+        "--run-id",
+        default="",
+        help="只看某一次运行的批准（可选）",
     )
     add_json(undos)
     undos.set_defaults(func=cmd_undos)

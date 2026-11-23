@@ -107,6 +107,16 @@ def _record(approve: Dict[str, Any], undo: Dict[str, Any]) -> Dict[str, Any]:
         "draft_id": str(undo.get("draft_id") or approve.get("draft_id") or ""),
         "path": str(undo.get("path") or approve.get("path") or ""),
         "workspace": str(undo.get("workspace") or approve.get("workspace") or ""),
+        # The thread the decision belongs to. It is read from the
+        # decision row itself, so an approval that was taken back can
+        # be asked about by run: "which of my runs once had a wrong
+        # approval?" is the question a thread needs to answer.
+        "run_id": str(
+            undo.get("run_id") or approve.get("run_id") or ""
+        ),
+        "task_id": str(
+            undo.get("task_id") or approve.get("task_id") or ""
+        ),
         "approve_seq": approve.get("seq"),
         "approve_record_set": str(approve.get("record_set") or "ledger"),
         "approve_ts": str(approve.get("ts") or ""),

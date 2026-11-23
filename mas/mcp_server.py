@@ -130,6 +130,10 @@ TOOLS: List[Dict[str, Any]] = [
                     "type": "string",
                     "description": "只看某个草稿（可选）",
                 },
+                "run_id": {
+                    "type": "string",
+                    "description": "只看某一次运行的批准（可选）",
+                },
             },
         },
     ),
@@ -833,8 +837,31 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                 "records": history.get("records"),
             }
         report = undo_report(rows)
+        # Only the decisions of one run. The decision rows carry
+        # their thread, so "which of my runs once had a wrong
+        # approval?" is a filter and not a reading exercise.
+        run_id = str(arguments.get("run_id") or "").strip()
+        if run_id:
+            from mas.undos import undo_totals
+
+            records = [
+                record
+                for record in (report.get("records") or [])
+                if str(record.get("run_id") or "") == run_id
+            ]
+            unmatched = [
+                row
+                for row in (report.get("unmatched") or [])
+                if str(row.get("run_id") or "") == run_id
+            ]
+            report = {
+                "records": records,
+                "unmatched": unmatched,
+                "totals": undo_totals(records),
+            }
         return {
             "workspace": str(base),
+            "run_id": run_id or None,
             "records": report.get("records"),
             "unmatched": report.get("unmatched"),
             "totals": report.get("totals"),
