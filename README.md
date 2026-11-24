@@ -118,11 +118,11 @@ bash install.sh
 想装固定版本（而不是"最新版"）：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.9.0
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.10.0
 ```
 
 ```bash
-MAS_VERSION=0.9.0 bash install.sh
+MAS_VERSION=0.10.0 bash install.sh
 ```
 
 > 脚本默认会往 `PATH` 里加一条 `~/.mas/bin`（Windows 写当前用户的注册表）。
@@ -567,6 +567,13 @@ mas init --wizard    # 交互式配置，第 7 题设并行数、第 8 题设评
 ```
 
 每个后备端点都会记录自己实际接了哪一次调用（`provider_used` / `model_used`）。全部失败才会报错。
+
+**切换那次的花费也会分开记账**：首选挂掉之前已经烧掉的 token，记在**死掉的那个后端**头上，
+不记在接管它的后端头上。运行总额不变（那次失败的钱确实付了），归属变真——
+
+```
+- 💸 本次运行花费 24 token：`dead-primary` 15、`backup-kimi` 9
+```
 
 ---
 

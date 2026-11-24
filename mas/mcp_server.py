@@ -726,7 +726,11 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         # tell. An agent that checks "who actually served me?" gets
         # the truth here, from the same reader the report uses.
         try:
-            from mas.report import backends_of_run, group_runs
+            from mas.report import (
+                backends_of_run,
+                group_runs,
+                spend_by_backend_of_run,
+            )
 
             items: List[Dict[str, Any]] = []
             for group in group_runs(rows):
@@ -753,8 +757,28 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                         ),
                         "backends": list(facts.get("backends") or []),
                         "failed_over": bool(facts.get("failed_over")),
+                        # Whose money the run spent, backend by
+                        # backend. The run above names the backend
+                        # that *answered*; for a run that fell over
+                        # those are two different answers, and the
+                        # one that paid is usually the one that
+                        # died.
+                        "spend_by_backend": dict(
+                            spend_by_backend_of_run(group.get("rows") or [])
+                        ),
                     }
                 )
+            total_spend: Dict[str, int] = {}
+            for item in items:
+                for name, amount in (item.get("spend_by_backend") or {}).items():
+                    try:
+                        tokens = int(amount or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if tokens:
+                        total_spend[str(name)] = (
+                            int(total_spend.get(name) or 0) + tokens
+                        )
             payload["backends"] = {
                 "runs_known": len(items),
                 "failed_over": len(
@@ -768,6 +792,8 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                     }
                 ),
                 "items": items,
+                # The same split, for the whole machine.
+                "spend_by_backend": total_spend,
             }
         except Exception:  # noqa: BLE001 - status must never crash
             payload["backends"] = {
@@ -775,6 +801,7 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                 "failed_over": 0,
                 "names": [],
                 "items": [],
+                "spend_by_backend": {},
             }
         # A draft that sits on a conflict is a decision the human still
         # owes. It is invisible from the tickets - those are for the

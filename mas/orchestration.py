@@ -361,12 +361,30 @@ class ProviderChain:
         # part of the cost of the run. The total travels with the
         # answer so the engine can charge the whole chain.
         spent: Dict[str, int] = {"total_tokens": 0}
+        # Which backend spent what. The total is what the run is
+        # charged; this is who actually spent it.
+        #
+        # The gap this closes: the total was folded into the winning
+        # backend's own usage, so a row said "backup-kimi spent 8
+        # tokens" when backup-kimi had spent 3 and the dead primary
+        # had spent 5. The money of a dead endpoint was booked under
+        # the name of the endpoint that answered - so a reader asking
+        # "which backend is draining my budget?" got the wrong
+        # answer, and the one that would have explained the bill was
+        # the one that had just failed.
+        spend_by_backend: Dict[str, int] = {}
         for provider in self.providers:
             try:
                 response = provider.complete(**kwargs)
             except BaseException as exc:  # noqa: BLE001 - try the next backend
                 last_error = exc
-                spent["total_tokens"] += _usage_of(exc)
+                failed_tokens = _usage_of(exc)
+                spent["total_tokens"] += failed_tokens
+                if failed_tokens:
+                    spend_by_backend[provider.name] = (
+                        int(spend_by_backend.get(provider.name) or 0)
+                        + failed_tokens
+                    )
                 continue
             with self._lock:
                 self.calls += 1
@@ -376,15 +394,29 @@ class ProviderChain:
                 # The failover spend is added on top of the winning
                 # backend's own usage.
                 usage = dict(response.get("usage") or {})
-                usage["total_tokens"] = int(
+                winning_tokens = int(
                     usage.get("total_tokens", 0) or 0
+                )
+                usage["total_tokens"] = int(
+                    winning_tokens
                 ) + spent["total_tokens"]
                 usage["failover_tokens"] = spent["total_tokens"]
+                # The winning backend's own spend, and the spend of
+                # every backend that failed before it. Kept apart so
+                # the ledger can say whose money it was.
+                usage["backend_tokens"] = dict(
+                    (*spend_by_backend.items(), (provider.name, winning_tokens))
+                )
                 response["usage"] = usage
             return response
-        if last_error is not None and spent["total_tokens"]:
+        if last_error is not None and (spent["total_tokens"] or spend_by_backend):
             # Every backend failed - the chain's total spend still has
-            # to reach the caller.
+            # to reach the caller, and so does the split of who spent
+            # it: a run that died on three dead endpoints has to be
+            # able to name them, otherwise the bill points at
+            # nobody.
             with contextlib.suppress(AttributeError):
                 last_error.usage = dict(last_error.usage or {})
+                if spend_by_backend:
+                    last_error.usage["backend_tokens"] = dict(spend_by_backend)
         raise last_error if last_error else RuntimeError("all providers failed")

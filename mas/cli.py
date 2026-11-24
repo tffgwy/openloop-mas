@@ -45,6 +45,7 @@ from mas.report import (
     replay_trace,
     run_summaries,
     run_summary,
+    spend_by_backend_of_run,
     verdict_word,
 )
 from mas.setup import format_verify, run_verify, run_wizard
@@ -462,6 +463,25 @@ def cmd_demo(args: argparse.Namespace) -> int:
     return 0 if all(row.get("ok") for row in results) else 1
 
 
+def _total_spend(runs: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Whose money a set of runs spent, in total."""
+    spent: Dict[str, int] = {}
+    for run in runs or []:
+        if not isinstance(run, dict):
+            continue
+        detail = run.get("spend_by_backend")
+        if not isinstance(detail, dict):
+            continue
+        for name, amount in detail.items():
+            try:
+                tokens = int(amount or 0)
+            except (TypeError, ValueError):
+                continue
+            if tokens:
+                spent[str(name)] = int(spent.get(name) or 0) + tokens
+    return spent
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     """Say where this machine stands - in words, not in a JSON dump.
 
@@ -619,6 +639,13 @@ def cmd_status(args: argparse.Namespace) -> int:
                 ),
                 "backends": list(facts.get("backends") or []),
                 "failed_over": bool(facts.get("failed_over")),
+                # Whose money this run spent, backend by backend. A run
+                # that fell over paid for the failed call too, and the
+                # endpoint that failed is usually the one draining
+                # the budget - so the page has to be able to say it.
+                "spend_by_backend": dict(
+                    spend_by_backend_of_run(group.get("rows") or [])
+                ),
             }
         )
     # The drafts reconciled against the ledger. A run that closed
@@ -764,6 +791,12 @@ def cmd_status(args: argparse.Namespace) -> int:
                 }
             ),
             "items": run_backends,
+            # Whose money the whole machine spent, backend by backend.
+            # The reader who asks "which endpoint is costing me the
+            # most?" gets one line instead of doing the arithmetic
+            # over the whole ledger - and the endpoints that failed
+            # are in it, which is usually the answer.
+            "spend_by_backend": _total_spend(run_backends),
         },
     }
     # The audit chain of the human decisions. A failure here must not
@@ -869,6 +902,15 @@ def cmd_status(args: argparse.Namespace) -> int:
                 f"  ⚠ 有 {failover_count} 次运行的首选后端不可用，"
                 "已自动切换到备用后端完成"
             )
+    # Where the money went. The page above says which backend
+    # delivered the work; this says which backend *paid* for it - and
+    # for a run that fell over those are two different answers.
+    spend = dict(payload["backends"].get("spend_by_backend") or {})
+    if spend:
+        parts = "、".join(
+            "%s %d" % (name, spend[name]) for name in sorted(spend)
+        )
+        print(f"花费去向：{parts} token")
     if waiting:
         print(f"待处理工单：{len(waiting)} 个")
         for ticket_id in waiting:

@@ -140,11 +140,11 @@ server and the skills, and finishes with an offline self-check.
 Pin a specific release instead of "the latest":
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.9.0
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.10.0
 ```
 
 ```bash
-MAS_VERSION=0.9.0 bash install.sh
+MAS_VERSION=0.10.0 bash install.sh
 ```
 
 > The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
@@ -527,6 +527,15 @@ loop - it is an outage. Configure fallbacks and the primary is tried first:
 
 Each response records which backend actually served it (`provider_used` /
 `model_used`). Only when every backend fails does the run error out.
+
+**A failover's spend is booked to the backend that paid for it**: the tokens
+the primary burnt before it died are charged to the *dead* primary, not to
+the backup that took over. The run's total does not change - the failed
+call really was paid for - but the attribution becomes true:
+
+```
+- 本次运行花费 24 token：`dead-primary` 15、`backup-kimi` 9
+```
 
 ---
 

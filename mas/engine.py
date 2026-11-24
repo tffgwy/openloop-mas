@@ -750,6 +750,11 @@ class LoopEngine:
                             # exactly once, otherwise the book cannot be
                             # reconciled with the bill.
                             "tokens": int(plan_usage.get("total_tokens", 0) or 0),
+                            # And whose money it was. A failover folded
+                            # the dead endpoint's spend into the total,
+                            # and the total used to be booked under the
+                            # name of the endpoint that answered.
+                            **self._spend_fields(plan_usage),
                             **plan_backend,
                         },
                     )
@@ -873,6 +878,7 @@ class LoopEngine:
                                 if key not in INTERNAL_KEYS
                             },
                             "tokens": reflect_tokens,
+                            **self._spend_fields(reflect_usage),
                             **reflect_backend,
                         },
                     )
@@ -1375,6 +1381,7 @@ class LoopEngine:
                         {"angle": "direct", "selected": True, "passed": None}
                     ],
                     "tokens": work_tokens,
+                    **self._spend_fields(work.get("usage") or {}),
                     **self._backend_fields(work),
                 },
             )
@@ -1541,6 +1548,12 @@ class LoopEngine:
                 # The whole pool was billed - the winner and the
                 # candidates that lost the race.
                 "tokens": int(tokens),
+                # And whose money it was. A pool can be served by
+                # several backends, and each of them can have burnt
+                # tokens on a call that failed before the backup took
+                # over - so the pool's spend is spread over the
+                # backends that paid for it.
+                **self._spend_of_pool(results),
                 # The backend that produced the delivered candidate.
                 **self._backend_fields(results[best_index]),
                 # And every backend the pool was served by.
@@ -1925,7 +1938,18 @@ class LoopEngine:
         aggregate = aggregate_reviews(
             reviews, mode=self.review_mode, expected=len(personas)
         )
+        # And whose money the panel spent. A panel is several calls,
+        # and every one of them can have burnt tokens on a backend
+        # that failed before the backup took over - so the panel's
+        # spend is spread over the backends that paid for it. The
+        # reviewers that failed outright are included: they were
+        # billed before they broke.
+        panel_spend = self._spend_of_usages(
+            self._usages_of_panel(panel, results)
+        ).get("backend_tokens", {})
         aggregate["_usage"] = {"total_tokens": tokens + failed_tokens}
+        if panel_spend:
+            aggregate["_usage"]["backend_tokens"] = panel_spend
         aggregate["errors"] = errors
         aggregate["personas"] = personas
         # Which backends answered the panel. A panel of three can be
@@ -1942,6 +1966,30 @@ class LoopEngine:
         # of replacing it with a single reviewer.
         aggregate["_panel"] = panel
         return aggregate
+
+    @staticmethod
+    def _usages_of_panel(
+        panel: List[Any], results: List[Any]
+    ) -> List[Dict[str, Any]]:
+        """The usage of every call a panel round made.
+
+        The reviewers that answered keep their usage under the
+        internal prefix; the ones that failed carry it on the error.
+        Both were billed, so both belong to the bill.
+        """
+        usages: List[Dict[str, Any]] = []
+        for member in panel or []:
+            if not isinstance(member, dict):
+                continue
+            usage = member.get("_usage")
+            if isinstance(usage, dict):
+                usages.append(usage)
+        for item in results or []:
+            if isinstance(item, ParallelFailure):
+                usage = getattr(item.error, "usage", None)
+                if isinstance(usage, dict):
+                    usages.append(usage)
+        return usages
 
     def _log_review(
         self,
@@ -1976,6 +2024,16 @@ class LoopEngine:
                 # to be able to see that the review was not all one
                 # machine talking to itself.
                 "backends": aggregate.get("_backends") or [],
+                # And whose money the panel spent. The reviewers that
+                # failed outright are in here too: they were billed
+                # before they broke, and a panel that names only the
+                # backends that answered would hide exactly the
+                # endpoint that was burning the budget.
+                # The split is read out of the round's own usage, so
+                # the charge and the split can never drift apart. A
+                # round with no failover has no split to report, and
+                # says nothing rather than showing an empty table.
+                **self._spend_fields(aggregate.get("_usage") or {}),
                 # And the backend of the single reviewer, in the
                 # panel-of-one case, where there is only one.
                 **self._backend_fields(aggregate),
@@ -2131,6 +2189,17 @@ class LoopEngine:
                 expected=len(merged_panel),
             )
             rebuilt["_usage"] = {"total_tokens": tokens + failed_tokens}
+            # And whose money the re-ask round spent. The re-ask is a
+            # round of calls of its own, so it has to be able to name
+            # the backends that paid for it. Only this round's calls
+            # are counted here - the panel members keep the usage of
+            # the round that first asked them, and the first round was
+            # booked on its own entry.
+            reask_spend = self._spend_of_usages(
+                self._usages_of_panel([], results)
+            ).get("backend_tokens", {})
+            if reask_spend:
+                rebuilt["_usage"]["backend_tokens"] = reask_spend
             rebuilt["errors"] = verdict.get("errors", [])
             rebuilt["personas"] = verdict.get("personas", personas)
             rebuilt["_panel"] = merged_panel
@@ -2333,6 +2402,88 @@ class LoopEngine:
             return {}
         return {"provider_used": provider, "model_used": model}
 
+    @staticmethod
+    def _spend_fields(usage: Dict[str, Any]) -> Dict[str, Any]:
+        """Whose money a call really spent.
+
+        The gap this closes
+        ------------------
+        A failover chain folds the spend of every backend that failed
+        into the total the run is charged. That total is right - the
+        run did pay for the failed calls - but it used to be booked
+        under the name of the backend that *answered*. So a row said
+        "backup-kimi spent 8 tokens" when backup-kimi had spent 3 and
+        the dead primary had spent 5.
+
+        That is a lie about money, and it is a lie in the direction
+        that costs the reader the most: the endpoint that was burning
+        the budget is exactly the one that failed, so the bill named
+        the healthy one instead.
+
+        So the chain keeps the spend of each backend apart, and the
+        row keeps it too. A call with no failover has nothing to
+        spread, and says nothing.
+        """
+        if not isinstance(usage, dict):
+            return {}
+        # The plain key is the shape the chain hands out; the prefixed
+        # one is the shape an aggregate keeps it under, because an
+        # aggregate is a verdict and a verdict travels into prompts.
+        by_backend = usage.get("backend_tokens") or usage.get("_backend_tokens")
+        if not isinstance(by_backend, dict) or not by_backend:
+            return {}
+        spent = {}
+        for name, tokens in by_backend.items():
+            try:
+                amount = int(tokens or 0)
+            except (TypeError, ValueError):
+                continue
+            if amount:
+                spent[str(name)] = amount
+        if not spent:
+            return {}
+        return {"backend_tokens": spent}
+
+    def _spend_of_pool(
+        self, results: List[Any]
+    ) -> Dict[str, Any]:
+        """Whose money a whole candidate pool spent.
+
+        A pool is several calls, each of which may have been served by
+        a different backend and each of which may have burnt tokens
+        on a backend that failed before the backup took over. So the
+        pool's spend is spread over the backends that paid for it -
+        and a pool where three of four members failed on a dead
+        endpoint has to say so, instead of naming the one member that
+        answered.
+        """
+        usages: List[Dict[str, Any]] = []
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            usages.append(item.get("usage") or {})
+        return self._spend_of_usages(usages)
+
+    def _spend_of_usages(
+        self, usages: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Whose money a set of calls spent, in total.
+
+        Every call hands back the spend of each backend it touched, and
+        a round of the loop is several calls. This adds them up, so a
+        panel of three that was served by two backends can say that
+        one backend paid for two of the three votes.
+        """
+        spent: Dict[str, int] = {}
+        for usage in usages or []:
+            for name, amount in self._spend_fields(usage).get(
+                "backend_tokens", {}
+            ).items():
+                spent[name] = int(spent.get(name) or 0) + int(amount)
+        if not spent:
+            return {}
+        return {"backend_tokens": spent}
+
     def _backends_of(self, sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Every backend that answered, in the order they answered.
 
@@ -2513,6 +2664,8 @@ class LoopEngine:
                     if key not in INTERNAL_KEYS
                 },
                 "tokens": int(usage.get("total_tokens", 0) or 0),
+                # And whose money it was.
+                **self._spend_fields(usage),
             },
         )
         return answer

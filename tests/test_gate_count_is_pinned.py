@@ -76,6 +76,7 @@ EXPECTED_GATE_NAMES = (
     "a_decision_hangs_on_its_run",
     "a_run_knows_its_approval",
     "a_run_knows_its_backend",
+    "a_run_knows_who_paid",
     "doc_text_integrity",
     "selftest_isolation",
 )

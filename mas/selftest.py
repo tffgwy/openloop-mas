@@ -117,6 +117,9 @@ from mas.selftest_run_knows_approval import (
 from mas.selftest_run_knows_its_backend import (
     check_a_run_knows_its_backend,
 )
+from mas.selftest_run_knows_who_paid import (
+    check_a_run_knows_who_paid,
+)
 from mas.selftest_seal import (
     check_a_closure_is_sealed_to_the_bytes_it_decided_on,
 )
@@ -5593,6 +5596,7 @@ CHECKS = (
     check_a_decision_hangs_on_its_run,
     check_a_run_knows_its_approval,
     check_a_run_knows_its_backend,
+    check_a_run_knows_who_paid,
     check_the_documents_are_still_text,
     check_the_selftest_leaves_the_machine_alone,
 )

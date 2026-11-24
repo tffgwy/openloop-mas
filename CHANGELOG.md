@@ -4,6 +4,64 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-11-24
+
+### 这次运行的钱，花在了哪个后端上
+
+v0.9.0 让运行知道「**是谁交付了我**」。它没有回答下一个问题：
+「**是谁花了我这笔钱**」。
+
+切换链会把失败后端的花费折进接管后端的 usage：备用后端自己只花了 3 token，
+挂掉的死首选花了 5 token，账本上却写「备用后端花了 8」。
+
+**死掉的钱记在了活着的后端头上。**
+
+这不是笔误，是方向性的谎：正在烧预算的那个端点，恰好就是刚挂掉的那个。
+读者问「哪个后端在吃我的预算」，拿到的是健康那个的账单，而真正烧钱的那个
+在账上分文无痕。
+
+### 第三十条不变量
+
+> **首选后端挂掉、备用后端接管之后，这次运行必须自己知道：
+> 死掉的后端烧了多少、活着的后端烧了多少；账本、运行详情、命令行与 MCP
+> 得说同一件事，而没有发生切换的运行不能凭空出现花费拆分。**
+
+### 改了什么
+
+* `mas/orchestration.py`：`ProviderChain.complete()` 把每个后端的花费分开记账
+  （`usage["backend_tokens"]`）；总额 `total_tokens` 与 `failover_tokens`
+  语义**不变** —— 运行确实为失败那次付了钱，改的只是归属；
+  全部后端都失败时，错误对象也带上这份拆分；
+* `mas/engine.py`：新增 `_spend_fields()`（读一份 usage 的拆分）与
+  `_spend_of_pool()` / `_spend_of_usages()`（把一轮里的多次调用加起来）；
+  planner / reflector / 单 worker / 并行候选池 / 评审面板 / 追问轮 / lead
+  七处调用点都带上拆分；
+* `mas/report.py`：新增 `spend_of_row()` 与 `spend_by_backend_of_run()`；
+  `run_summary()` 多出 `spend_by_backend` 与 `backend_tokens`；
+  运行详情新增一行「💸 本次运行花费 N token：后端A x、后端B y」；
+  `totals` 新增全报告的后端花费统计；`replay_trace()` 同步；
+* `mas/cli.py`：`status` 的 `backends` 段多出 `spend_by_backend`，
+  文本页打印「花费去向」；
+* `mas/mcp_server.py`：`mas_status` 的 `backends` 段同步
+  （`mas_report` / `mas_replay` 自动继承）。
+
+**老账本没有拆分字段时，宁可不说，也不猜。**
+一份 v0.9.0 及更早的账本不会声称「是应答的后端付了全部」——
+它只是无法归因，而它就该说无法归因。
+
+### 门禁
+
+第 52 项门禁 `a_run_knows_who_paid`
+（`mas/selftest_run_knows_who_paid.py`）：
+
+* 用例里有**两次真实闭环运行**：一次正常、一次首选挂掉；
+  只有一次有拆分，**没有切换的那次必须不能凭空出现拆分**
+  （否则一个「永远返回全部」的过滤器就能伪装成生效）；
+* 独立实现两遍判定：一遍读页面，一遍直接读账本原始行；
+* 额外校验**拆分必须加总等于该行 charge** —— 加不拢的拆分是另一种谎；
+* 自证能失败：把引擎的接线打坏（拆分不再带进账本），
+  门禁必须发现运行已经不知道自己是谁付的钱。
+
 ## [0.9.0] - 2026-11-24
 
 ### 首选后端挂掉之后，这次运行必须自己知道是谁交付了它

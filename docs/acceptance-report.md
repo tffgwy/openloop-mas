@@ -2741,3 +2741,83 @@ run ok: closed True
 * 独立实现两遍判定（`_verdicts` / `_verdicts_independent`）；
 * 自证能失败：把引擎的接线打坏（后端不再带进账本），
   门禁实测报红的是「运行知道是哪个后端交付了它」。
+
+## V. v0.10.0 — 这次运行自己知道是谁花了这笔钱
+
+### 问题
+
+v0.9.0 让运行知道「是谁交付了它」。下一个问题没人回答：
+「是谁花了我这笔钱」。
+
+切换链会把失败后端的花费折进接管后端的 usage：备用后端自己只花 3 token，
+挂掉的死首选花了 5 token，账本上却写「备用后端花了 8」。
+
+**死掉的钱记在了活着的后端头上。**
+
+方向性的谎：正在烧预算的那个端点，恰好就是刚挂掉的那个。
+读者问「哪个后端在吃我的预算」，拿到的是健康那个的账单，
+真正烧钱的那个在账上分文无痕。
+
+### 根因（实测探针）
+
+`%TEMP%\probe_spend.py`：一条 `ProviderChain([Dead(502), Backup])` 跑真实闭环。
+
+改前：
+
+```
+ role=planner     provider=dead-primary  used=backup-kimi   tokens=8
+```
+
+改后（总额不变，归属变真）：
+
+```
+run status: closed tokens_used: 24
+ role=planner     provider=dead-primary  used=backup-kimi   tokens=8
+ ...
+ - 💸 本次运行花费 24 token：`dead-primary` 15、`backup-kimi` 9
+```
+
+根因定位：`mas/orchestration.py` 的 `ProviderChain.complete()` 把失败后端的
+花费累加进 `spent["total_tokens"]`，最后**整个总额写进接管后端的 usage**，
+于是下游一切读取都以为「接管后端花了全部」。
+
+### 第三十条不变量
+
+> **首选后端挂掉、备用后端接管之后，这次运行必须自己知道：
+> 死掉的后端烧了多少、活着的后端烧了多少；账本、运行详情、命令行与 MCP
+> 得说同一件事，而没有发生切换的运行不能凭空出现花费拆分。**
+
+### 改了什么
+
+| 文件 | 改了什么 |
+| --- | --- |
+| `mas/orchestration.py` | `ProviderChain.complete()` 按后端分开记账（`usage["backend_tokens"]`）；`total_tokens` 与 `failover_tokens` 语义不变；全部后端都失败时错误对象也带拆分 |
+| `mas/engine.py` | 新增 `_spend_fields()` / `_spend_of_pool()` / `_spend_of_usages()`；planner / reflector / 单 worker / 并行候选池 / 评审面板 / 追问轮 / lead 七处调用点都带拆分 |
+| `mas/report.py` | 新增 `spend_of_row()` / `spend_by_backend_of_run()`；`run_summary()` 多出 `spend_by_backend` / `backend_tokens`；运行详情新增「💸 本次运行花费 N token：…」；`totals` 新增全报告后端花费统计；`replay_trace()` 同步 |
+| `mas/cli.py` | `status` 的 `backends` 段多出 `spend_by_backend`；文本页打印「花费去向」 |
+| `mas/mcp_server.py` | `mas_status` 的 `backends` 段同步；`mas_report` / `mas_replay` 走同一套读法 |
+| `mas/selftest_run_knows_who_paid.py` | 第 52 项门禁 |
+| `tests/test_run_knows_who_paid_900.py` | 回归测试 |
+
+**总额没有变。** 运行确实为失败那次付了钱，改的只是归属。
+
+**老账本没有拆分字段时，宁可不说，也不猜。**
+
+### 本轮实测证据
+
+探针 `%TEMP%\probe_spend.py`（真实闭环 + 首选 502）：
+
+| 检查 | 结果 |
+| --- | --- |
+| 运行总额 | `tokens_used: 24`（与改前一致） |
+| 报告运行详情 | `- 💸 本次运行花费 24 token：`dead-primary` 15、`backup-kimi` 9` |
+| 拆分加总 | 15 + 9 = 24 = 该行 charge |
+
+第 52 项门禁 `a_run_knows_who_paid`（`mas/selftest_run_knows_who_paid.py`）：
+
+* 用例里有**两次真实闭环运行**：一次正常、一次首选挂掉；
+  **没有切换的那次必须不能凭空出现拆分**；
+* 独立实现两遍判定（`_verdicts` / `_verdicts_independent`）；
+* 额外校验**拆分必须加总等于该行 charge** —— 加不拢的拆分是另一种谎；
+* 自证能失败：把引擎的接线打坏（拆分不再带进账本），
+  门禁实测报红的是「账本按后端拆开花费」。

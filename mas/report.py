@@ -140,6 +140,59 @@ def backends_of_run(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def spend_of_row(row: Dict[str, Any]) -> Dict[str, int]:
+    """Whose money one ledger row booked.
+
+    The gap this closes
+    ------------------
+    A failover chain folds the spend of every backend that failed into
+    the total the run is charged. The total is right - the run really
+    did pay for the failed calls - but the row used to name only the
+    backend that *answered*, so the bill credited the healthy endpoint
+    with the money the dead one had burnt.
+
+    That is the wrong way round for the reader who asks the useful
+    question: "which backend is draining my budget?". The answer is
+    the one that failed - the one whose failure made the chain pay
+    twice.
+
+    So the chain keeps the spend of each backend apart, the row keeps
+    it apart, and this reads it. A row written before this release
+    carries no split and nothing is guessed for it.
+    """
+    raw = row.get("backend_tokens")
+    if not isinstance(raw, dict) or not raw:
+        return {}
+    spent: Dict[str, int] = {}
+    for name, tokens in raw.items():
+        try:
+            amount = int(tokens or 0)
+        except (TypeError, ValueError):
+            continue
+        if amount:
+            spent[str(name)] = amount
+    return spent
+
+
+def spend_by_backend_of_run(rows: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Whose money a whole run spent, backend by backend.
+
+    The rows each carry their own split, and a run is many rows, so
+    the run's split is their sum. A run whose rows carry no split
+    (one written before this release) sums to nothing - which is
+    honest: that run's bill cannot be attributed.
+    """
+    spent: Dict[str, int] = {}
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("role", "")) not in CHARGE_ROLES:
+            continue
+        for name, amount in spend_of_row(row).items():
+            spent[name] = int(spent.get(name) or 0) + int(amount)
+    return spent
+
+
 STATUS_ICON = {
     "closed": "OK",
     "escalated": "ESC",
@@ -656,6 +709,10 @@ def run_summary(
     # has to be able to say it too, because the run is what a reader
     # opens.
     run_backends = backends_of_run(rows)
+    # And whose money the run spent. The total is what the run was
+    # charged; this is which backend actually paid it - a run that
+    # fell over spent part of its budget on the endpoint that died.
+    run_spend = spend_by_backend_of_run(rows)
 
     return {
         "run_id": run_id,
@@ -794,6 +851,12 @@ def run_summary(
             run_backends.get("configured_provider") or ""
         ),
         "failed_over": bool(run_backends.get("failed_over")),
+        # Whose money this run spent, backend by backend. A run whose
+        # rows carry no split says nothing rather than guessing.
+        "spend_by_backend": run_spend,
+        # The same split, as a flat map, for callers that want to look
+        # a backend up without walking a list.
+        "backend_tokens": dict(run_spend),
     }
 
 
@@ -1277,6 +1340,39 @@ def _backend_detail_lines(run: Dict[str, Any]) -> List[str]:
         )
         lines.append("  - 本次运行用到过的后端：%s" % names)
     return lines
+
+
+def _spend_detail_lines(run: Dict[str, Any]) -> List[str]:
+    """Where the run's money went, in words.
+
+    The gap this closes
+    ------------------
+    A run that fell over paid twice: once for the call the dead
+    endpoint burned before it broke, and once for the call the backup
+    answered. The report showed one total, so a reader who wanted to
+    know *which* endpoint was draining the budget had nothing to read
+    - and the honest answer, "the one that died", was the one thing
+    the report could not say.
+
+    So the run says it in one line: the total, and every backend's
+    share of it. A run with no split says nothing.
+    """
+    spent = run.get("spend_by_backend")
+    if not isinstance(spent, dict) or not spent:
+        return []
+    parts = []
+    for name, amount in spent.items():
+        try:
+            tokens = int(amount or 0)
+        except (TypeError, ValueError):
+            continue
+        if tokens:
+            parts.append("`%s` %d" % (name, tokens))
+    if not parts:
+        return []
+    total = int(run.get("tokens") or 0)
+    line = "- 💸 本次运行花费 %d token：%s" % (total, "、".join(parts))
+    return [line]
 
 
 def _thread_source(thread: Dict[str, Any]) -> str:
@@ -1992,8 +2088,33 @@ def build_report(
                     if isinstance(item, dict) and str(item.get("provider_used") or "")
                 }
             ),
+            # Whose money the whole report was spent on, backend by
+            # backend. A reader who wants to know which endpoint is
+            # costing the most gets one table instead of doing the
+            # arithmetic over forty runs - and the endpoints that
+            # failed are in it, which is usually the answer.
+            "spend_by_backend": _total_spend_by_backend(runs),
         },
     }
+
+
+def _total_spend_by_backend(runs: List[Dict[str, Any]]) -> Dict[str, int]:
+    """Whose money every run in a report spent, in total."""
+    spent: Dict[str, int] = {}
+    for run in runs or []:
+        if not isinstance(run, dict):
+            continue
+        detail = run.get("spend_by_backend")
+        if not isinstance(detail, dict):
+            continue
+        for name, amount in detail.items():
+            try:
+                tokens = int(amount or 0)
+            except (TypeError, ValueError):
+                continue
+            if tokens:
+                spent[str(name)] = int(spent.get(name) or 0) + tokens
+    return spent
 
 
 def _draft_section_lines(report: Dict[str, Any]) -> List[str]:
@@ -2581,6 +2702,7 @@ def render_markdown(report: Dict[str, Any]) -> str:
         lines.append(f"- 结束：{run.get('finished_at') or '-'}")
         lines.append(f"- 花费：{int(run.get('tokens') or 0)} token")
         lines.extend(_backend_detail_lines(run))
+        lines.extend(_spend_detail_lines(run))
         # Say which half failed. "Not closed" alone hides the difference
         # between a wrong deliverable and a good deliverable that ran
         # out of budget.
@@ -3107,6 +3229,14 @@ def replay_trace(
                 ),
                 "backends": list(summary.get("backends") or []),
                 "failed_over": bool(summary.get("failed_over")),
+                # Whose money the run spent, backend by backend. The
+                # replay is what an agent reads, so an agent asking
+                # "which endpoint is draining the budget?" has to get
+                # the same answer the report gives - and the honest
+                # answer is the endpoint that failed.
+                "spend_by_backend": dict(
+                    summary.get("spend_by_backend") or {}
+                ),
                 "decisions": summary.get("decisions") or {},
             }
         )
