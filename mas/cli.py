@@ -1100,10 +1100,23 @@ def cmd_seal(args: argparse.Namespace) -> int:
         print("还没有任何封存：这份账本里的循环是在封存这一格补上之前跑的。")
         print("  新跑的循环会带上封存；想看已有的闭环：mas report")
         return 0
+    no_verdict = int(report.get("no_verdict") or 0)
     print(f"封存 {report['sealed']} 条，其中仍然成立 {report['holds']} 条。")
+    if no_verdict:
+        # A closure that never reached a verdict is not a broken closure -
+        # there was no conclusion to recompute and none to drift. Saying
+        # so out loud keeps a reader from mistaking it for a failure.
+        print(
+            "另有 %d 条没走到判定（本来就没有结论，既不能重算也说不上漂移）。"
+            % no_verdict
+        )
     for item in report.get("results") or []:
         state = str(item.get("state") or "")
-        mark = "OK " if item.get("ok") else "有变化"
+        if state == "no-verdict":
+            mark = "—"
+            state = "本来就没有判定"
+        else:
+            mark = "OK " if item.get("ok") else "有变化"
         print(f"  [{mark}] {item.get('run_id')}  {state}")
         for problem in item.get("problems") or []:
             print(f"        - {problem}")

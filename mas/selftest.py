@@ -117,6 +117,9 @@ from mas.selftest_run_knows_approval import (
 from mas.selftest_run_knows_its_backend import (
     check_a_run_knows_its_backend,
 )
+from mas.selftest_run_knows_its_ceiling import (
+    check_a_run_knows_its_ceiling,
+)
 from mas.selftest_run_knows_who_paid import (
     check_a_run_knows_who_paid,
 )
@@ -5597,6 +5600,7 @@ CHECKS = (
     check_a_run_knows_its_approval,
     check_a_run_knows_its_backend,
     check_a_run_knows_who_paid,
+    check_a_run_knows_its_ceiling,
     check_the_documents_are_still_text,
     check_the_selftest_leaves_the_machine_alone,
 )

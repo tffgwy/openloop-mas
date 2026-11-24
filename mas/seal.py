@@ -63,6 +63,34 @@ SEAL_VERSION = 1
 #: The ledger role of the entry that carries the seal.
 SEAL_ROLE = "run_end"
 
+#: The state of a closure that never judged anything.
+#:
+#: A run that stopped on the budget ceiling before it reached a
+#: scoring round has no verdict. Older ledgers sealed it anyway -
+#: with an empty score list and a hard-coded "fail" - and the report
+#: read that seal as a conclusion that had drifted. That accused a
+#: run that never said anything of having lied about it.
+#:
+#: So the state exists: a seal with no verdict is *not* a drifted
+#: conclusion, it is the absence of one. It is neither good nor bad -
+#: there is nothing to recompute.
+SEAL_STATE_NO_VERDICT = "no-verdict"
+
+
+def seal_has_verdict(seal: Any) -> bool:
+    """Whether this seal carries a conclusion at all.
+
+    A seal without a single score row is a seal about nothing. This
+    is the question the report asks before it counts a seal as
+    drifted - and it is asked of the *seal*, not of the run, so an
+    old ledger is read the same way as a new one.
+    """
+    if not isinstance(seal, dict) or not seal:
+        return False
+    scores = seal.get("scores")
+    if not isinstance(scores, list):
+        return False
+    return any(isinstance(item, dict) for item in scores)
 
 def sha256_bytes(data: bytes) -> str:
     """The sha256 of some bytes, as a lowercase hex digest."""
@@ -284,6 +312,21 @@ def verify_seal(seal: Any, artifact: Optional[str] = None) -> Dict[str, Any]:
             report["drifted_files"].append(str(row.get("path") or absolute))
 
     # 3. The verdict.
+    #
+    # A seal with no scores has no verdict. It cannot be recomputed -
+    # there is nothing to recompute - and it cannot have drifted
+    # either: a conclusion that was never reached cannot stop
+    # holding. Reporting it as "drifted" accused a run that never
+    # judged anything of lying.
+    if not seal_has_verdict(seal):
+        report["state"] = SEAL_STATE_NO_VERDICT
+        report["ok"] = True
+        report["problems"].append(
+            "this run never reached a verdict, so there is no conclusion "
+            "to recompute and none to drift"
+        )
+        return report
+
     if artifact is None:
         report["state"] = "unrecomputable"
         report["problems"].append(
@@ -363,6 +406,13 @@ def seal_report(rows: Any) -> Dict[str, Any]:
         "sealed": len(results),
         "ok": not drifted,
         "holds": len([r for r in results if r.get("state") == "holds"]),
+        # The closures that never reached a verdict. They are not
+        # drifted conclusions - there was no conclusion - and they
+        # are counted apart so a reader can see how many closures
+        # actually say something.
+        "no_verdict": len(
+            [r for r in results if r.get("state") == SEAL_STATE_NO_VERDICT]
+        ),
         "drifted": len(drifted),
         "results": results,
     }

@@ -140,11 +140,11 @@ server and the skills, and finishes with an offline self-check.
 Pin a specific release instead of "the latest":
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.10.0
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.11.0
 ```
 
 ```bash
-MAS_VERSION=0.10.0 bash install.sh
+MAS_VERSION=0.11.0 bash install.sh
 ```
 
 > The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
@@ -902,9 +902,72 @@ MIT © OpenLoop MAS contributors
 
 ## Gate archaeology
 
-This project now holds **50 gates**, and every one of them grew out of a
+This project now holds **53 gates**, and every one of them grew out of a
 **real incident**. They are listed below newest first - if you just want to
 use the tool, skip this section.
+
+- **The 53rd gate `a_run_knows_its_ceiling`** - no verdict means no conclusion,
+  and no conclusion cannot drift. The run also has to name its own ceiling.
+
+  v0.7.88 gave every closure a **seal**: the criteria, the deliverable's hash,
+  the hashes of the files the run wrote. `mas seal` re-derives the verdict from
+  that evidence and says whether it still holds.
+
+  But the seal was written **unconditionally** - every run, including the ones
+  that never judged anything. A run that died on the budget ceiling carried a
+  seal with an **empty score list** and a hard-coded `"fail"`.
+
+  The report read that seal as a **conclusion**. A conclusion that cannot be
+  recomputed came back as `unrecomputable`, and the report counted it as
+  **drifted**:
+
+      Seal recheck: 1 sealed, 1 conclusion drifted
+
+  That accuses a run of lying about something it never said. It never judged
+  anything, so it never concluded anything, so nothing it concluded can have
+  drifted.
+
+  **A false alarm about drift is the worst kind** - a reader who learns to
+  ignore it will miss the real one.
+
+  Now **no verdict means no seal**: the seal is written only when the run
+  actually decided, and that guard lives in its own method so it can be broken
+  on purpose. **An old ledger's verdict-less seal is not drift either** - it
+  is read as `no-verdict`, so upgrading does not make your old ledger start
+  accusing itself.
+
+  The gate watches six things: a run that never judged carries no seal and is
+  not counted as drifted; an old verdict-less seal reads as `no-verdict`; the
+  headline does not accuse the machine of a false drift; **a closure that did
+  decide and was edited afterwards is still reported as drifted** - the fix
+  does not weaken into "never report anything"; and the run says which ceiling
+  stopped it.
+
+  It **proves it can fail**: break the guard, and the gate has to notice that
+  the machine started accusing itself.
+
+  ```bash
+  mas selftest --only a_run_knows_its_ceiling
+  ```
+
+- **The 52nd gate `a_run_knows_who_paid`** - the run knows which backend
+  really spent the money.
+
+  The failover chain folded the dead backend's spend into the survivor's
+  usage: the backup spent 3 tokens, the dead primary spent 5, and the ledger
+  said "the backup spent 8".
+
+  **The dead money was booked on the living backend.** The endpoint that was
+  burning the budget was exactly the one that had just died - and a reader
+  asking "which backend is eating my budget?" got the healthy one's bill.
+
+  The spend is now booked **per backend**, and the run detail says so:
+  "24 tokens spent on this run: dead-primary 15, backup-kimi 9". **The total
+  did not change** - the run really did pay for the failed call; only the
+  attribution did.
+
+- **The 51st gate `a_run_knows_its_backend`** - the run knows which backend
+  really delivered it.
 
 - **The 50th gate `a_run_knows_its_approval`** - an approval was taken back,
   and the run has to know it by itself.

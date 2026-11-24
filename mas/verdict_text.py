@@ -62,6 +62,23 @@ DECISION_READING: Dict[str, str] = {
     "handback": "\u4eba\u5de5\u4ea4\u56de\u5e76\u901a\u8fc7\u9a8c\u6536",
 }
 
+#: Which ceiling stopped a run, in words.
+#:
+#: The engine records *which* limit fired - the iteration count, the
+#: wall-clock, the token ceiling, or a broken backend. Those need
+#: three different reactions from a reader (raise the rounds, raise
+#: the seconds, raise the money, fix the backend), so the report has
+#: to name them instead of saying "budget_exhausted" and leaving the
+#: reader to guess which one it was.
+STOPPED_BY_READING: Dict[str, str] = {
+    "max_iterations": "\u8f6e\u6570\u7528\u5b8c\u4e86\uff08\u8f6e\u6570\u5230\u4e86\u5929\u82b1\u677f\uff09",
+    "deadline_sec": "\u5899\u949f\u65f6\u95f4\u7528\u5b8c\u4e86\uff08\u65f6\u95f4\u5230\u4e86\u5929\u82b1\u677f\uff09",
+    "max_tokens": "\u4ee4\u724c\u7528\u5b8c\u4e86\uff08\u82b1\u94b1\u5230\u4e86\u5929\u82b1\u677f\uff09",
+    "provider_error": "\u540e\u7aef\u62a5\u9519\uff08\u4e0d\u662f\u5929\u82b1\u677f\u51fb\u7ebf\u7684\uff0c\u662f\u63a5\u53e3\u81ea\u5df1\u51fa\u9519\uff09",
+    "internal_error": "\u5faa\u73af\u81ea\u8eab\u62a5\u9519\uff08\u4e0d\u662f\u5929\u82b1\u677f\uff09",
+}
+
+
 #: Where a verdict came from, in words.
 SOURCE_READING: Dict[str, str] = {
     "rule": "\u673a\u68c0",
@@ -139,6 +156,19 @@ def decision_reading(decision: Any) -> str:
     if not key:
         return ""
     return DECISION_READING.get(key, key)
+
+
+def stopped_by_reading(stopped_by: Any) -> str:
+    """Which ceiling stopped the run, in words - or the raw value.
+
+    An unknown value is left alone: it may carry information this
+    table does not know, and replacing it with a guess would throw
+    that away.
+    """
+    key = str(stopped_by or "").strip()
+    if not key:
+        return ""
+    return STOPPED_BY_READING.get(key, key)
 
 
 def source_reading(source: Any) -> str:

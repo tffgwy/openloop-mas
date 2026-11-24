@@ -2821,3 +2821,73 @@ run status: closed tokens_used: 24
 * 额外校验**拆分必须加总等于该行 charge** —— 加不拢的拆分是另一种谎；
 * 自证能失败：把引擎的接线打坏（拆分不再带进账本），
   门禁实测报红的是「账本按后端拆开花费」。
+
+## W. v0.11.0 — 没有判定就没有结论，也谈不上漂移
+
+### 触发原因
+
+两个缺口，都是从 v0.10.0 的发布审查里实测出来的。
+
+**硬缺口：误报漂移。** v0.7.88 给每次闭环留下一枚封存，v0.11.0 之前的实现
+是**无条件**写下的 —— 每次运行都写，包括那些压根没走到判定那一步的。一个撞上
+天花板就死掉的运行，它的封存带着一份**空的评分清单**和写死的 `"fail"`。
+
+报告把这枚封存读成了一份**结论**。结论无从重算（因为压根没什么可重算），
+于是封存回来的状态是 `unrecomputable`，报告把它记成**已漂移**：
+
+    封存复核：1 条封存中，1 条结论已漂移
+
+这是在指控一个运行**对它从未说过的话撒谎**。
+
+**软缺口：运行不知道自己的天花板。** 预算在引擎里算好了、也交到了工单上，
+但这次运行的 `run_end` 从来不写它。报告能说「预算用完了」，读者却无从知道
+**天花板是什么**；三个天花板（轮数 / 秒数 / token）需要三种不同的补救动作。
+
+### 第三十一条不变量
+
+> **从未判定过任何东西的运行不得被报成「结论已漂移」；真的判定被改过时
+> 仍须报漂移；运行必须能说出自己的天花板与停在哪个天花板上；
+> 账本、报告、命令行与 MCP 得说同一件事。**
+
+### 改了什么
+
+| 文件 | 改了什么 |
+| --- | --- |
+| `mas/engine.py` | `run_end` 新增 `budget` 与 `stopped_by`；新增 `_seal_for_run()` 作为封存的唯一守门点（只在真的判定过时才写）；handback / folder-handoff 两条路径同样走这道门 |
+| `mas/seal.py` | 新增 `SEAL_STATE_NO_VERDICT = "no-verdict"` 与 `seal_has_verdict()`；`verify_seal()` 遇到没有判定的旧封存返回 `state="no-verdict"` 且 `ok=True`；`seal_report()` 新增 `no_verdict` 计数 |
+| `mas/verdict_text.py` | 新增 `STOPPED_BY_READING` 与 `stopped_by_reading()`，五个停止原因各有一句人话 |
+| `mas/report.py` | `drifted_runs` 排除 `holds` 与 `no-verdict`；`totals.seal_holds` 只数 `holds`，新增 `seal_no_verdict`；概览表与运行详情不再指控没判定的运行；运行详情新增「天花板：…」与「停在：…」两行；`run_summary()` 同步带上 `budget` / `stopped_by` |
+| `mas/selftest_run_knows_its_ceiling.py` | 第 53 项门禁 |
+| `tests/test_run_knows_its_ceiling_901.py` | 回归测试（9 项） |
+
+**老账本里的旧封存同样不算漂移。** 一份 v0.10.0 及更早的账本不会因为升级
+就被指控撒谎 —— 没有判定的封存被读成 `no-verdict`，而不是漂移。
+
+### 本轮实测证据
+
+探针 `%TEMP%\dbg1.py`（三次真实运行：撞墙钟 / 撞后端故障 / 真的判定）：
+
+| 运行 | status | stopped_by | seal |
+| --- | --- | --- | --- |
+| 撞墙钟天花板 | `budget_exhausted` | `deadline_sec` | `{}`（无封存） |
+| 后端故障 | `error` | `provider_error` | `{}`（无封存） |
+| 真的判定并闭环 | `closed` | — | 有封存，`scores` 一条 |
+
+报告 `totals`：`seal_drifted: 0`、`seal_no_verdict: 0`、`seal_holds: 1`；
+headline 为「封存复核：1 条封存全部仍然成立」，正文不含「结论已漂移」。
+
+**真的漂移仍报警**：把闭环交付物改成同样长度的另一段字节后，
+`seal_drifted` ≥ 1 且正文出现「结论已漂移」—— 修法没有退化成「永远不报警」。
+
+第 53 项门禁 `a_run_knows_its_ceiling`：
+
+* 用例里有**三次真实运行** —— 前两次必须没有封存、不算漂移；
+* 独立实现两遍判定（一遍读页面、一遍直接读账本原始行）；
+* 老账本里手工造出来的空判定封存，必须被读成 `no-verdict`；
+* 自证能失败：把守门点打坏（又给没判定的运行封存），
+  门禁实测报红的是「运行没判过任何东西却带着封存」。
+
+### 门禁与测试
+
+* 第 53 项门禁 `a_run_knows_its_ceiling`（`mas/selftest_run_knows_its_ceiling.py`）；
+* 回归测试 `tests/test_run_knows_its_ceiling_901.py`（9 项）。

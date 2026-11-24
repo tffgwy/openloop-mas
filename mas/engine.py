@@ -656,15 +656,31 @@ class LoopEngine:
         # itself" escalation the status used to claim. Empty means "no
         # such stop happened".
         stop_status = ""
+        # Which ceiling stopped this run, in one word.
+        #
+        # The gap this closes: the run's own end entry said
+        # "budget_exhausted" and the error string, but not *which*
+        # ceiling fired. The report could say "the budget ran out"
+        # without saying whether it was the iteration count, the
+        # wall-clock or the token ceiling - and those three need three
+        # different reactions (raise the limit, raise the time, raise
+        # the money). A reader who cannot tell them apart cannot fix
+        # the run.
+        #
+        # Empty means "the run did not stop on a ceiling" - it
+        # closed, or it escalated, or it died on a provider error.
+        stopped_by = ""
 
         while True:
             if attempt >= max_iterations:
                 status = STATUS_BUDGET
                 error = f"budget: reached max_iterations={max_iterations}"
+                stopped_by = "max_iterations"
                 break
             if (self.clock() - start) > deadline_sec:
                 status = STATUS_BUDGET
                 error = f"budget: exceeded deadline_sec={deadline_sec:.0f}"
+                stopped_by = "deadline_sec"
                 break
             if tokens >= max_tokens:
                 # The token ceiling is checked here as well as after the
@@ -676,6 +692,7 @@ class LoopEngine:
                 # the top too, or it is not a ceiling.
                 status = STATUS_BUDGET
                 error = f"budget: tokens {tokens} >= {max_tokens}"
+                stopped_by = "max_tokens"
                 break
 
             attempt += 1
@@ -962,6 +979,7 @@ class LoopEngine:
                     # before the loop starts - reading it here would
                     # call every stagnation a budget stop.
                     stop_status = STATUS_BUDGET
+                    stopped_by = "max_tokens"
                 # The wall-clock deadline is a ceiling, so it is checked
                 # at the moment the closure is decided - not only at the
                 # top of the loop. A run whose last call overran the
@@ -973,6 +991,7 @@ class LoopEngine:
                     remaining = self._remaining_budget_sec()
                     if remaining is not None and remaining <= 0:
                         decision = "escalate"
+                        stopped_by = "deadline_sec"
                         error = (
                             f"budget: exceeded deadline_sec={deadline_sec:.0f} "
                             "(the deliverable passed the checks, but the run "
@@ -1130,6 +1149,7 @@ class LoopEngine:
                     {"error": error, "kind": "budget", "tokens": spent},
                 )
                 status = STATUS_BUDGET
+                stopped_by = "deadline_sec"
                 break
             except ProviderError as exc:
                 error = f"provider error: {exc}"
@@ -1147,6 +1167,7 @@ class LoopEngine:
                     {"error": error, "tokens": spent},
                 )
                 status = STATUS_ERROR
+                stopped_by = "provider_error"
                 break
             except Exception as exc:  # noqa: BLE001 - the run must stay auditable
                 # Something that is not a provider error went wrong inside
@@ -1165,6 +1186,7 @@ class LoopEngine:
                     {"error": error, "kind": "internal"},
                 )
                 status = STATUS_ERROR
+                stopped_by = "internal_error"
                 break
 
         # The ledger has to say how the run ended. Without this entry the
@@ -1265,11 +1287,31 @@ class LoopEngine:
                 # see everything it produced.
                 "workspace": self._run_workspace_path(),
                 "files": list(self._written_files),
+                # The ceiling this run ran under, and which ceiling
+                # stopped it.
+                #
+                # The gap this closes: the budget was computed in the
+                # engine and handed to the ticket, but the run's own
+                # end entry never carried it. So the report could say
+                # "the budget ran out" and the reader could not learn
+                # *what* the ceiling was - while the report said
+                # "this round was only allowed 2 rounds" without ever
+                # saying where the 2 came from. The run has to be
+                # able to name its own limits.
+                "budget": dict(effective_budget),
+                "stopped_by": stopped_by,
                 # What this closure was decided on: the criteria, the
                 # bytes of the deliverable, the bytes of every file the
                 # run wrote and the per-criterion verdicts. Without it
                 # the verdict could only be trusted - not recomputed.
-                "seal": self._seal_closure(
+                # And it is sealed only when there *was* a verdict.
+                # A run that died on the budget ceiling before it
+                # ever judged anything has no conclusion to seal -
+                # and a seal for it is a claim about nothing that the
+                # report then reads as "the conclusion drifted". The
+                # report used to accuse a run that never judged
+                # anything of lying. No verdict, no seal.
+                "seal": self._seal_for_run(
                     run_id,
                     crits,
                     artifact,
@@ -2337,6 +2379,39 @@ class LoopEngine:
             ),
         )
 
+    def _seal_for_run(
+        self,
+        run_id: str,
+        crits: Any,
+        artifact: str,
+        scores: Any,
+        verdict: str,
+        decision: str,
+    ) -> Dict[str, Any]:
+        """The seal of a run - but only if the run actually decided.
+
+        A run that died on the budget ceiling, or that never reached a
+        scoring round, has no verdict. Sealing it would book a
+        conclusion about nothing - and the report would then read that
+        seal as "the conclusion drifted", which accuses a run of lying
+        about something it never said.
+
+        The guard lives in its own method so it can be watched. A guard
+        that is written inline in the middle of a hundred-line log call
+        is a guard nobody can break on purpose - and a gate that
+        cannot fail is not a gate.
+        """
+        if not scores:
+            return {}
+        return self._seal_closure(
+            run_id,
+            crits,
+            artifact,
+            scores,
+            verdict,
+            decision,
+        )
+
     def _save_artifact(self, run_id: str, artifact: str) -> str:
         """Write the final deliverable to disk and return its path.
 
@@ -3312,7 +3387,7 @@ class LoopEngine:
                 "files": list(self._written_files),
                 # A handback is judged by the same standards as any
                 # other closure, so it is sealed the same way.
-                "seal": self._seal_closure(
+                "seal": self._seal_for_run(
                     run_id,
                     crits,
                     artifact,
@@ -3627,7 +3702,7 @@ class LoopEngine:
                 # The folder handoff is judged the same way and sealed
                 # the same way - the human's files are part of what the
                 # closure decided on.
-                "seal": self._seal_closure(
+                "seal": self._seal_for_run(
                     run_id,
                     crits,
                     artifact,

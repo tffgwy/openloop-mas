@@ -21,6 +21,7 @@ from mas.verdict_text import (
     role_reading,
     source_reading,
     status_reading,
+    stopped_by_reading,
 )
 
 # The roles that represent a *charge*: an entry in these roles books
@@ -857,6 +858,17 @@ def run_summary(
         # The same split, as a flat map, for callers that want to look
         # a backend up without walking a list.
         "backend_tokens": dict(run_spend),
+        # The ceiling this run ran under, and which ceiling stopped
+        # it.
+        #
+        # The gap this closes: the report could say "the budget ran
+        # out" and "this round was only allowed 2 rounds", but the
+        # run's own end entry carried neither. A reader of the
+        # ledger could not learn where the 2 came from, and could not
+        # tell an iteration ceiling from a wall-clock one from a
+        # token one - three problems with three different fixes.
+        "budget": dict((end or {}).get("budget") or {}),
+        "stopped_by": str((end or {}).get("stopped_by") or ""),
     }
 
 
@@ -1207,6 +1219,9 @@ SEAL_READING: Dict[str, str] = {
     "tampered": "\u5c01\u5b58\u88ab\u6539\u8fc7",
     "missing": "\u6ca1\u6709\u5c01\u5b58",
     "unrecomputable": "\u7ed3\u8bba\u65e0\u6cd5\u91cd\u7b97",
+    # The run never reached a verdict. Nothing to recompute, nothing
+    # to drift - it is not a broken closure, it is an unfinished one.
+    "no-verdict": "\u672c\u6765\u5c31\u6ca1\u6709\u5224\u5b9a",
     "unknown-version": "\u5c01\u5b58\u683c\u5f0f\u8fc7\u65e7",
     "unknown": "\u672a\u77e5",
 }
@@ -1260,6 +1275,12 @@ def _seal_state(seal: Dict[str, Any], artifact_path: str) -> Dict[str, Any]:
     return outcome
 
 
+#: The reading of the ceiling that stopped a run. It lives in
+#: ``mas.verdict_text`` next to the other word tables, so the command
+#: line, the report and the MCP surface all say it the same way.
+_stopped_by_reading = stopped_by_reading
+
+
 def _run_source(run: Dict[str, Any]) -> str:
     """Where the answer of one run came from, in a word.
 
@@ -1270,7 +1291,7 @@ def _run_source(run: Dict[str, Any]) -> str:
     table cell and honest enough to be worth sitting there.
     """
     seal_state = str(run.get("seal_state") or "")
-    if seal_state and seal_state != "holds":
+    if seal_state and seal_state not in ("holds", "no-verdict"):
         return "\u26a0 \u7ed3\u8bba\u5df2\u6f02\u79fb"
     if run.get("handback"):
         return "🤝 人工交付物"
@@ -1388,7 +1409,7 @@ def _thread_source(thread: Dict[str, Any]) -> str:
     So the attempt that closed it is named.
     """
     seal_state = str(thread.get("seal_state") or "")
-    if seal_state and seal_state != "holds":
+    if seal_state and seal_state not in ("holds", "no-verdict"):
         return "\u26a0 \u7ed3\u8bba\u5df2\u6f02\u79fb"
     if thread.get("handback"):
         return "🤝 人工完成"
@@ -1827,8 +1848,17 @@ def build_report(
     # those three conclusions still hold is a report about the past
     # pretending to be a report about the present.
     sealed_runs = [r for r in runs if r.get("seal_state")]
+    # The closures that never reached a verdict. They carry a seal
+    # but no conclusion, so there is nothing that could have drifted
+    # - and counting them as drifted accused a run that never judged
+    # anything of having lied about it. They are counted apart.
+    no_verdict_runs = [
+        r for r in sealed_runs if str(r.get("seal_state") or "") == "no-verdict"
+    ]
     drifted_runs = [
-        r for r in sealed_runs if str(r.get("seal_state") or "") != "holds"
+        r
+        for r in sealed_runs
+        if str(r.get("seal_state") or "") not in ("holds", "no-verdict")
     ]
     # The approvals that were taken back. A wrong approval that the
     # report does not mention is a wrong approval the reader has to
@@ -1973,7 +2003,13 @@ def build_report(
         # in the rendered Markdown.
         "seal": {
             "sealed": len(sealed_runs),
-            "holds": len(sealed_runs) - len(drifted_runs),
+            "holds": len(
+                [r for r in sealed_runs if str(r.get("seal_state") or "") == "holds"]
+            ),
+            # The closures that never reached a verdict. Separate from
+            # the drift: nothing drifted, because nothing was
+            # concluded.
+            "no_verdict": len(no_verdict_runs),
             "drifted": len(drifted_runs),
             "ok": not drifted_runs,
             "states": {
@@ -2033,8 +2069,14 @@ def build_report(
             # How many closures carry a seal, and how many of those
             # still hold on the disk as it stands now.
             "sealed": len(sealed_runs),
-            "seal_holds": len(sealed_runs) - len(drifted_runs),
+            "seal_holds": len(
+                [r for r in sealed_runs if str(r.get("seal_state") or "") == "holds"]
+            ),
             "seal_drifted": len(drifted_runs),
+            # The closures that never reached a verdict. They are
+            # sealed but say nothing, so they are counted apart from
+            # the drift.
+            "seal_no_verdict": len(no_verdict_runs),
             # How many human approvals were taken back, and how many
             # drafts that touched. These are counts of *wrong
             # decisions*, not of runs - a wrong approval does not
@@ -2459,10 +2501,21 @@ def render_markdown(report: Dict[str, Any]) -> str:
     sealed = int(totals.get("sealed") or 0)
     if sealed:
         drifted = int(totals.get("seal_drifted") or 0)
+        no_verdict = int(totals.get("seal_no_verdict") or 0)
         if drifted:
             lines.append(
                 f"封存复核：{sealed} 条封存中，"
                 f"{drifted} 条结论已漂移（判定之后有东西被改过）"
+            )
+        elif no_verdict:
+            # The honest wording: not every seal carries a
+            # conclusion, so "全部仍然成立" would be a claim about
+            # closures that never concluded anything.
+            lines.append(
+                f"封存复核：{sealed} 条封存中，"
+                f"{no_verdict} 条本来就没有判定"
+                f"（没走到判定那一步，没有结论可漂移），"
+                f"其余 {int(totals.get('seal_holds') or 0)} 条仍然成立"
             )
         else:
             lines.append(
@@ -2573,7 +2626,7 @@ def render_markdown(report: Dict[str, Any]) -> str:
             # has to be visible *there*, not only in the detail of one
             # run.
             seal_state = str(thread.get("seal_state") or "")
-            if seal_state and seal_state != "holds":
+            if seal_state and seal_state not in ("holds", "no-verdict"):
                 state = "结论已漂移"
             ticket = str(thread.get("ticket_id") or "-")
             # Where the answer came from. A problem closed by a
@@ -2608,7 +2661,7 @@ def render_markdown(report: Dict[str, Any]) -> str:
         # but the result on the disk today is not the one that was
         # judged, so the table must not put a green mark next to it.
         seal_state = str(run.get("seal_state") or "")
-        drifted = bool(seal_state) and seal_state != "holds"
+        drifted = bool(seal_state) and seal_state not in ("holds", "no-verdict")
         if drifted:
             icon = "DRF"
         # A failed attempt that a later attempt replaced is history, not
@@ -3057,6 +3110,29 @@ def render_markdown(report: Dict[str, Any]) -> str:
             lines.append("- 错误：")
             for error in run["errors"]:
                 lines.append(f"  - {error}")
+        # The ceiling this run ran under, and which ceiling stopped
+        # it.
+        #
+        # The report used to say "the budget ran out" without saying
+        # what the budget *was*. The reader was told "this round was
+        # only allowed 2 rounds" and had no way to learn that the 2
+        # was the ceiling that stopped the run - or where the 2 came
+        # from. The three ceilings need three different reactions
+        # (raise the rounds, raise the seconds, raise the money), so
+        # the run has to name its own limits.
+        budget = run.get("budget") or {}
+        stopped_by = str(run.get("stopped_by") or "")
+        if budget:
+            lines.append(
+                "- \u5929\u82b1\u677f\uff1a\u8fed\u4ee3 %s \u8f6e / %s \u79d2 / %s token"
+                % (
+                    budget.get("max_iterations", "-"),
+                    budget.get("deadline_sec", "-"),
+                    budget.get("max_tokens", "-"),
+                )
+            )
+        if stopped_by:
+            lines.append("- \u505c\u5728\uff1a%s" % _stopped_by_reading(stopped_by))
         # Does the conclusion still hold? The seal was taken at the
         # moment of the decision; this is the check that says whether
         # the bytes it was decided on are still the bytes on the disk.
@@ -3068,6 +3144,16 @@ def render_markdown(report: Dict[str, Any]) -> str:
             lines.append(
                 "- 封存：✓ 结论仍然成立"
                 "（判定所依据的字节没有变过）"
+            )
+        elif seal_state == "no-verdict":
+            # The run never reached a verdict. Saying "the conclusion
+            # drifted" here would accuse a run that never concluded
+            # anything of lying - and the drift count in the headline
+            # would carry the same false accusation.
+            lines.append(
+                "- 封存：— 本来就没有判定"
+                "（这次运行没走到判定那一步，没有结论可言，"
+                "所以谈不上漂移）"
             )
         elif seal_state:
             reading = seal_reading(seal_state)

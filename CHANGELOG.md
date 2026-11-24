@@ -4,6 +4,75 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-11-24
+
+### 没有判定，就没有结论，也谈不上漂移
+
+v0.7.88 给每次闭环留下一枚**封存**：判定标准、交付物字节的哈希、
+运行写下的每个文件的哈希。`mas seal` 据此重算结论，看它是否还站得住。
+
+但封存是**无条件**写下的 —— 每次运行都写，包括那些压根没走到判定那一步的。
+一个撞上天花板就死掉的运行，它的封存带着一份空的评分清单，和一个写死的
+`"fail"`。
+
+报告把这枚封存读成了一份**结论**。结论无从重算（因为压根没什么可重算），
+于是封存回来的状态是 `unrecomputable`，报告把它记成**已漂移**：
+
+    封存复核：1 条封存中，1 条结论已漂移
+
+这是在指控一个运行**对它从未说过的话撒谎**。它没判定任何东西，
+所以它没下任何结论，所以它下的结论无从漂移。
+
+**误报漂移是最坏的一种误报** —— 一个学会了忽略它的读者，
+就会错过真的那一次。
+
+另一半的缺口更安静：运行自己的账本里**没有天花板**。
+预算在引擎里算好了、也交到了工单上，但这次运行的 `run_end` 从来不写它。
+于是报告能说「预算用完了」，读者却无从知道**天花板是什么**；
+报告能说「这一轮只允许 2 轮」，却不说那个 2 从哪来。
+三个天花板（轮数 / 秒数 / token）需要三种不同的补救动作，
+所以运行必须能说出自己的 limits。
+
+### 第三十一条不变量
+
+> **从未判定过任何东西的运行不得被报成「结论已漂移」；真的判定被改过时
+> 仍须报漂移；运行必须能说出自己的天花板与停在哪个天花板上；
+> 账本、报告、命令行与 MCP 得说同一件事。**
+
+### 改了什么
+
+* `mas/engine.py`：`run_end` 新增 `budget`（本次运行实际生效的天花板）与
+  `stopped_by`（停在 `max_iterations` / `deadline_sec` / `max_tokens` /
+  `provider_error` / `internal_error` 中的哪一个）；
+* `mas/engine.py`：封存只在**真的判定过**的时候才写 —— 新增
+  `_seal_for_run()` 作为唯一的守门点（原来守卫写在日志调用中间，
+  谁都没法打断它）；handback / folder-handoff 两条路径同样走这道门；
+* `mas/seal.py`：新增 `SEAL_STATE_NO_VERDICT = "no-verdict"` 与
+  `seal_has_verdict()`；`verify_seal()` 遇到没有判定的旧封存，返回
+  `state="no-verdict"` 且 `ok=True` —— **老账本里的旧封存同样不算漂移**；
+  `seal_report()` 新增 `no_verdict` 计数；
+* `mas/verdict_text.py`：新增 `STOPPED_BY_READING` 与 `stopped_by_reading()`，
+  五个停止原因各有一句人话；
+* `mas/report.py`：`drifted_runs` 排除 `holds` 与 `no-verdict`；
+  `totals` 的 `seal_holds` 只数 `holds`，新增 `seal_no_verdict`；
+  运行概览表、问题概览表与运行详情都不再指控没判定的运行；
+  运行详情新增两行：「天花板：迭代 N 轮 / N 秒 / N token」与「停在：<原因>」；
+  `run_summary()` 同步带上 `budget` 与 `stopped_by`（命令行与 MCP 自动继承）。
+
+### 门禁
+
+第 53 项门禁 `a_run_knows_its_ceiling`
+（`mas/selftest_run_knows_its_ceiling.py`）：
+
+* 用例里有**三次真实运行**：一次撞墙钟天花板，一次撞后端故障，
+  一次真的判定并闭环 —— 前两次必须**没有封存**、**不算漂移**；
+* 独立实现两遍判定：一遍读页面，一遍直接读账本原始行；
+* **另一半必须仍然报警**：真的判定过、事后被改过文件的闭环，
+  报告仍须说「结论已漂移」—— 修法不能退化成「永远不报警」；
+* 老账本里手工造出来的空判定封存，必须被读成 `no-verdict` 而不是漂移；
+* 自证能失败：把守门点打坏（又给没判定的运行封存），
+  门禁必须发现机器开始指控自己。
+
 ## [0.10.0] - 2026-11-24
 
 ### 这次运行的钱，花在了哪个后端上
