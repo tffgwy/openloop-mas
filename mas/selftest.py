@@ -126,6 +126,9 @@ from mas.selftest_run_knows_who_paid import (
 from mas.selftest_seal import (
     check_a_closure_is_sealed_to_the_bytes_it_decided_on,
 )
+from mas.selftest_seal_takeover import (
+    check_an_approved_change_is_not_a_drift,
+)
 from mas.selftest_shadow import (
     check_the_program_you_type_is_the_program_that_was_checked,
 )
@@ -5603,6 +5606,7 @@ CHECKS = (
     check_a_run_knows_its_ceiling,
     check_the_documents_are_still_text,
     check_the_selftest_leaves_the_machine_alone,
+    check_an_approved_change_is_not_a_drift,
 )
 
 #: How many gates the suite is expected to hold.

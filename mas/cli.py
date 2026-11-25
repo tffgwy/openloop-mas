@@ -1101,6 +1101,7 @@ def cmd_seal(args: argparse.Namespace) -> int:
         print("  新跑的循环会带上封存；想看已有的闭环：mas report")
         return 0
     no_verdict = int(report.get("no_verdict") or 0)
+    taken_over = int(report.get("taken_over") or 0)
     print(f"封存 {report['sealed']} 条，其中仍然成立 {report['holds']} 条。")
     if no_verdict:
         # A closure that never reached a verdict is not a broken closure -
@@ -1110,14 +1111,37 @@ def cmd_seal(args: argparse.Namespace) -> int:
             "另有 %d 条没走到判定（本来就没有结论，既不能重算也说不上漂移）。"
             % no_verdict
         )
+    if taken_over:
+        # A person reviewed the deliverable after the run closed and
+        # approved a change to it. The conclusion still holds - the
+        # bytes it was decided on are not the bytes on the disk, but
+        # the difference has a name on it. Saying "drifted" here
+        # would accuse a reviewer of tampering with the closure.
+        print(
+            "另有 %d 条被人审过后接手（结论仍然成立；改动有批准在案）。"
+            % taken_over
+        )
     for item in report.get("results") or []:
         state = str(item.get("state") or "")
         if state == "no-verdict":
             mark = "—"
             state = "本来就没有判定"
+        elif state == "taken-over":
+            mark = "OK "
+            state = "人工接手"
         else:
             mark = "OK " if item.get("ok") else "有变化"
         print(f"  [{mark}] {item.get('run_id')}  {state}")
+        for note in item.get("notes") or []:
+            print(f"        · {note}")
+        for item_taken in item.get("taken_over_files") or []:
+            print(
+                "        · 被人接手并批准：%s（批准 %s）"
+                % (
+                    item_taken.get("path") or "",
+                    item_taken.get("draft_id") or "",
+                )
+            )
         for problem in item.get("problems") or []:
             print(f"        - {problem}")
         for path in item.get("drifted_files") or []:
@@ -1126,7 +1150,13 @@ def cmd_seal(args: argparse.Namespace) -> int:
             print(f"        - 文件不在原处：{path}")
     if report.get("ok"):
         print()
-        print("每一份封存都还成立：判定所依据的字节没有变过，结论可以重算。")
+        if taken_over:
+            print(
+                "每一份封存都还成立：结论可以重算"
+                "（其中被人接手的那几条，改动有批准在案）。"
+            )
+        else:
+            print("每一份封存都还成立：判定所依据的字节没有变过，结论可以重算。")
         return 0
     print()
     print("有封存不再成立：判定之后有东西被改动了，或结论已经无法重算。")

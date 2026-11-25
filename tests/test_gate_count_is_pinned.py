@@ -80,6 +80,7 @@ EXPECTED_GATE_NAMES = (
     "a_run_knows_its_ceiling",
     "doc_text_integrity",
     "selftest_isolation",
+    "seal_takeover",
 )
 
 

@@ -814,6 +814,13 @@ def run_summary(
         "seal_missing_files": list(seal_check.get("missing_files") or []) if seal else [],
         "seal_recomputed": list(seal_check.get("recomputed") or []) if seal else [],
         "seal_model_judged": list(seal_check.get("model_judged") or []) if seal else [],
+        # The files a person took over after the run closed, with the
+        # approval that says so. They are kept apart from the drifted
+        # ones: one is a change with a name on it, the other is a
+        # change without one.
+        "seal_taken_over": list(seal_check.get("taken_over") or []) if seal else [],
+        "seal_taken_over_files": list(seal_check.get("taken_over_files") or []) if seal else [],
+        "seal_notes": list(seal_check.get("notes") or []) if seal else [],
         # The seal itself, so a reader of the JSON payload can do
         # their own checking instead of trusting the summary.
         "seal": seal,
@@ -1216,6 +1223,12 @@ def closure_grain(
 SEAL_READING: Dict[str, str] = {
     "holds": "\u7ed3\u8bba\u4ecd\u7136\u6210\u7acb",
     "drifted": "\u7ed3\u8bba\u5df2\u6f02\u79fb",
+    # A person reviewed the deliverable after the run closed and
+    # approved a change to it. The conclusion still holds - but the
+    # bytes it was decided on are not the bytes on the disk, and the
+    # difference has a name on it. That is not a drift, and the report
+    # must not call it one.
+    "taken-over": "\u4eba\u5de5\u63a5\u624b",
     "tampered": "\u5c01\u5b58\u88ab\u6539\u8fc7",
     "missing": "\u6ca1\u6709\u5c01\u5b58",
     "unrecomputable": "\u7ed3\u8bba\u65e0\u6cd5\u91cd\u7b97",
@@ -1264,12 +1277,22 @@ def _seal_state(seal: Dict[str, Any], artifact_path: str) -> Dict[str, Any]:
     from mas.seal import verify_seal
 
     artifact = None
+    artifact_bytes = None
     if artifact_path:
         try:
             artifact = pathlib.Path(artifact_path).read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             artifact = None
-    outcome = verify_seal(seal, artifact)
+        try:
+            artifact_bytes = pathlib.Path(artifact_path).read_bytes()
+        except OSError:
+            artifact_bytes = None
+    # The approvals are not passed in: the seal gathers them from the
+    # chain of the folder it was taken in. That is deliberate - the
+    # report holds one run's rows and not the machine's ledger, and
+    # the evidence has to be gathered in one place so that every face
+    # says the same thing about the same closure.
+    outcome = verify_seal(seal, artifact, artifact_bytes=artifact_bytes)
     outcome["state"] = str(outcome.get("state") or "unknown")
     outcome["ok"] = bool(outcome.get("ok"))
     return outcome
@@ -1291,8 +1314,10 @@ def _run_source(run: Dict[str, Any]) -> str:
     table cell and honest enough to be worth sitting there.
     """
     seal_state = str(run.get("seal_state") or "")
-    if seal_state and seal_state not in ("holds", "no-verdict"):
+    if seal_state and seal_state not in ("holds", "no-verdict", "taken-over"):
         return "\u26a0 \u7ed3\u8bba\u5df2\u6f02\u79fb"
+    if seal_state == "taken-over":
+        return "\ud83e\udd19 \u4eba\u5de5\u63a5\u624b"
     if run.get("handback"):
         return "🤝 人工交付物"
     if run.get("closed"):
@@ -1409,8 +1434,10 @@ def _thread_source(thread: Dict[str, Any]) -> str:
     So the attempt that closed it is named.
     """
     seal_state = str(thread.get("seal_state") or "")
-    if seal_state and seal_state not in ("holds", "no-verdict"):
+    if seal_state and seal_state not in ("holds", "no-verdict", "taken-over"):
         return "\u26a0 \u7ed3\u8bba\u5df2\u6f02\u79fb"
+    if seal_state == "taken-over":
+        return "\ud83e\udd19 \u4eba\u5de5\u63a5\u624b"
     if thread.get("handback"):
         return "🤝 人工完成"
     if thread.get("closed"):
@@ -1858,7 +1885,16 @@ def build_report(
     drifted_runs = [
         r
         for r in sealed_runs
-        if str(r.get("seal_state") or "") not in ("holds", "no-verdict")
+        if str(r.get("seal_state") or "")
+        not in ("holds", "no-verdict", "taken-over")
+    ]
+    # The closures a person took over after the run closed. The
+    # conclusion still holds - but the file was changed afterwards with
+    # an approval on the record. They are counted apart from the
+    # drift: a change with a name on it and a change without one are
+    # two different facts, and the report may not merge them.
+    taken_over_runs = [
+        r for r in sealed_runs if str(r.get("seal_state") or "") == "taken-over"
     ]
     # The approvals that were taken back. A wrong approval that the
     # report does not mention is a wrong approval the reader has to
@@ -2010,6 +2046,10 @@ def build_report(
             # the drift: nothing drifted, because nothing was
             # concluded.
             "no_verdict": len(no_verdict_runs),
+            # The closures a person took over. Separate from the
+            # drift: the conclusion still holds, and the change has an
+            # approval on the record.
+            "taken_over": len(taken_over_runs),
             "drifted": len(drifted_runs),
             "ok": not drifted_runs,
             "states": {
@@ -2073,6 +2113,8 @@ def build_report(
                 [r for r in sealed_runs if str(r.get("seal_state") or "") == "holds"]
             ),
             "seal_drifted": len(drifted_runs),
+            # The closures a person took over after the run closed.
+            "seal_taken_over": len(taken_over_runs),
             # The closures that never reached a verdict. They are
             # sealed but say nothing, so they are counted apart from
             # the drift.
@@ -2502,11 +2544,16 @@ def render_markdown(report: Dict[str, Any]) -> str:
     if sealed:
         drifted = int(totals.get("seal_drifted") or 0)
         no_verdict = int(totals.get("seal_no_verdict") or 0)
+        taken_over = int(totals.get("seal_taken_over") or 0)
         if drifted:
             lines.append(
                 f"封存复核：{sealed} 条封存中，"
                 f"{drifted} 条结论已漂移（判定之后有东西被改过）"
             )
+            if taken_over:
+                lines.append(
+                    f"另有 {taken_over} 条被人审过后接手（结论仍然成立）"
+                )
         elif no_verdict:
             # The honest wording: not every seal carries a
             # conclusion, so "全部仍然成立" would be a claim about
@@ -2517,10 +2564,20 @@ def render_markdown(report: Dict[str, Any]) -> str:
                 f"（没走到判定那一步，没有结论可漂移），"
                 f"其余 {int(totals.get('seal_holds') or 0)} 条仍然成立"
             )
+            if taken_over:
+                lines.append(
+                    f"另有 {taken_over} 条被人审过后接手（结论仍然成立）"
+                )
         else:
-            lines.append(
-                f"封存复核：{sealed} 条封存全部仍然成立"
-            )
+            if taken_over:
+                lines.append(
+                    f"封存复核：{sealed} 条封存全部仍然成立，"
+                    f"其中 {taken_over} 条被人审过后接手"
+                )
+            else:
+                lines.append(
+                    f"封存复核：{sealed} 条封存全部仍然成立"
+                )
     # The approvals that were taken back, in the headline. A report
     # that says "3 closed" and never says "2 of your approvals were
     # wrong" leaves the reader with a clean-looking machine and a
@@ -2626,8 +2683,14 @@ def render_markdown(report: Dict[str, Any]) -> str:
             # has to be visible *there*, not only in the detail of one
             # run.
             seal_state = str(thread.get("seal_state") or "")
-            if seal_state and seal_state not in ("holds", "no-verdict"):
+            if seal_state and seal_state not in ("holds", "no-verdict", "taken-over"):
                 state = "结论已漂移"
+            elif seal_state == "taken-over":
+                # The conclusion still holds. A person reviewed it and
+                # approved a change - so the problem is solved, and
+                # the file was improved afterwards. Calling it drifted
+                # would accuse a reviewer of tampering.
+                state = "已解决（人工接手）"
             ticket = str(thread.get("ticket_id") or "-")
             # Where the answer came from. A problem closed by a
             # human is not the same as a problem the loop closed
@@ -2661,7 +2724,11 @@ def render_markdown(report: Dict[str, Any]) -> str:
         # but the result on the disk today is not the one that was
         # judged, so the table must not put a green mark next to it.
         seal_state = str(run.get("seal_state") or "")
-        drifted = bool(seal_state) and seal_state not in ("holds", "no-verdict")
+        drifted = bool(seal_state) and seal_state not in (
+            "holds",
+            "no-verdict",
+            "taken-over",
+        )
         if drifted:
             icon = "DRF"
         # A failed attempt that a later attempt replaced is history, not
@@ -3155,6 +3222,27 @@ def render_markdown(report: Dict[str, Any]) -> str:
                 "（这次运行没走到判定那一步，没有结论可言，"
                 "所以谈不上漂移）"
             )
+        elif seal_state == "taken-over":
+            # A person approved a change to the deliverable after the
+            # run closed. The conclusion still holds - the change was
+            # reviewed and said so - so the seal is not broken and must
+            # not be reported as broken. The approval is named, so the
+            # reader can check it.
+            lines.append(
+                "- 封存：✓ 结论仍然成立"
+                "（判定之后被人审过并批准了改动，"
+                "结论没有被推翻）"
+            )
+            for note in run.get("seal_notes") or []:
+                lines.append(f"  - {note}")
+            for item in run.get("seal_taken_over_files") or []:
+                lines.append(
+                    "  - 被人接手并批准：`%s`（批准 %s）"
+                    % (
+                        item.get("path") or "",
+                        item.get("draft_id") or "",
+                    )
+                )
         elif seal_state:
             reading = seal_reading(seal_state)
             lines.append(f"- 封存：⚠ **{reading}**")

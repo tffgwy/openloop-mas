@@ -2891,3 +2891,84 @@ headline 为「封存复核：1 条封存全部仍然成立」，正文不含「
 
 * 第 53 项门禁 `a_run_knows_its_ceiling`（`mas/selftest_run_knows_its_ceiling.py`）；
 * 回归测试 `tests/test_run_knows_its_ceiling_901.py`（9 项）。
+
+## X. v0.11.2 -- 有人批准过的改动，不该被指控成「结论漂移」
+
+### 触发原因
+
+v0.11.1 让**没有判定**的运行不再被报成漂移。这一版处理的是它的对面：
+一个**真的判定过**的闭环，在被人正常接手之后，封存复核说它「结论已漂移」。
+
+漂移是一个**指控** —— 它说的是「这次运行对它从未说过的话撒谎」。
+可是很常见的一种情况根本不是这样：人审阅了交付物，批了一个改动，
+改动写回了磁盘，然后复核发现字节对不上，于是报告说漂移。
+
+**人做的是闭环该做的事，不是在攻击闭环。** 而且那次批准**有记录** ——
+它躺在哈希链接的审计链里，带着它写下的那些字节的哈希。
+
+所以这一版把两种情况分开：
+
+| 磁盘上的字节是… | 判定 | 状态 |
+| --- | --- | --- |
+| 一次**被批准的**改动写下的字节（同一文件夹、同一文件） | 结论仍然成立，人接手了它 | `taken-over`（人工接手） |
+| 其它任何字节 | 没人批准过，那就是漂移 | `drifted`（结论已漂移） |
+
+**锁没有被削弱**：没批准的改动照样报漂移，跨文件夹的批准不背书，
+被撤销掉的批准不背书，审计链坏掉时**这个文件夹里一条批准都不采信**。
+
+### 第三十三条不变量
+
+> **一次合法的人工批准之后，封存复核不得指控这次运行撒谎；「人批准过」
+> 与「人偷偷改过」必须是两件事、两种说法；没批准的改动仍须报漂移；
+> 报告、命令行、状态页与 MCP 得说同一件事。**
+
+### 改了什么
+
+| 文件 | 改了什么 |
+| --- | --- |
+| `mas/seal.py` | 新增 `SEAL_STATE_TAKEN_OVER = "taken-over"` 与 `seal_has_verdict()` 同级的状态；`approved_bytes()` 重构为**以哈希链接的审计链为权威源**（链验不过 -> 该文件夹一条批准都不采信；链不存在 -> 回退到账本行）；新增 `approvals_in_workspace()` 供只握一枚封存的面自行取证；新增 `_same_workspace()` 消除短路径 / 长路径 / 大小写差异；`verify_seal()` 新增 `taken_over` / `taken_over_files` / `notes`，交付物维度改用**磁盘字节哈希**查批准 |
+| `mas/report.py` | `SEAL_READING` 加「人工接手」；四处漂移判定全部排除 `taken-over`；headline 加「N 条被人审过后接手」；`totals` 加 `seal_taken_over`；`run_summary()` 同步带上 `seal_taken_over` / `seal_taken_over_files` / `seal_notes` |
+| `mas/cli.py` | `mas seal` 增加 taken_over 计数、「人工接手」状态展示与明细，区分成功文案 |
+| `mas/selftest_seal_takeover.py` | 第 54 项门禁 |
+| `tests/test_seal_takeover_903.py` | 回归测试（13 项） |
+
+### 顺带修掉的一个跨层同族 bug
+
+`verify_seal()` 原本拿**交付物文本的哈希**去比**批准记录的字节哈希**。
+这两个数在大多数机器上根本不是一回事 —— 只有在**不重写换行**的机器上
+（Linux / macOS）才碰巧相等。Windows 的 `write_text` 会把 `\n` 转成 `\r\n`，
+于是两层哈希永远不等，批准永远配不上，**每一次经批准的改动都被报成漂移**。
+
+这和 v0.7.77 那次抓到的 bug 是**同一族**：拿两个不同基准的数字做比较，
+等于没比较。修法同样 —— 改用**磁盘上的字节哈希**去查批准，
+基准一致了才可比。
+
+### 本轮实测证据
+
+探针 `work/tmp/probe13.py`（真实闭环 -> 人批准一个改动 -> 再复核）：
+
+| 检查 | 结果 |
+| --- | --- |
+| 闭环刚成立时 | `holds=1` `taken_over=0` `drifted=0` |
+| 一次**已批准**的改动之后 | `state=taken-over` `drifted_files=[]` `taken_over_files=['notes/finding.txt']` |
+| 一次**未批准**的改动之后 | `state=drifted` `drifted_files=['notes/finding.txt']` |
+
+探针 `work/tmp/probe8.py`（交付物维度）：
+
+| 检查 | 结果 |
+| --- | --- |
+| 闭环刚成立时 | `sealed=1` `holds=1` `drifted=0` |
+| 已批准的编辑之后 | `sealed=1` `holds=0` `drifted=0` `state=taken-over` |
+
+第 54 项门禁 `seal_takeover`：`ok: True rounds: 2`；`CHECKS` 数量 **54**
+（最后一个是 `seal_takeover`）。
+
+### 门禁与测试
+
+* 第 54 项门禁 `seal_takeover`（`mas/selftest_seal_takeover.py`）——
+  独立实现两遍判定，且**自证能失败**（把 take-over 退回漂移，门禁必须报红）；
+* 回归测试 `tests/test_seal_takeover_903.py`（13 项）——
+  覆盖 take-over 不是 drift、未批准仍是 drift、撤销后不背书、
+  跨 workspace 不背书、链坏不背书、报告 / JSON 一致、门禁注册。
+* **测试里必须用 `write_bytes` 而不是 `write_text`** —— 这是 v0.7.77 留下的教训：
+  `write_text` 在 Windows 上会改换行，会让两个本来应该不同的哈希碰巧相同。
