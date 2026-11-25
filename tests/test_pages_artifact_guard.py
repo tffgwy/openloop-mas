@@ -16,6 +16,8 @@ defects of the site:
 This file pins the guard that closes both holes: it waits for the
 artifact to be listed, and it leaves exactly one behind.
 """
+import base64
+import json
 import pathlib
 import sys
 import unittest
@@ -30,6 +32,21 @@ import pages_artifact_guard as guard_module  # noqa: E402
 
 def _artifact(artifact_id, name="github-pages"):
     return {"id": artifact_id, "name": name, "size_in_bytes": 10}
+
+
+def _runtime_token(run_id="run-123", job_id="job-456"):
+    """Build an unsigned JWT that carries an Actions.Results scope."""
+
+    def _part(payload):
+        raw = json.dumps(payload).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+    scope = "Actions.ExampleScope"
+    if run_id:
+        scope += " Actions.Results:%s:%s" % (run_id, job_id)
+    header = _part({"alg": "none", "typ": "JWT"})
+    body = _part({"scp": scope})
+    return "%s.%s." % (header, body)
 
 
 class TheNewestArtifactIsTheOneToDeploy(unittest.TestCase):
@@ -148,6 +165,101 @@ class TheWorkflowUsesTheGuard(unittest.TestCase):
         self.assertNotEqual(guard_at, -1, "the Pages workflow does not call the guard")
         self.assertNotEqual(deploy_at, -1, "the Pages workflow does not deploy at all")
         self.assertLess(guard_at, deploy_at, "the guard has to run before the deploy")
+
+
+class TheGuardSpeaksTheDeployStepsLanguage(unittest.TestCase):
+    """The guard has to watch the index the deploy step actually reads.
+
+    The deploy step does not use the public REST API - it uses the
+    internal results service through a Twirp call. The two indexes are
+    not the same, and a guard that watches only the REST one reports
+    "one artifact, all good" while the deploy step still finds none.
+    """
+
+    def test_the_runtime_variables_are_preferred_over_the_rest_api(self):
+        calls = []
+
+        def fake_twirp(url, token, run_id, job_id):
+            calls.append(("twirp", url, run_id, job_id))
+            return [{"id": 1, "name": "github-pages", "size": 10}]
+
+        def fake_rest(repo, run_id, token=None):
+            calls.append(("rest", repo, run_id))
+            return [{"id": 2, "name": "github-pages", "size": 10}]
+
+        env = {
+            "ACTIONS_RUNTIME_TOKEN": _runtime_token("run-id", "job-id"),
+            "ACTIONS_RESULTS_URL": "https://results.example/",
+        }
+        with (
+            mock.patch.dict("os.environ", env, clear=False),
+            mock.patch.object(guard_module, "_twirp_list", fake_twirp),
+            mock.patch.object(guard_module, "_rest_list", fake_rest),
+        ):
+            listing = guard_module.list_artifacts("owner/name", "123")
+
+        self.assertEqual(calls[0][0], "twirp", "the deploy step's own index has to be used")
+        self.assertEqual(listing[0]["id"], 1)
+
+    def test_outside_a_runner_the_rest_api_is_the_fallback(self):
+        env = {"ACTIONS_RUNTIME_TOKEN": "", "ACTIONS_RESULTS_URL": ""}
+        calls = []
+
+        def fake_rest(repo, run_id, token=None):
+            calls.append(repo)
+            return [{"id": 3, "name": "github-pages", "size": 10}]
+
+        with (
+            mock.patch.dict("os.environ", env, clear=False),
+            mock.patch.object(guard_module, "_rest_list", fake_rest),
+        ):
+            listing = guard_module.list_artifacts("owner/name", "123")
+
+        self.assertEqual(calls, ["owner/name"])
+        self.assertEqual(listing[0]["id"], 3)
+
+    def test_the_twirp_request_carries_the_backend_ids(self):
+        captured = {}
+
+        class _Response:
+            def read(self):
+                return json.dumps(
+                    {"artifacts": [{"databaseId": "42", "name": "github-pages", "size": "7"}]}
+                ).encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def fake_urlopen(request, timeout=None):
+            captured["url"] = request.full_url
+            captured["body"] = request.data.decode("utf-8")
+            captured["headers"] = request.headers
+            return _Response()
+
+        with mock.patch.object(guard_module.urllib.request, "urlopen", fake_urlopen):
+            listing = guard_module._twirp_list(
+                "https://results.example/", "token-value", "run-id", "job-id"
+            )
+
+        self.assertIn("/twirp/%s/%s" % (guard_module.TWIRP_SERVICE, guard_module.TWIRP_METHOD), captured["url"])
+        body = json.loads(captured["body"])
+        self.assertEqual(body["workflow_run_backend_id"], "run-id")
+        self.assertEqual(body["workflow_job_run_backend_id"], "job-id")
+        self.assertEqual(listing, [{"id": 42, "name": "github-pages", "size": 7}])
+
+
+class TheBackendIdsAreReadFromTheRuntimeToken(unittest.TestCase):
+    def test_the_actions_results_scope_is_decoded(self):
+        token = _runtime_token("run-123", "job-456")
+        self.assertEqual(guard_module.backend_ids(token), ("run-123", "job-456"))
+
+    def test_a_token_without_the_scope_is_reported(self):
+        token = _runtime_token("", "")
+        with self.assertRaises(guard_module.GuardError):
+            guard_module.backend_ids(token)
 
 
 if __name__ == "__main__":

@@ -35,15 +35,21 @@ jobs:
           path: site/
       - name: Guard the Pages artifact
         # The deploy step reads the artifact back *by name*, and the
-        # listing API is not updated the instant the upload reports
-        # success. Asking it too early yields "Found 0 artifact(s)"
-        # and a red run for a site that is perfectly fine.
+        # listing it performs can come back empty for an artifact that
+        # was finalized a fraction of a second earlier - see
+        # actions/deploy-pages#451. Asking it too early yields
+        # "Found 0 artifact(s)" and a red run for a site that is
+        # perfectly fine.
         #
         # Re-running a failed attempt makes it worse: the old artifact
         # is not replaced but joined by a second one under the same
         # name, and the deploy step then refuses to choose between them
         # ("Found 2 artifact(s)"). So the guard both waits for the
         # artifact to become visible and removes the stale copies.
+        #
+        # The guard watches the *same* index the deploy step reads - the
+        # internal results service - because the public REST listing is
+        # a different one and can be ahead of it.
         #
         # The wait is bounded, and the guard fails the run when the
         # artifact never shows up - a missing upload must not be
