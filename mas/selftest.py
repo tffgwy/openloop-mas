@@ -129,6 +129,9 @@ from mas.selftest_seal import (
 from mas.selftest_seal_takeover import (
     check_an_approved_change_is_not_a_drift,
 )
+from mas.selftest_seal_takeover_everywhere import (
+    check_the_takeover_is_visible_everywhere,
+)
 from mas.selftest_shadow import (
     check_the_program_you_type_is_the_program_that_was_checked,
 )
@@ -5607,6 +5610,7 @@ CHECKS = (
     check_the_documents_are_still_text,
     check_the_selftest_leaves_the_machine_alone,
     check_an_approved_change_is_not_a_drift,
+    check_the_takeover_is_visible_everywhere,
 )
 
 #: How many gates the suite is expected to hold.

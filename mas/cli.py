@@ -45,6 +45,8 @@ from mas.report import (
     replay_trace,
     run_summaries,
     run_summary,
+    seal_overview,
+    seal_reading,
     spend_by_backend_of_run,
     verdict_word,
 )
@@ -610,6 +612,23 @@ def cmd_status(args: argparse.Namespace) -> int:
         [t for t in tickets if t.get("state") == "waiting_human"]
     )
     runs = run_summaries(rows)
+    # The seal, reconciled against the disk as it stands now.
+    #
+    # The gap this closes: v0.11.2 taught the seal a third state,
+    # ``taken-over`` - the conclusion still holds, but a person
+    # approved a change to the deliverable after the run closed. The
+    # report and ``mas seal`` said so. The status page said **nothing
+    # at all** - no seal, no drift, no take-over.
+    #
+    # And the status page is the page a beginner opens first. So a
+    # person who read the report learned that a person had taken the
+    # deliverable over; a person who read the status page learned
+    # nothing and had to assume the file had never been touched.
+    #
+    # The reading lives in ``mas.report.seal_overview()``, so the
+    # status page, the report and the replay cannot disagree about
+    # the same closure.
+    seal_view = seal_overview(runs)
     # Which backend really answered each run.
     #
     # The status page prints "provider: openai_compat / gpt-4o" -
@@ -768,6 +787,24 @@ def cmd_status(args: argparse.Namespace) -> int:
             "ok": True,
             "problems": [],
         },
+        # The sealed conclusions, checked against the disk as it
+        # stands now. A status page that says "3 closed" and does not
+        # say whether those three conclusions still hold is a status
+        # page about the past pretending to be about the present.
+        "seal": {
+            "sealed": int(seal_view.get("sealed") or 0),
+            "holds": int(seal_view.get("holds") or 0),
+            # The closures that never reached a verdict. They carry a
+            # seal but no conclusion, so nothing could have drifted.
+            "no_verdict": int(seal_view.get("no_verdict") or 0),
+            # The closures a person took over: the conclusion still
+            # holds, and the change has an approval on the record.
+            "taken_over": int(seal_view.get("taken_over") or 0),
+            "drifted": int(seal_view.get("drifted") or 0),
+            # A take-over does not break the seal. Only a drift does.
+            "ok": bool(seal_view.get("ok")),
+            "items": list(seal_view.get("items") or []),
+        },
         # The deliverables, and whether they are still on disk.
         "artifacts": {
             "count": len(artifacts),
@@ -879,6 +916,48 @@ def cmd_status(args: argparse.Namespace) -> int:
         )
         for problem in list(audit.get("problems") or [])[:3]:
             print(f"  ⚠ {problem}")
+    # The sealed conclusions. The reader asked "is the result still
+    # true?" - and the status page is where a person asks it. The
+    # three states are three different answers and they are kept
+    # apart: a conclusion that still holds, a conclusion a person
+    # took over (the change has an approval on the record), and a
+    # conclusion that drifted (nobody said so, and the bytes are
+    # different).
+    seal = payload.get("seal") or {}
+    if int(seal.get("sealed") or 0):
+        parts = []
+        holds = int(seal.get("holds") or 0)
+        taken_over = int(seal.get("taken_over") or 0)
+        drifted = int(seal.get("drifted") or 0)
+        no_verdict = int(seal.get("no_verdict") or 0)
+        if holds:
+            parts.append(f"仍然成立 {holds}")
+        if taken_over:
+            parts.append(f"人工接手 {taken_over}")
+        if no_verdict:
+            parts.append(f"本来就没有判定 {no_verdict}")
+        if drifted:
+            parts.append(f"已漂移 {drifted}")
+        print(f"封存复核：{seal.get('sealed')} 条，{'，'.join(parts) or '没有结论'}")
+        for item in seal.get("items") or []:
+            state = str(item.get("state") or "")
+            if state == "taken-over":
+                print(f"  [OK ] {item.get('run_id')}  人工接手")
+                for note in item.get("notes") or []:
+                    print(f"        · {note}")
+                for taken in item.get("taken_over_files") or []:
+                    print(
+                        "        · 被人接手并批准：%s（批准 %s）"
+                        % (taken.get("path") or "", taken.get("draft_id") or "")
+                    )
+            elif state == "drifted" or (state and not item.get("ok")):
+                print(f"  [⚠  ] {item.get('run_id')}  结论已漂移")
+                for problem in item.get("problems") or []:
+                    print(f"        - {problem}")
+                for path in item.get("drifted_files") or []:
+                    print(f"        - 文件被改过：{path}")
+                for path in item.get("missing_files") or []:
+                    print(f"        - 文件不在原处：{path}")
     print(f"交付物：{payload['artifacts']['count']} 份")
     for item in artifacts:
         flag = "OK " if item["exists"] else "缺失"
@@ -2792,6 +2871,44 @@ def cmd_replay(args: argparse.Namespace) -> int:
             human_note = block.get("human_note") or ""
             if human_note:
                 print(f"      人工意见：{human_note}")
+        # Does the conclusion still hold on the bytes that are on the
+        # disk now? The seal was taken at the moment of the decision;
+        # this is the check that says whether the bytes it was decided
+        # on are still the bytes on the disk.
+        #
+        # The replay used to say nothing at all about the seal - not
+        # even about a conclusion that had drifted. An agent asking
+        # "what happened to the file after the run closed?" got
+        # silence, and silence reads as "nothing happened".
+        seal_state = str(block.get("seal_state") or "")
+        if seal_state == "holds":
+            print("   ✓ 封存：结论仍然成立")
+        elif seal_state == "no-verdict":
+            print("   — 封存：本来就没有判定")
+        elif seal_state == "taken-over":
+            # A person reviewed the deliverable after the run closed
+            # and approved a change to it. The conclusion still holds
+            # - the change was reviewed and said so - so the seal is
+            # not broken and must not be reported as broken.
+            print(
+                "   ✓ 封存：结论仍然成立"
+                "（判定之后被人审过并批准了改动）"
+            )
+            for note in block.get("seal_notes") or []:
+                print(f"      · {note}")
+            for item in block.get("seal_taken_over_files") or []:
+                print(
+                    "      · 被人接手并批准：`%s`（批准 %s）"
+                    % (item.get("path") or "", item.get("draft_id") or "")
+                )
+        elif seal_state:
+            print("   ⚠ 封存：%s" % seal_reading(seal_state))
+            for problem in block.get("seal_problems") or []:
+                print(f"      - {problem}")
+            for path in block.get("seal_drifted_files") or []:
+                print(f"      - 文件被改过：`{path}`")
+            for path in block.get("seal_missing_files") or []:
+                print(f"      - 文件不在原处：`{path}`")
         for step in trace["steps"]:
             if step.get("run_id") != block.get("run_id"):
                 continue

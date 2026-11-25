@@ -27,6 +27,8 @@ from mas.report import (
     ledger_markdown,
     render_markdown,
     replay_trace,
+    run_summaries,
+    seal_overview,
 )
 from mas.teams import list_teams, load_team
 from mas.undos import draft_histories
@@ -802,6 +804,52 @@ def handle_tool(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
                 "names": [],
                 "items": [],
                 "spend_by_backend": {},
+            }
+        # The sealed conclusions, checked against the disk as it
+        # stands now.
+        #
+        # The gap this closes: v0.11.2 taught the seal a third state,
+        # ``taken-over`` - the conclusion still holds, but a person
+        # approved a change to the deliverable after the run closed.
+        # The report and ``mas seal`` said so; the MCP status tool
+        # said nothing at all about the seal - not even about a
+        # conclusion that had drifted.
+        #
+        # An agent asking "is the result still true?" - the first
+        # question anyone asks a status tool - got no answer from the
+        # very tool that looks like the place to ask it. The reading
+        # lives in ``mas.report.seal_overview()``, so the agent, the
+        # report and the command line cannot disagree about the same
+        # closure.
+        try:
+            rows = engine.ledger.entries()
+            seal_view = seal_overview(run_summaries(rows))
+            payload["seal"] = {
+                "sealed": int(seal_view.get("sealed") or 0),
+                "holds": int(seal_view.get("holds") or 0),
+                # The closures that never reached a verdict. They
+                # carry a seal but no conclusion, so nothing could
+                # have drifted.
+                "no_verdict": int(seal_view.get("no_verdict") or 0),
+                # The closures a person took over: the conclusion
+                # still holds, and the change has an approval on the
+                # record.
+                "taken_over": int(seal_view.get("taken_over") or 0),
+                "drifted": int(seal_view.get("drifted") or 0),
+                # A take-over does not break the seal. Only a drift
+                # does.
+                "ok": bool(seal_view.get("ok")),
+                "items": list(seal_view.get("items") or []),
+            }
+        except Exception:  # noqa: BLE001 - status must never crash
+            payload["seal"] = {
+                "sealed": 0,
+                "holds": 0,
+                "no_verdict": 0,
+                "taken_over": 0,
+                "drifted": 0,
+                "ok": True,
+                "items": [],
             }
         # A draft that sits on a conflict is a decision the human still
         # owes. It is invisible from the tickets - those are for the

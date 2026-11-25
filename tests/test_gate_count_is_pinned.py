@@ -81,6 +81,7 @@ EXPECTED_GATE_NAMES = (
     "doc_text_integrity",
     "selftest_isolation",
     "seal_takeover",
+    "seal_takeover_everywhere",
 )
 
 

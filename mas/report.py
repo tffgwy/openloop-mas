@@ -1248,6 +1248,96 @@ def seal_reading(state: Any) -> str:
     return SEAL_READING.get(key, key)
 
 
+def seal_overview(runs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """What the seal says about a set of runs - in one place.
+
+    The gap this closes
+    ------------------
+    v0.11.2 taught the seal a third state, ``taken-over``: the
+    conclusion still holds, but a person approved a change to the
+    deliverable after the run closed. The *report* and ``mas seal``
+    said so - and the status page and the replay said **nothing at
+    all** about the seal, drift or take-over.
+
+    That is the same shape of bug this project keeps meeting: the
+    capability exists in one place and the other surfaces cannot see
+    it. A person who read the report learned that a person had taken
+    over the deliverable; a person who read the status page - the
+    page a beginner opens first - learned nothing, and had to assume
+    the file had never been touched.
+
+    So the reading lives here, and every surface calls it. The count
+    of the sealed closures, how many still hold, how many a person
+    took over, how many drifted - and, for each of them, the words
+    and the file names.
+    """
+    sealed_runs = [r for r in (runs or []) if r.get("seal_state")]
+    # The closures that never reached a verdict. They carry a seal
+    # but no conclusion, so there was nothing that could have drifted
+    # - and calling them drifted accused a run that never judged
+    # anything of having lied about it.
+    no_verdict = [
+        r for r in sealed_runs if str(r.get("seal_state") or "") == "no-verdict"
+    ]
+    # The closures a person took over after the run closed. The
+    # conclusion still holds - the file was changed afterwards with
+    # an approval on the record. A change with a name on it and a
+    # change without one are two different facts, and they may not
+    # be merged into one number.
+    taken_over = [
+        r for r in sealed_runs if str(r.get("seal_state") or "") == "taken-over"
+    ]
+    # Everything else that carries a seal is a drift: the bytes the
+    # closure was decided on are not the bytes on the disk, and
+    # nobody said so.
+    drifted = [
+        r
+        for r in sealed_runs
+        if str(r.get("seal_state") or "") not in ("holds", "no-verdict", "taken-over")
+    ]
+    items: List[Dict[str, Any]] = []
+    for run in sealed_runs:
+        state = str(run.get("seal_state") or "")
+        items.append(
+            {
+                "run_id": str(run.get("run_id") or ""),
+                "state": state,
+                "reading": seal_reading(state),
+                "ok": bool(run.get("seal_ok")),
+                "problems": list(run.get("seal_problems") or []),
+                "drifted_files": list(run.get("seal_drifted_files") or []),
+                "missing_files": list(run.get("seal_missing_files") or []),
+                "model_judged": list(run.get("seal_model_judged") or []),
+                # The files a person took over, with the approval
+                # that says so. Kept apart from the drifted ones:
+                # one is a change with a name on it, the other is a
+                # change without one.
+                "taken_over": list(run.get("seal_taken_over") or []),
+                "taken_over_files": list(run.get("seal_taken_over_files") or []),
+                # The notes explain the take-over. They are not
+                # problems - a note is not an accusation.
+                "notes": list(run.get("seal_notes") or []),
+            }
+        )
+    return {
+        "sealed": len(sealed_runs),
+        "holds": len(
+            [r for r in sealed_runs if str(r.get("seal_state") or "") == "holds"]
+        ),
+        "no_verdict": len(no_verdict),
+        "taken_over": len(taken_over),
+        "drifted": len(drifted),
+        # The whole point of the take-over: the conclusion still
+        # holds. A drift is the only thing that breaks the seal.
+        "ok": not drifted,
+        "states": {
+            str(r.get("run_id") or ""): str(r.get("seal_state") or "")
+            for r in sealed_runs
+        },
+        "items": items,
+    }
+
+
 def _seal_of(row: Dict[str, Any] | None) -> Dict[str, Any]:
     """The seal of one ledger row, or an empty dict.
 
@@ -1879,23 +1969,17 @@ def build_report(
     # but no conclusion, so there is nothing that could have drifted
     # - and counting them as drifted accused a run that never judged
     # anything of having lied about it. They are counted apart.
-    no_verdict_runs = [
-        r for r in sealed_runs if str(r.get("seal_state") or "") == "no-verdict"
-    ]
     drifted_runs = [
         r
         for r in sealed_runs
         if str(r.get("seal_state") or "")
         not in ("holds", "no-verdict", "taken-over")
     ]
-    # The closures a person took over after the run closed. The
-    # conclusion still holds - but the file was changed afterwards with
-    # an approval on the record. They are counted apart from the
-    # drift: a change with a name on it and a change without one are
-    # two different facts, and the report may not merge them.
-    taken_over_runs = [
-        r for r in sealed_runs if str(r.get("seal_state") or "") == "taken-over"
-    ]
+    # The seal, reconciled against the disk as it stands now. The
+    # reading lives in ``seal_overview()``, so the report, the status
+    # page and the replay cannot disagree about how many closures a
+    # person took over - and about whether the seal still holds.
+    _seal_overview = seal_overview(runs)
     # The approvals that were taken back. A wrong approval that the
     # report does not mention is a wrong approval the reader has to
     # find in the audit chain by hand.
@@ -2037,26 +2121,7 @@ def build_report(
         # asks the report for the facts; the seal reconciliation is
         # a fact about the present, so it belongs here and not only
         # in the rendered Markdown.
-        "seal": {
-            "sealed": len(sealed_runs),
-            "holds": len(
-                [r for r in sealed_runs if str(r.get("seal_state") or "") == "holds"]
-            ),
-            # The closures that never reached a verdict. Separate from
-            # the drift: nothing drifted, because nothing was
-            # concluded.
-            "no_verdict": len(no_verdict_runs),
-            # The closures a person took over. Separate from the
-            # drift: the conclusion still holds, and the change has an
-            # approval on the record.
-            "taken_over": len(taken_over_runs),
-            "drifted": len(drifted_runs),
-            "ok": not drifted_runs,
-            "states": {
-                str(run.get("run_id") or ""): str(run.get("seal_state") or "")
-                for run in sealed_runs
-            },
-        },
+        "seal": _seal_overview,
         # The approvals that were taken back. The ledger and the audit
         # chain both remember them; this is where the report says so.
         "undos": undos,
@@ -2108,17 +2173,15 @@ def build_report(
             "tokens": sum(int(run.get("tokens") or 0) for run in runs),
             # How many closures carry a seal, and how many of those
             # still hold on the disk as it stands now.
-            "sealed": len(sealed_runs),
-            "seal_holds": len(
-                [r for r in sealed_runs if str(r.get("seal_state") or "") == "holds"]
-            ),
+            "sealed": int(_seal_overview.get("sealed") or 0),
+            "seal_holds": int(_seal_overview.get("holds") or 0),
             "seal_drifted": len(drifted_runs),
             # The closures a person took over after the run closed.
-            "seal_taken_over": len(taken_over_runs),
+            "seal_taken_over": int(_seal_overview.get("taken_over") or 0),
             # The closures that never reached a verdict. They are
             # sealed but say nothing, so they are counted apart from
             # the drift.
-            "seal_no_verdict": len(no_verdict_runs),
+            "seal_no_verdict": int(_seal_overview.get("no_verdict") or 0),
             # How many human approvals were taken back, and how many
             # drafts that touched. These are counts of *wrong
             # decisions*, not of runs - a wrong approval does not
@@ -3330,12 +3393,18 @@ def replay_trace(
         )
     # The runs in the trace, each with the outcome the ledger booked.
     run_blocks: List[Dict[str, Any]] = []
+    # The summaries, read once. Reading a run twice means reading the
+    # seal twice - and the seal reads the disk, so a file that changes
+    # between the two readings would give the replay two different
+    # answers about the same closure. One reading, one answer.
+    summaries: List[Dict[str, Any]] = []
     for group in group_runs(rows):
         summary = run_summary(
             group["run_id"],
             group["rows"],
             decisions_of_run(group.get("decisions") or [], group["run_id"]),
         )
+        summaries.append(summary)
         run_blocks.append(
             {
                 "run_id": summary["run_id"],
@@ -3412,12 +3481,52 @@ def replay_trace(
                     summary.get("spend_by_backend") or {}
                 ),
                 "decisions": summary.get("decisions") or {},
+                # Whether the conclusion of this run still holds on
+                # the bytes that are on the disk now.
+                #
+                # The gap this closes: the replay is what an agent
+                # reads through MCP, and it is what a person opens to
+                # understand how a problem was solved. v0.11.2 taught
+                # the seal a third state - ``taken-over``: the
+                # conclusion still holds, but a person approved a
+                # change to the deliverable after the run closed - and
+                # the replay said **nothing at all** about it. An
+                # agent asking "what happened to the file after the
+                # run closed?" got silence, and silence reads as
+                # "nothing happened" - which is the opposite of the
+                # truth.
+                #
+                # So the run block carries the seal, and the replay
+                # says about it what the report says about it.
+                "seal_state": summary.get("seal_state"),
+                "seal_ok": summary.get("seal_ok"),
+                "seal_problems": list(summary.get("seal_problems") or []),
+                "seal_drifted_files": list(
+                    summary.get("seal_drifted_files") or []
+                ),
+                "seal_missing_files": list(
+                    summary.get("seal_missing_files") or []
+                ),
+                "seal_model_judged": list(
+                    summary.get("seal_model_judged") or []
+                ),
+                # The files a person took over, with the approval that
+                # says so. Kept apart from the drifted ones: one is a
+                # change with a name on it, the other is a change
+                # without one.
+                "seal_taken_over": list(summary.get("seal_taken_over") or []),
+                "seal_taken_over_files": list(
+                    summary.get("seal_taken_over_files") or []
+                ),
+                # The notes explain the take-over. They are not
+                # problems - a note is not an accusation.
+                "seal_notes": list(summary.get("seal_notes") or []),
             }
         )
     # The problems behind the runs, so a reader sees "one problem, two
     # attempts" instead of two flat runs.
     threads = group_threads(
-        run_summaries(rows),
+        summaries,
         queue_closed_by_success(tickets),
     )
     return {
@@ -3429,6 +3538,11 @@ def replay_trace(
         "runs": run_blocks,
         "threads": threads,
         "problems_open": len([t for t in threads if not t.get("closed")]),
+        # The seal, reconciled against the disk as it stands now. The
+        # same reading the report and the status page get, so the
+        # three of them cannot disagree about whether a conclusion
+        # still holds.
+        "seal": seal_overview(summaries),
     }
 
 
