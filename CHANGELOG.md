@@ -54,6 +54,39 @@ Windows 3.13 全绿。
   `tests.test_run_knows_its_ceiling_901` 由 2 失败转为 9 全绿；
 * 本机 CPython 3.14.10：`tests.test_engine` + 新增用例 147 项全绿。
 
+### 顺带修好的：站点部署的竞态
+
+这次发布还暴露了一个与引擎无关、但同样属于「闭环」的问题：**发布出去的
+文档站，有时是空的或旧的**，而且失败得很随机 —— 上传成功、部署失败。
+
+根因在 `actions/deploy-pages` 上游（issue #451 已确认）：上传动作报告成功
+之后，产物索引**还没有立刻更新**；而部署动作是**按名字**去内部结果服务里
+查这个产物的。相差几毫秒的一次查询，会返回空。于是部署报
+`Found 0 artifact(s)`。更糟的是，**重跑一次失败的 attempt 会新增第二个
+同名产物**，于是错误变成 `Found 2 artifact(s)`。
+
+实测（run `45531680303` → `45549042499`）：上传成功、artifact id
+`14984298801`，部署仍 `Found 0`；重跑后变成 `Found 2`。
+
+改法：
+
+* `.github/workflows/pages.yml`：把**上传**和**部署**拆成两个 job
+  （`build` / `deploy`，`deploy` 依赖 `build`）。上游 issue 里被验证可行的
+  修法正是这个 —— 查询从「几毫秒之后」变成「几秒之后」，窗口关上；
+* `tools/pages_artifact_guard.py`（新）：部署前用**同一套 twirp 内部结果
+  服务**列出产物，确认恰好一个名为 `github-pages` 的产物可见，并清掉同名
+  的陈旧产物（只按名字分组，不碰别的 job 的产物）；
+* `tests/test_pages_artifact_guard.py`（新）：17 项，覆盖守卫的前置顺序、
+  两个 job 的依赖关系、以及守卫自身的失败路径。
+
+注意：守卫读的是**部署步骤真正读的那个索引**（内部 twirp 服务，
+`ACTIONS_RESULTS_URL` + 运行时令牌里的 `scp` claim），不是 public REST API
+—— 这两套是两回事，先前只用 REST 的那版守卫报「一切正常」，部署却依然
+失败，正好证明了这一点。
+
+验证：run `45557285692` 部署步骤输出 `Found 1 artifact(s)`，artifact id 与
+守卫报告一致（`14995824612`）。
+
 ## [0.11.0] - 2026-11-24
 
 ### 没有判定，就没有结论，也谈不上漂移
