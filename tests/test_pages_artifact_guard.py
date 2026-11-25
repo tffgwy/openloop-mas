@@ -49,6 +49,25 @@ def _runtime_token(run_id="run-123", job_id="job-456"):
     return "%s.%s." % (header, body)
 
 
+def _deploy_job_steps():
+    """Return the text of the deploy job, as one block."""
+    text = (REPO / ".github" / "workflows" / "pages.yml").read_text(encoding="utf-8")
+    lines = text.splitlines()
+    start = None
+    for index, line in enumerate(lines):
+        if line.rstrip() == "  deploy:":
+            start = index
+            break
+    if start is None:
+        return ""
+    block = []
+    for line in lines[start + 1 :]:
+        if line and not line.startswith(" "):
+            break
+        block.append(line)
+    return "\n".join(block)
+
+
 class TheNewestArtifactIsTheOneToDeploy(unittest.TestCase):
     def test_the_newest_artifact_wins(self):
         self.assertEqual(guard_module.newest([_artifact(7), _artifact(11)]).get("id"), 11)
@@ -159,12 +178,31 @@ class TheWorkflowUsesTheGuard(unittest.TestCase):
     """A guard nobody calls is not a guard."""
 
     def test_the_pages_workflow_guards_the_artifact_before_the_deploy(self):
-        text = (REPO / ".github" / "workflows" / "pages.yml").read_text(encoding="utf-8")
-        guard_at = text.find("pages_artifact_guard.py")
-        deploy_at = text.find("actions/deploy-pages")
+        block = _deploy_job_steps()
+        guard_at = -1
+        deploy_at = -1
+        for index, line in enumerate(block.splitlines()):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if "pages_artifact_guard.py" in stripped:
+                guard_at = index
+            if stripped.startswith("uses: actions/deploy-pages"):
+                deploy_at = index
         self.assertNotEqual(guard_at, -1, "the Pages workflow does not call the guard")
         self.assertNotEqual(deploy_at, -1, "the Pages workflow does not deploy at all")
         self.assertLess(guard_at, deploy_at, "the guard has to run before the deploy")
+
+    def test_the_upload_and_the_deployment_are_separate_jobs(self):
+        # One job means the deployment looks the artifact up
+        # milliseconds after it was finalized, and the lookup comes
+        # back empty - actions/deploy-pages#451. Two jobs put seconds
+        # between them.
+        text = (REPO / ".github" / "workflows" / "pages.yml").read_text(encoding="utf-8")
+        self.assertIn("needs: build", text, "the deployment does not wait for the upload")
+        upload_at = text.find("actions/upload-pages-artifact")
+        needs_at = text.find("needs: build")
+        self.assertLess(upload_at, needs_at, "the upload has to happen in the first job")
 
 
 class TheGuardSpeaksTheDeployStepsLanguage(unittest.TestCase):

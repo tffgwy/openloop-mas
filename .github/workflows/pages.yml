@@ -15,10 +15,23 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+  # The site is built and uploaded in one job, and deployed in
+  # another. The two used to be one job, and the deployment failed
+  # intermittently with
+  #
+  #     Found 0 artifact(s)
+  #     Error: No artifacts named "github-pages" were found for this workflow run.
+  #
+  # The upload and the deployment look the artifact up in the internal
+  # results service, and that index is not updated the instant the
+  # upload reports success - a lookup a fraction of a second later
+  # comes back empty. See actions/deploy-pages#451.
+  #
+  # Splitting the jobs is the fix the upstream issue reports as
+  # working: the lookup then happens seconds later instead of
+  # milliseconds later, and the window closes. It is also the shape
+  # every other Pages starter uses.
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,6 +46,18 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           path: site/
+
+  deploy:
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Guard the Pages artifact
         # The deploy step reads the artifact back *by name*, and the
         # listing it performs can come back empty for an artifact that
@@ -62,4 +87,4 @@ jobs:
             --run-id "${{ github.run_id }}"
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
