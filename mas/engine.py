@@ -472,7 +472,24 @@ class LoopEngine:
         self.roles = Roles(self.team)
         self.ledger = ledger or Ledger(self.ledger_path(config))
         self.tickets = tickets or TicketStore(self.tickets_dir(config))
-        self.clock = clock or time.time
+        # The clock the wall-clock ceiling is measured against.
+        #
+        # It used to be ``time.time`` - the wall clock. On Windows that
+        # clock has a resolution of about 15.6ms on CPython 3.12 and
+        # older (CPython 3.13 moved ``time.time`` to a high-resolution
+        # timer), and two reads taken microseconds apart came back
+        # *equal*. A run with a zero-second budget therefore did not
+        # stop at its ceiling: ``clock() - start`` was 0, and the
+        # comparison was ``> 0``, so the loop went on, judged
+        # something, and closed - on a machine that had no budget at
+        # all. The ceiling has to be measured on a clock that can
+        # actually see the passage of time.
+        #
+        # A monotonic clock is the right instrument anyway: a
+        # wall-clock ceiling must not be moved by the machine's clock
+        # being set backwards mid-run. The value is only ever used as
+        # a difference, so its epoch does not matter.
+        self.clock = clock or time.monotonic
         # The config the checks resolve their paths against. It is a
         # copy: the run's own folder replaces the caller's directory,
         # but the caller's configuration must not be changed by that.
@@ -677,7 +694,13 @@ class LoopEngine:
                 error = f"budget: reached max_iterations={max_iterations}"
                 stopped_by = "max_iterations"
                 break
-            if (self.clock() - start) > deadline_sec:
+            # ``>=`` and not ``>``: a run with a zero-second budget has
+            # to stop *before* it spends anything. With ``>`` the
+            # comparison was 0 > 0 - false - so the ceiling was not a
+            # ceiling at all, and the run went on to judge something
+            # it was never allowed to work on. A ceiling of zero means
+            # zero.
+            if (self.clock() - start) >= deadline_sec:
                 status = STATUS_BUDGET
                 error = f"budget: exceeded deadline_sec={deadline_sec:.0f}"
                 stopped_by = "deadline_sec"
