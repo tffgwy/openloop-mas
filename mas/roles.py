@@ -5,6 +5,53 @@ from __future__ import annotations
 import json
 from typing import Any, Dict
 
+#: How much of the previous deliverable is carried into the next
+#: attempt's prompt.
+#:
+#: The previous deliverable is what the next attempt has to improve
+#: on, so it has to be carried. But it is *text*, and text is the one
+#: thing that can grow without a ceiling: eight attempts of a long
+#: document would put eight copies of it into one prompt. So the
+#: carried text is capped - and the cap is applied to the *tail*,
+#: because the tail of a deliverable is where the newest work is.
+PREVIOUS_ARTIFACT_CHARS = 12000
+
+#: The same cap for the reflector's own summary.
+REFLECTION_CHARS = 4000
+
+
+def clip_text(text: str, limit: int) -> str:
+    """The last ``limit`` characters of ``text``, with a marker.
+
+    The head is dropped, not the tail. The tail of a deliverable is
+    where the newest work is, and the tail of a reflection is where
+    the concrete next step usually is. A truncation that kept the
+    wrong end would drop exactly the part the next attempt needs.
+
+    The marker says how much was dropped: a silently shortened
+    deliverable would read as "this is all of it", and the next
+    attempt would think the work really was that short.
+    """
+    body = str(text or "")
+    if limit <= 0 or len(body) <= limit:
+        return body
+    dropped = len(body) - limit
+    return "...（前面 %d 字已省略 / %d earlier characters omitted）\n%s" % (
+        dropped,
+        dropped,
+        body[-limit:],
+    )
+
+
+def _tail(text: str, limit: int) -> str:
+    """The tail of ``text``, capped at ``limit`` characters.
+
+    A thin wrapper so the call sites read as "keep the tail" rather
+    than as "call a clipper", and so the lookup happens at call time:
+    a test that blinds the clipper has to blind this too.
+    """
+    return clip_text(text, limit)
+
 DEFAULT_SYSTEM = {
     "planner": (
         "You are the planner of a multi-agent system. Decompose the goal into a "
@@ -133,6 +180,25 @@ class Roles:
         # deliverable from scratch. The work that was already done was
         # in the ticket the whole time.
         previous = str(state.get("previous_artifact") or "")
+        # The reflector's own words about the failure. The reflector
+        # is a paid call: it is booked in the ledger, it is read by
+        # the report - and it used to reach nobody. The worker was
+        # told to "rewrite the deliverable to address the issues
+        # above" while the issues above were a machine's one-line
+        # complaint, and the reflection - the part that says *how* to
+        # fix it - was dropped on the floor. The money was spent and
+        # the answer was thrown away.
+        reflection = state.get("reflection") or {}
+        if not isinstance(reflection, dict):
+            reflection = {}
+        reflection_summary = str(
+            reflection.get("summary") or reflection.get("reflection") or ""
+        ).strip()
+        reflection_issues = [
+            str(item)
+            for item in (reflection.get("issues") or [])
+            if str(item).strip()
+        ]
 
         out: list[str] = []
 
@@ -241,6 +307,29 @@ class Roles:
             for issue in issues:
                 out.append(f"- {issue}")
 
+        if reflection_summary or reflection_issues:
+            # The reflector's own words. The machine's one-line
+            # complaint says *that* something is wrong; the reflection
+            # says *what to do about it*. The worker used to get only
+            # the first one - so a paid reflector call was spent, was
+            # booked in the ledger, and then reached nobody. The
+            # worker was told to "fix the issues above" while the
+            # issues above carried no way to fix them.
+            #
+            # The reflector is asked about the *previous* attempt, so
+            # it reads this too: without it the reflector of the
+            # second round has no memory of what the first round's
+            # reflection already said, and it repeats itself.
+            out.append("")
+            out.append(
+                "### 上一轮的复盘 / REFLECTION ON THE LAST FAILURE" if zh
+                else "### REFLECTION ON THE LAST FAILURE"
+            )
+            if reflection_summary:
+                out.append(_tail(reflection_summary, REFLECTION_CHARS))
+            for item in reflection_issues:
+                out.append(f"- {item}")
+
         if human_note:
             out.append("")
             out.append("### 人类补充说明 / HUMAN NOTE" if zh
@@ -301,7 +390,41 @@ class Roles:
                     out.append(
                         f"- [{check.get('id')}] {mark} - {check.get('note', '')}"
                     )
-        elif role == "worker" and attempt > 1 and issues:
+        elif role == "reflector" and artifact:
+            # The reflector reflects *on this deliverable*. It used to
+            # be asked what the next attempt must change without being
+            # shown the thing that failed - so its advice was about a
+            # document it had never read, and the advice the worker
+            # then received was no better than the machine's note.
+            out.append("")
+            out.append("### 上一轮的交付物 / ARTIFACT UNDER REVIEW" if zh
+                       else "### ARTIFACT UNDER REVIEW")
+            out.append("<<ARTIFACT>>")
+            out.append(artifact)
+            out.append("<<END ARTIFACT>>")
+            if checks:
+                out.append("")
+                out.append("### 机检结果 / MACHINE CHECK RESULTS" if zh
+                           else "### MACHINE CHECK RESULTS")
+                for check in checks:
+                    if not isinstance(check, dict):
+                        continue
+                    raw = check.get("pass")
+                    if raw is None:
+                        mark = "UNDECIDED"
+                    elif raw:
+                        mark = "PASS"
+                    else:
+                        mark = "FAIL"
+                    out.append(
+                        f"- [{check.get('id')}] {mark} - {check.get('note', '')}"
+                    )
+        elif role == "worker" and attempt > 1 and (issues or previous):
+            # The rewrite instruction is keyed on the *work the last
+            # attempt did*, not on the machine's complaint. A resumed
+            # run starts its attempt counter at one again and comes
+            # with a previous deliverable but no issue list - and it
+            # used to be told to write the deliverable from scratch.
             out.append("")
             out.append(
                 "请针对上面列出的问题改写交付物。" if zh
@@ -320,7 +443,7 @@ class Roles:
                 else "### PREVIOUS DELIVERABLE"
             )
             out.append("<<PREVIOUS>>")
-            out.append(previous)
+            out.append(_tail(previous, PREVIOUS_ARTIFACT_CHARS))
             out.append("<<END PREVIOUS>>")
             out.append("")
             out.append(

@@ -83,6 +83,7 @@ EXPECTED_GATE_NAMES = (
     "seal_takeover",
     "seal_takeover_everywhere",
     "selftest_converges",
+    "feedback_reaches_worker",
 )
 
 

@@ -179,7 +179,16 @@ class TheCatalogueIsFreeTest(unittest.TestCase):
 
         rows = list_checks()
         self.assertEqual(len(rows), len(CHECKS))
-        self.assertEqual(rows[-1]["name"], "selftest_converges")
+        # The catalogue is compared against the written-down order, not
+        # against "whatever happens to sit last": a new gate appended
+        # to the suite must not silently push the old last one out of
+        # the list and make this file wrong.
+        from tests.test_gate_count_is_pinned import EXPECTED_GATE_NAMES
+
+        self.assertEqual(
+            [row["name"] for row in rows], list(EXPECTED_GATE_NAMES)
+        )
+        self.assertIn("selftest_converges", [row["name"] for row in rows])
         for row in rows:
             self.assertTrue(row["name"])
             self.assertTrue(row["function"])

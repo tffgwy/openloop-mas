@@ -71,7 +71,7 @@ from mas.providers import (
     TruncatedAnswer,
     build_provider_chain,
 )
-from mas.roles import Roles
+from mas.roles import PREVIOUS_ARTIFACT_CHARS, REFLECTION_CHARS, Roles, clip_text
 from mas.tickets import TicketStore
 from mas.util import (
     _as_bool,
@@ -102,6 +102,61 @@ STATUS_ERROR = "error"
 #: internal key cannot leak into a prompt by being added to one call
 #: site and forgotten at the other three.
 INTERNAL_KEYS = ("_usage", "_raw", "_provider_used", "_model_used")
+
+
+def _bounded_reflection(
+    reflection: Dict[str, Any], limit: int
+) -> Dict[str, Any]:
+    """A reflection whose text cannot grow without a ceiling.
+
+    The reflection travels into the next prompt twice - once in the
+    readable brief and once in the raw state block - and a reflector
+    that writes a long essay would put both copies into every later
+    call. The text is clipped; the list of issues is kept as it is,
+    because an issue is short by nature and dropping one would drop a
+    fact rather than a repetition.
+    """
+    bounded: Dict[str, Any] = {}
+    for key, value in reflection.items():
+        if isinstance(value, str):
+            bounded[key] = clip_text(value, limit)
+        elif isinstance(value, list):
+            bounded[key] = [str(item) for item in value]
+        else:
+            bounded[key] = value
+    return bounded
+
+
+def _carry_feedback(
+    state: Dict[str, Any],
+    last_artifact: str,
+    last_reflection: Dict[str, Any],
+    previous_artifact: str,
+) -> None:
+    """Put the last round's work into the state of the next one.
+
+    Two facts have to travel, and both used to travel nowhere:
+
+    * the deliverable the last iteration produced, so the next
+      iteration has something to improve on instead of starting from
+      nothing;
+    * what the reflector said about it, so the next iteration knows
+      *how* to improve it and not merely *that* it is wrong.
+
+    The deliverable of an earlier iteration of this run wins over the
+    one a resumed run was handed: it is the newer work, and the next
+    attempt has to improve on the newest thing.
+
+    Both are clipped at the source, because the state is serialized
+    into the prompt *as JSON* - an unbounded deliverable would ride
+    along twice, once in the readable brief and once in the raw
+    block.
+    """
+    carried = last_artifact or previous_artifact
+    if carried:
+        state["previous_artifact"] = clip_text(carried, PREVIOUS_ARTIFACT_CHARS)
+    if last_reflection:
+        state["reflection"] = _bounded_reflection(last_reflection, REFLECTION_CHARS)
 
 
 def _required_flag(value: Any) -> bool:
@@ -662,6 +717,23 @@ class LoopEngine:
         stagnant = 0
         last_sha = ""
         plan_payload: Dict[str, Any] = {}
+        # What the *previous* iteration of this same run delivered, and
+        # what its reflector said about it.
+        #
+        # Both used to exist only in the ledger. The worker's second
+        # attempt in a run was told to "rewrite the deliverable to
+        # address the issues above" while the deliverable of the first
+        # attempt was nowhere in the prompt - so the second attempt
+        # wrote a fresh deliverable from scratch, and the reflector's
+        # own words (a paid call, booked in the ledger) reached nobody
+        # at all. The loop was iterating; it was not learning.
+        #
+        # The two are carried explicitly, because the state of an
+        # iteration is built *before* the iteration runs: the values
+        # have to be in the state, or the next prompt cannot carry
+        # them.
+        last_artifact = ""
+        last_reflection: Dict[str, Any] = {}
         # The decision of the last scoring round. A run that never
         # reached a scoring round - it hit the budget ceiling on its
         # first iteration - still has to be described in the ledger, so
@@ -735,15 +807,25 @@ class LoopEngine:
                 "human_note": human_note,
                 "plan": plan_payload,
             }
-            # What the previous attempt delivered. A resumed loop is a
-            # *new* run: the attempt counter starts at one again and
-            # the issue list starts empty, so without this the worker
-            # would never see the work that was already done and would
-            # rewrite the deliverable from scratch, forever. The
-            # deliverable of the last attempt is the thing the next
-            # attempt has to improve on.
-            if previous_artifact:
-                state["previous_artifact"] = previous_artifact
+            # What the previous attempt delivered, and what the
+            # reflector said about it.
+            #
+            # A resumed loop is a *new* run: the attempt counter
+            # starts at one again and the issue list starts empty, so
+            # without this the worker would never see the work that
+            # was already done and would rewrite the deliverable
+            # from scratch, forever. The deliverable of the last
+            # attempt is the thing the next attempt has to improve on.
+            #
+            # Within a run the same gap existed: the state of an
+            # iteration is built *before* the iteration runs, so the
+            # deliverable and the reflection of the round that just
+            # finished had to be carried explicitly - otherwise the
+            # second attempt wrote a fresh deliverable from scratch
+            # and the reflector's words reached nobody at all.
+            _carry_feedback(
+                state, last_artifact, last_reflection, previous_artifact
+            )
             # A criterion that demands a file creates an obligation the
             # worker has to know about: without this the worker only ever
             # *talks* about writing the file, and the file check - which
@@ -898,6 +980,17 @@ class LoopEngine:
                     issues = [f"{s['id']}: {s['note']}" for s in failed]
                     reflect_state = dict(state)
                     reflect_state["issues"] = issues
+                    # The deliverable the reflector is reflecting
+                    # *on*. Without it the reflector is asked "which
+                    # criteria failed and what must the next attempt
+                    # change?" while it cannot see the thing that
+                    # failed - so its answer is advice about a
+                    # document it never read. The criteria notes are
+                    # in the state, but a note says "missing:
+                    # ['结论']" and not *where* the conclusion should
+                    # have been.
+                    reflect_state["candidate_artifact"] = artifact
+                    reflect_state["checks"] = checks
                     reflection = self._call_json("reflector", reflect_state)
                     # The reflection cost tokens as well, and the raw
                     # provider text has no business in the history.
@@ -931,6 +1024,15 @@ class LoopEngine:
                     # The previous iteration's issues are resolved. Keeping
                     # them would make a closed run look like it still failed.
                     issues = []
+
+                # The reflection and the deliverable travel to the next
+                # iteration. They are stored *after* the round that
+                # produced them and read *before* the next round's
+                # state is built - so what the next attempt sees is
+                # what this attempt actually produced, not what the
+                # ledger happens to contain.
+                last_artifact = artifact
+                last_reflection = dict(reflection)
 
                 art_sha = sha256_text(artifact)
                 stagnant = stagnant + 1 if art_sha == last_sha else 0

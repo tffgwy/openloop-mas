@@ -75,6 +75,9 @@ from mas.selftest_draft_undo_pending import (
 from mas.selftest_draft_undo_visibility import (
     check_a_taken_back_approval_is_visible_everywhere,
 )
+from mas.selftest_feedback_reaches_worker import (
+    check_feedback_reaches_worker,
+)
 from mas.selftest_isolation import (
     check_the_selftest_leaves_the_machine_alone,
 )
@@ -5642,6 +5645,7 @@ CHECKS = (
     check_an_approved_change_is_not_a_drift,
     check_the_takeover_is_visible_everywhere,
     check_the_selftest_converges_and_says_so,
+    check_feedback_reaches_worker,
 )
 
 #: How many gates the suite is expected to hold.

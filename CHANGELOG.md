@@ -1,8 +1,59 @@
-# Changelog
+## [0.11.6] - 2026-11-26
 
-All notable changes to OpenLoop MAS are recorded here. The format follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
-[semantic versioning](https://semver.org/spec/v2.0.0.html).
+### 反馈终于到达了下一轮的工人手里
+
+这一版修的是闭环里最要命、也最不容易被发现的一段：**重试的时候，
+下一轮到底看没看到上一轮干了什么**。
+
+用探针 provider（记录每一次 prompt）实测同一轮运行内的多次迭代，
+测出三个同源的缺口：
+
+| 谁 | 上一版实际拿到的 |
+| --- | --- |
+| 第 2 次尝试的 worker | **什么都看不到** —— 它不知道自己上一轮交付了什么 |
+| reflector 自己的产出 | **完全丢失** —— 付了钱、记了账，扔了 |
+| reflector | **看不到自己要复盘的交付物** —— 在给一份没读过的文档提意见 |
+
+实测输出（修复前）：
+
+    worker calls: 2
+    has PREVIOUS blk: False
+    sees v1 text: False
+    reflector 说「必须用中文重写整篇」到达 worker #2: False
+    reflector 说「先把结论写在第一段」到达 worker #2: False
+
+三个缺口其实是一件事：**反馈被算出来了，却从来没有进入下一轮的 state**。
+
+### 根因
+
+* `mas/engine.py` 里 `state["previous_artifact"]` **只在恢复运行时**设置
+  （`engine.py:745`），同一轮迭代内部从不设置；
+* `engine.py:893-929` 算出 `reflection` 之后只 `_log()` 进账本并赋给
+  局部变量，**从未放进下一次迭代的 `state`**；
+* 最讽刺的地方：`engine.py:99` 的注释明写着
+  "the plan and the reflection travel to the model on the next call"
+  —— **设计意图与实现有偏差**，而且这个偏差活了很多个版本。
+
+### 修法
+
+* `mas/engine.py`：新增模块级 `_carry_feedback()` 接线点，把上一轮的
+  交付物与上一轮的复盘一起放进下一轮的 state；`previous_artifact`
+  与 `reflection` 在轮末写入、轮首读出，用的都是**上一轮真实产出**。
+* `mas/engine.py`：reflector 现在**看得见它要复盘的那份交付物**
+  （`candidate_artifact` + 机检结果）—— 否则它是在给没读过的文档提意见。
+* `mas/roles.py`：新增 `### 上一轮的复盘 / REFLECTION ON THE LAST FAILURE`
+  块；复盘**同时**到达 worker 和 reflector（后者否则会重复自己上一轮的话）。
+* `mas/roles.py`：改写指令的触发条件从 `issues` 改为
+  `issues or previous` —— 恢复运行的 attempt 计数器从 1 重新开始、
+  问题列表是空的，过去它被告知「从零重写」。
+* **长度有天花板**：`clip_text()` 保留**尾部**（交付物与复盘的新内容在
+  尾部），并显式标出省略了多少字 —— 悄悄截短会被读成「就这么多」。
+
+### 新增第 57 项门禁 `feedback_reaches_worker`
+
+判定独立实现两遍（一遍看渲染出的 prompt，一遍解析 `<<MAS_STATE>>`
+原始 JSON 块），并且**自证能失败**：把 `_carry_feedback()` 换成空实现
+（也就是修复前的行为），门禁必须红。
 
 ## [0.11.5] - 2026-11-26
 

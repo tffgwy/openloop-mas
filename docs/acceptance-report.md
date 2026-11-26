@@ -3166,3 +3166,105 @@ Windows 的 tool-help 快照。**macOS 不发布 `/proc`**，
 门禁在 Windows 上写、在 Windows 上跑，Windows 有 tool-help，一切正常。
 它在 macOS 上第一次说话时，说的是「我看不见」而不是「我没有问题」——
 **平台看不见时它没有假装看见**，这正是第 56 项门禁该有的行为。
+
+## AA. v0.11.6 -- 重新来过的人，必须看得见上一次
+
+### 洞在哪里
+
+用探针 provider 实测同一轮 `LoopEngine.run()` 内的多轮迭代，
+发现三个洞，**每一个都让迭代退化成重试**：
+
+**洞一：第 2 次的工人看不到自己上一轮交付了什么。**
+`state["previous_artifact"]` 只在**恢复运行**路径上被设置
+（`engine.py:745`）。同一次 `run()` 内部的迭代，
+它**一次也没有被设置过**。
+
+**洞二：复盘角色的产出整段丢失。**
+`engine.py:893-929` 算出 `reflection` 之后，只做了两件事：
+写日志、赋给一个局部变量。**它从来没有被放进下一轮的 state。**
+
+    # engine.py 里本来就写着的那句注释：
+    # the plan and the reflection travel to the model on the next call
+
+注释描述的是**应该发生什么**，代码做的是**另一件事**。
+
+**洞三：复盘角色自己看不到它要复盘的那份交付物。**
+它被要求评价一篇作文，收到的却是机检的一句
+`c1: missing: ['关键词']`。
+
+合起来的效果是：复盘角色写了「你缺的不是一个关键词，是整段论证」，
+这句话**根本没有到工人手里**。第二轮的工人只能从头重写。
+
+### 修法
+
+`mas/engine.py` 新增模块级 `_carry_feedback(state, last_artifact, last_reflection, previous_artifact)`：
+把上一轮的交付物与上一轮的复盘一起放进下一轮的 state，
+同轮产物优先于恢复运行的 `previous_artifact`。
+
+`mas/roles.py` 新增：
+
+- `clip_text(text, limit)` —— 截断**保留尾部**，并显式标出省略字数
+  （`...（前面 N 字已省略 / N earlier characters omitted）`）；
+- `PREVIOUS_ARTIFACT_CHARS = 12000`、`REFLECTION_CHARS = 4000`；
+- `_brief()` 解析 `state["reflection"]`，渲染成
+  `### 上一轮的复盘 / REFLECTION ON THE LAST FAILURE`；
+- 复盘角色的 prompt 里渲染
+  `### 上一轮的交付物 / ARTIFACT UNDER REVIEW` 与机检结果；
+- 工人的改写指令触发条件从 `attempt > 1 and issues` 放宽到
+  `attempt > 1 and (issues or previous)`。
+
+复盘角色的产出在轮末写进 `last_reflection`，下一轮由
+`_carry_feedback()` 送进 state。**三条线现在真的连上了：**
+
+    上一轮的交付物 ──┐
+                    ├──> 下一轮的 state ──> 下一轮工人的 prompt
+    上一轮的复盘   ──┘
+
+### 第三十七条不变量
+
+> **一个循环第二次尝试时，工人必须看得见第一次尝试交付了什么，
+> 也必须看得见复盘角色自己说的话；复盘角色自己也得看得见
+> 它要复盘的那份交付物。**
+
+### 门禁设计：必须能被证伪
+
+第 57 项门禁 `feedback_reaches_worker`（`mas/selftest_feedback_reaches_worker.py`）
+盯 8 条观察，判定用**两套独立实现**跑两遍 ——
+一套读 prompt 文本，一套解析 `<<MAS_STATE>>` 里的 JSON。
+
+它**自证失败**：把 `engine_module._carry_feedback` 换成空实现，
+门禁必须变红。
+
+    实测：python -m mas selftest --only feedback_reaches_worker --iterations 2
+    -> [OK  ] 反馈真的到达了下一轮的工人手里
+    （自证失败路径单独跑过：换成空实现后门禁报红）
+
+### 改了什么
+
+| 文件 | 改了什么 |
+| --- | --- |
+| `mas/engine.py` | 新增 `_carry_feedback()` 与 `_bounded_reflection()`；`run()` 循环引入 `last_artifact` / `last_reflection`；每轮 state 构造后接线；轮末写入；复盘前把 `candidate_artifact` 与 `checks` 放进 `reflect_state` |
+| `mas/roles.py` | 新增 `clip_text()` / `_tail()`；`_brief()` 解析复盘；新增「上一轮的复盘」渲染块；复盘角色渲染「上一轮的交付物」；改写指令触发条件放宽 |
+| `mas/selftest_feedback_reaches_worker.py` | 第 57 项门禁 |
+| `mas/selftest.py` | 导入并把 `check_feedback_reaches_worker` **追加在 CHECKS 末尾** |
+| `tests/test_engine_feedback_116.py` | 回归测试（14 项） |
+| `tests/test_gate_count_is_pinned.py` | 门禁名追加 `feedback_reaches_worker`（末尾，顺序被断言） |
+| `tests/test_selftest_converges_114.py` | 目录测试从「最后一项必须是 selftest_converges」改为**与手写顺序全量比对** —— 以后再加门禁不必再改这个断言 |
+
+### 本轮实测证据
+
+| 检查 | 结果 |
+| --- | --- |
+| `mas selftest --iterations 2` | **57 项全绿**，exit=0 |
+| `mas selftest --only feedback_reaches_worker --iterations 2` | **[OK  ] 反馈真的到达了下一轮的工人手里** |
+| `tests/test_engine_feedback_116.py` | **14 passed** |
+| `tests/test_gate_count_is_pinned.py` | **passed**（门禁 57 项，顺序一致） |
+| `tools/sync_packaged_docs.py --check` | **the packaged documents match the repository** |
+
+### 一个顺带修掉的坑
+
+打包副本（`mas/docs/*`）还钉着 `0.11.5`，而运行版本已经是 `0.11.6`，
+于是 `onboarding_path` 与 `packaged_docs` 两项门禁一起变红
+（版本钉住 ≠ 运行版本）。跑一次 `tools/sync_packaged_docs.py` 即可 ——
+**这类漂移正是 `packaged_docs` 门禁存在的意义**：它让
+「仓库里改了、包里没改」变成一次 CI 失败，而不是一次用户的困惑。
