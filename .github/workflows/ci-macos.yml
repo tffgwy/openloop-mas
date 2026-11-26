@@ -95,4 +95,8 @@ jobs:
         # proof that the *same* gates hold on a macOS toolchain, and a
         # hundred and twenty iterations of that on the smallest runner
         # pool in GitHub bought one thing: a job cancelled by the clock.
-        run: python -m mas selftest --iterations 40
+        # The suite has a wall-clock budget, so this job cannot hang
+        # for ever. A check that does not fit in the budget is
+        # reported as not reached, and the exit code (3) tells the CI
+        # job that the suite did not finish.
+        run: python -m mas selftest --iterations 40 --time-budget 900

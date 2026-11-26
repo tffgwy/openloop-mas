@@ -229,7 +229,14 @@ class TestVerifyProviderHonesty(unittest.TestCase):
         config["state_dir"] = tempfile.mkdtemp()
         config["provider"] = "openai_compat"
         config["model"] = "gpt-4o-mini"
-        config["base_url"] = ""
+        # The endpoint check has to *fail*, and it has to fail for a
+        # reason that does not depend on the machine. An empty base URL
+        # sent the request to the real provider and waited out the
+        # timeout - forty seconds of the CI job, and a result that
+        # changed with the network. A closed port on localhost fails
+        # in a millisecond and fails the same way everywhere.
+        config["base_url"] = "http://127.0.0.1:1/v1"
+        config["timeout_sec"] = 2
         config["api_key"] = ""
         config["api_key_env"] = "MAS_TEST_ABSENT_KEY"
         os.environ.pop("MAS_TEST_ABSENT_KEY", None)
@@ -243,7 +250,8 @@ class TestVerifyProviderHonesty(unittest.TestCase):
         config["state_dir"] = tempfile.mkdtemp()
         config["provider"] = "openai_compat"
         config["model"] = "gpt-4o-mini"
-        config["base_url"] = ""
+        config["base_url"] = "http://127.0.0.1:1/v1"
+        config["timeout_sec"] = 2
         config["api_key"] = ""
         config["api_key_env"] = "MAS_TEST_PRESENT_KEY"
         os.environ["MAS_TEST_PRESENT_KEY"] = "k"

@@ -60,6 +60,9 @@ from mas.selftest_closure_supersede import (
 from mas.selftest_closure_verdict import (
     check_the_closure_verdict_reaches_both_surfaces,
 )
+from mas.selftest_convergence import (
+    check_the_selftest_converges_and_says_so,
+)
 from mas.selftest_doc_text import (
     check_the_documents_are_still_text,
 )
@@ -786,6 +789,33 @@ def check_mcp_handshake_answers_every_tool(
         alive = ask([{"jsonrpc": "2.0", "id": 500, "method": "ping"}], 1)
         if not alive.get(500):
             failures.append("跑完一轮工具调用之后，服务不再应答了")
+
+        # The server has to be shut down, and it has to be shut down
+        # *by this gate*. A stdio server reads until its input ends:
+        # if the pipe is left open, the process stays alive forever,
+        # blocked on a read that will never return.
+        #
+        # That leak was invisible on the machine that wrote the gate -
+        # the child outlived the test and nothing failed. It became
+        # visible where it hurts: on CI, one stranded server per
+        # iteration piled up until the Linux leg took half an hour
+        # (the Windows leg was twice as fast, because a Windows child
+        # does not keep its parent's interpreter alive the same way).
+        # So the gate now closes the pipe, waits for the child, and
+        # kills it if it does not go - and it *reports* a child that
+        # had to be killed, because a server that refuses to leave is
+        # a fact about the server, not about the test.
+        with contextlib.suppress(Exception):
+            proc.stdin.close()  # type: ignore[union-attr]
+        try:
+            proc.wait(timeout=10)
+        except Exception:  # noqa: BLE001 - the child refuses to leave
+            try:
+                proc.kill()
+                proc.wait(timeout=10)
+                failures.append("MCP 服务进程在输入结束后没有退出，被门禁强行结束了")
+            except Exception:  # noqa: BLE001 - it is already gone
+                pass
 
     return {
         "name": "mcp_handshake",
@@ -5611,6 +5641,7 @@ CHECKS = (
     check_the_selftest_leaves_the_machine_alone,
     check_an_approved_change_is_not_a_drift,
     check_the_takeover_is_visible_everywhere,
+    check_the_selftest_converges_and_says_so,
 )
 
 #: How many gates the suite is expected to hold.
@@ -5649,8 +5680,30 @@ def _machine_snapshot() -> Dict[str, Any]:
 def run_selftest(
     iterations: int = DEFAULT_ITERATIONS,
     only: Optional[List[str]] = None,
+    time_budget_sec: Optional[float] = None,
 ) -> Dict[str, Any]:
-    """Run every check and return a structured result."""
+    """Run every check and return a structured result.
+
+    The time budget
+    --------------
+    ``iterations`` alone cannot say how long the suite takes. The
+    cost of a check is not the number of iterations but what one
+    iteration *does*: a check that runs a whole loop-engine run costs
+    seconds, a check that hashes a string costs microseconds. Fifty-six
+    checks multiplied by two hundred iterations is therefore not one
+    number but fifty-six different numbers, and the slowest ones
+    decide how long CI waits.
+
+    So the suite can be given a wall-clock budget as well. The
+    budget is spent in the order the checks are listed, and a check
+    that starts after the budget is gone is **not run** - it is
+    reported as ``cut``, so the result says plainly that the suite
+    was cut short. Silently passing a check that never ran is the
+    one thing a self-test must not do.
+
+    The budget is opt-in: without it the suite runs every check
+    exactly as before.
+    """
     selected = list(CHECKS)
     if only:
         wanted = {str(name).strip() for name in only}
@@ -5668,7 +5721,15 @@ def run_selftest(
     machine_before = _machine_snapshot()
 
     results: List[Dict[str, Any]] = []
+    cut: List[str] = []
+    started = time.monotonic()
     for check in selected:
+        if (
+            time_budget_sec is not None
+            and time.monotonic() - started > float(time_budget_sec)
+        ):
+            cut.append(_check_name(check))
+            continue
         # Four checks run a whole loop-engine run per iteration. They are
         # slow enough that hammering them 120 times would add minutes to
         # every install and every CI job - and they hammer a *race* that
@@ -5708,6 +5769,19 @@ def run_selftest(
         "checks": results,
         "failed": failed,
         "skipped": skipped,
+        # The checks that did not get to run because the budget was
+        # gone. They are named, so "the suite passed" can never be
+        # read as "the suite ran".
+        "cut": cut,
+        # ``ok`` says the checks that *ran* passed. ``complete`` says
+        # the whole suite ran. They are two different facts and the
+        # report has to keep them apart: a cut suite is not a red
+        # suite, and it is not a green one either.
+        "complete": not cut,
+        "time_budget_sec": (
+            None if time_budget_sec is None else float(time_budget_sec)
+        ),
+        "elapsed_sec": round(time.monotonic() - started, 3),
         "machine_state": {
             "state_dir": machine_before.get("state_dir", ""),
             "problems": machine_problems,
@@ -5727,6 +5801,33 @@ def _check_name(check: Any) -> str:
     ``--only relay_refusal`` and the JSON output use the same word.
     """
     return str(getattr(check, "CHECK_NAME", "") or getattr(check, "__name__", ""))
+
+
+def list_checks() -> List[Dict[str, Any]]:
+    """The catalogue of the gate: what it checks, without running it.
+
+    Asking "how many gates are there, and what are they called?" does
+    not need the gates to run. Running them to answer it costs
+    minutes - and the answer is the same every time, because the
+    catalogue is a property of the source, not of the machine.
+
+    So the catalogue is readable on its own. A test that wants to
+    know that the command advertises every gate reads this, instead
+    of running the whole suite to count it.
+
+    What it does *not* give is a gate's invariant: that text is
+    part of the gate's own report, and a report is what a gate
+    produces by *running*. So the catalogue lists the names and says
+    so, rather than inventing an invariant nobody has seen.
+    """
+    rows: List[Dict[str, Any]] = []
+    for index, check in enumerate(CHECKS, start=1):
+        rows.append({
+            "index": index,
+            "name": _check_name(check),
+            "function": getattr(check, "__name__", ""),
+        })
+    return rows
 
 
 def format_selftest(result: Dict[str, Any]) -> str:
@@ -5753,10 +5854,17 @@ def format_selftest(result: Dict[str, Any]) -> str:
     lines.append("")
     failed = result.get("failed") or []
     skipped = result.get("skipped") or []
+    cut = result.get("cut") or []
     if failed:
         lines.append(
             "\u7ed3\u8bba\uff1a%d \u9879\u81ea\u68c0\u5931\u8d25\uff08%s\uff09"
             % (len(failed), ", ".join(failed))
+        )
+    elif cut:
+        lines.append(
+            "\u7ed3\u8bba\uff1a\u8dd1\u8fc7\u7684 %d \u9879\u81ea\u68c0\u5168\u90e8\u901a\u8fc7\uff0c"
+            "\u4f46\u6709 %d \u9879\u6ca1\u6709\u8dd1\u5230\uff08\u65f6\u95f4\u9884\u7b97\u7528\u5b8c\uff09\u3002"
+            % (len(result.get("checks") or []), len(cut))
         )
     else:
         lines.append(
@@ -5767,5 +5875,11 @@ def format_selftest(result: Dict[str, Any]) -> str:
             "\u6ce8\u610f\uff1a%d \u9879\u81ea\u68c0\u8df3\u8fc7\uff08%s\uff09"
             "\u2014\u2014\u6ca1\u6709\u53ef\u89c2\u5bdf\u7684\u5bf9\u8c61\uff0c\u4e0d\u7b97\u901a\u8fc7\u3002"
             % (len(skipped), ", ".join(skipped))
+        )
+    if cut:
+        lines.append(
+            "\u6ce8\u610f\uff1a\u65f6\u95f4\u9884\u7b97\u7528\u5b8c\uff0c\u4ee5\u4e0b %d \u9879\u6ca1\u6709\u8dd1\uff08%s\uff09"
+            "\u2014\u2014\u6ca1\u8dd1\u8fc7\u4e0d\u7b49\u4e8e\u8fc7\u5173\u3002"
+            % (len(cut), ", ".join(cut))
         )
     return "\n".join(lines) + "\n"

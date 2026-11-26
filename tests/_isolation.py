@@ -162,3 +162,60 @@ _install_unittest_environment_guard()
 ISOLATION_ACTIVE = True
 
 atexit.register(restore)
+
+
+#: The result of a full self-test run, keyed by the iteration count.
+#:
+#: Ten test modules each want to assert "the whole gate still passes".
+#: Each of them ran the *entire* suite to say so, so the suite was run
+#: ten times over - about ten minutes of the CI job spent proving the
+#: same thing ten times, and every minute of it grew with the number
+#: of checks. Adding a fifty-sixth check made every CI job slower for
+#: no new information.
+#:
+#: The run is the same run: the suite does not look at the clock or
+#: at the random seed, and it is hermetic (it runs against the mock
+#: backend in a temporary state directory). So one run per iteration
+#: count is enough, and the rest read the same result.
+_SELFTEST_CACHE: dict = {}
+
+
+def full_selftest(iterations: int = 3) -> dict:
+    """The whole gate, run once per session for each iteration count.
+
+    The caller gets the real result of a real run - the first caller
+    triggers it, everybody else reads the same outcome. The result is
+    a copy, so a test that pokes at it cannot change what the next
+    test sees.
+
+    A request for *fewer* iterations is served by a run that did
+    *more*. A gate that passed two hundred rounds did not fail in any
+    of them, so it did not fail in the first one either: the weaker
+    request is answered by the stronger evidence, and the suite is
+    run once instead of once per iteration count.
+
+    The default is three rounds, which is what the whole-suite
+    assertions actually want: the strongest run the suite offers.
+    """
+    key = int(iterations)
+    # The strongest run this session has already made.
+    if _SELFTEST_CACHE:
+        best = max(_SELFTEST_CACHE)
+        if best >= key:
+            key = best
+    if key not in _SELFTEST_CACHE:
+        from mas.selftest import run_selftest
+
+        _SELFTEST_CACHE[key] = run_selftest(iterations=key)
+    result = _SELFTEST_CACHE[key]
+    return {
+        "ok": result.get("ok"),
+        "failed": list(result.get("failed") or []),
+        "skipped": list(result.get("skipped") or []),
+        "cut": list(result.get("cut") or []),
+        "complete": result.get("complete", True),
+        "iterations": result.get("iterations"),
+        "checks": list(result.get("checks") or []),
+        "passed": list(result.get("passed") or []),
+        "machine_state": dict(result.get("machine_state") or {}),
+    }

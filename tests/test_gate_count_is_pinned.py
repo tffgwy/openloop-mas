@@ -82,6 +82,7 @@ EXPECTED_GATE_NAMES = (
     "selftest_isolation",
     "seal_takeover",
     "seal_takeover_everywhere",
+    "selftest_converges",
 )
 
 

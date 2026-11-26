@@ -3055,3 +3055,90 @@ v0.11.2 之后，**只有报告和 `mas seal` 会说这件事**。
 
 新增 `tests/test_gate_count_is_pinned.py` 的门禁名条目
 （`seal_takeover_everywhere`，**追加在末尾** —— 顺序是被断言的）。
+
+## Z. v0.11.4 -- 套件会收敛，而且截断时会如实说
+
+### 洞在哪里
+
+起点是一次实测：CI 的 Linux 腿跑 **31 分钟**，Windows 腿只要
+11–18 分钟。差距的来源是数出来的 —— 门禁跑到一半，机器上已经
+躺着 **14 个 `serve()` 僵尸**，每一个都卡在一个永远不会到来的读上。
+
+根因在 `mas/selftest.py` 的 MCP 门禁：它起了 stdio 服务器，
+却没有关 stdin。stdio 服务器读到输入流结束为止，管道不关，
+它就永远不走。这个泄漏**在写它的机器上是隐形的** —— 子进程比
+测试活得久，而测试不会因此变红。在 CI 上每轮迭代漏一个。
+
+第二件事更隐蔽：**被截断的套件会说自己通过了**。
+`--iterations 120` 实测 644 秒；给它 600 秒预算，剩下 32 项
+**根本没跑**，结果里却写着 `ok: true`。
+
+### 修法
+
+* **收摊是门禁的责任** —— MCP 门禁关管道、等子进程、必要时杀掉它，
+  并把「被强行结束」记成一次失败。
+* **时间预算** —— `mas selftest --time-budget <秒>`；预算耗尽后
+  剩下的项不跑，如实列进新字段 `cut`。
+* **`ok` 与 `complete` 分开**，退出码也分开：**0** 全过、
+  **2** 有失败、**3** 被截断。
+* **门禁目录不用跑** —— `mas selftest --list` 1.2 秒列全部 56 项。
+
+### 第三十五条不变量
+
+> **自检套件不得留下它起过的进程；预算耗尽时必须报出没跑到哪几项，
+> 且被截断的退出码必须与全绿不同。**
+
+### 第 56 项门禁 `selftest_converges`：自证能失败
+
+判据只能**从里面取**。一个泄漏的服务器在父进程活着时是父进程的
+直接子进程；父进程一退出，操作系统就把它**改挂**到别处 ——
+事后从外面按父子关系去数，**数不到了**。实测：泄漏版跑起来时
+能看到 2 个后代，套件一结束就变成 0。
+
+所以门禁问的是：**套件自己数自己的孩子 —— 收摊了是 0，没收摊是 1**。
+
+门禁**证明了自己能失败**：复制一份套件、删掉 MCP 门禁的收摊代码，
+用同一套判据去审这份坏掉的套件：
+
+    好套件 -> children_left = 0 -> 门禁绿
+    坏套件 -> children_left = 1 -> 门禁红
+
+### 顺带收敛的：套件不再重复自己
+
+八个测试模块以前各自跑一遍全量门禁，而它们问的只是「一共几项」
+和「某一类能不能离线跑」。现在前者用 `--list`，后者用 `--only`。
+
+还有两个测试**真的打到了外网**（`base_url=""` 会连空地址等超时），
+已改成 `http://127.0.0.1:1/v1` + 2 秒超时。
+
+| | 之前 | 现在 |
+| --- | --- | --- |
+| 八个全量断言模块 | 300+ 秒 | 184 秒 |
+| `test_setup_bench.py` | 120+ 秒 | 48 秒 |
+| 完整 pytest 套件 | 641 秒 | 524 秒 |
+| 门禁残留进程 | 14 个 | **0 个** |
+
+### 改了什么
+
+| 文件 | 改了什么 |
+| --- | --- |
+| `mas/selftest.py` | MCP 门禁收摊（关管道 / 等子进程 / 必要时杀掉并记失败）；`run_selftest()` 新增 `time_budget_sec`，结果新增 `cut` / `complete` / `time_budget_sec` / `elapsed_sec`；新增 `list_checks()`；注册第 56 项门禁 |
+| `mas/selftest_convergence.py` | 第 56 项门禁（新增） |
+| `mas/cli.py` | `mas selftest` 新增 `--time-budget` 与 `--list`；退出码 3 = 被截断 |
+| `tests/_isolation.py` | 新增 `full_selftest(iterations)` 会话内缓存（更高迭代可服务更低迭代请求） |
+| `tests/test_selftest_gate*.py` 等 7 个模块 | 改用 `full_selftest`，计数断言改走 `--list --json`，离线断言改走 `--only` |
+| `tests/test_setup_bench.py` | 两个 verify 测试去外网化 |
+| `tests/test_selftest_converges_114.py` | 回归测试（6 项），含「破坏版必须报红」 |
+| `tests/test_gate_count_is_pinned.py` | 门禁名追加 `selftest_converges`（末尾，顺序被断言） |
+| `.github/workflows/ci.yml` / `ci-macos.yml` | 门禁步骤加 `--time-budget 900`，CI 有墙钟上限 |
+
+### 本轮实测证据
+
+| 检查 | 结果 |
+| --- | --- |
+| `pytest tests -q` | **1913 passed, 5 skipped, 95 subtests**（524 秒） |
+| `mas selftest --list --json` | **56 项**，1.2 秒返回，exit=0 |
+| `mas selftest --iterations 1 --time-budget 5` | 报「跑过的 N 项通过，但有 M 项没跑到」，**exit=3** |
+| MCP 门禁残留进程 | `before=0 after=0` |
+| 门禁自证 | 坏套件 `children_left=1` -> `ok=false`；好套件 `children_left=0` -> `ok=true` |
+| `tests/test_selftest_converges_114.py` | **6 passed** |

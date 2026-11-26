@@ -52,7 +52,14 @@ jobs:
         # The two historical bugs of this project only showed up once in
         # a while. This step hammers the paths that used to fail at
         # random, so a regression is caught by CI instead of by a user.
-        run: python -m mas selftest --iterations 120
+        #
+        # The suite has a wall-clock budget, so this job cannot hang
+        # for ever. The budget is what the suite is *given*, not a
+        # cap on what it may do: a check that does not fit in the
+        # budget is reported as not reached, and the exit code (3)
+        # tells the CI job that the suite did not finish. A green
+        # exit therefore still means "everything ran".
+        run: python -m mas selftest --iterations 120 --time-budget 900
       - name: Self-check
         run: python -m mas doctor
 

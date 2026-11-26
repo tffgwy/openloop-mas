@@ -3102,14 +3102,41 @@ def cmd_selftest(args: argparse.Namespace) -> int:
     """
     from mas.selftest import format_selftest, run_selftest
 
+    if getattr(args, "list_only", False):
+        # "Which gates are there?" is a question about the source, so
+        # it is answered from the source. Nothing is run, and the
+        # answer is the same on every machine.
+        from mas.selftest import list_checks
+
+        catalogue = list_checks()
+        if args.json:
+            _print({"checks": catalogue, "count": len(catalogue)}, True)
+        else:
+            for row in catalogue:
+                print("%3d  %s" % (row["index"], row["name"]))
+            print()
+            print("共 %d 项自检门禁（本次只列目录，没有执行）" % len(catalogue))
+        return 0
+
     result = run_selftest(
         iterations=args.iterations,
         only=args.only or None,
+        time_budget_sec=getattr(args, "time_budget", None),
     )
+    # A suite that was cut short by its budget did not finish. The
+    # exit code says so: a green exit that means "everything ran"
+    # and a green exit that means "we stopped early" must not look
+    # the same to a CI job.
     if args.json:
         _print(result, True)
     else:
         print(format_selftest(result), end="")
+    # A suite that was cut short by its budget did not finish. The
+    # exit code says so: a green exit that means "everything ran"
+    # and a green exit that means "we stopped early" must not look
+    # the same to a CI job.
+    if not result.get("complete", True):
+        return 3
     return 0 if result["ok"] else 2
 
 
@@ -3527,6 +3554,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help="只跑某几项（可重复使用）",
+    )
+    selftest.add_argument(
+        "--time-budget",
+        type=float,
+        default=None,
+        help="整套自检的墙钟预算（秒）。预算用完后剩下的项不跑，并如实报告",
+    )
+    selftest.add_argument(
+        "--list",
+        dest="list_only",
+        action="store_true",
+        help="只列出门禁目录，不执行任何一项",
     )
     selftest.add_argument("--json", action="store_true", help="输出 JSON")
     selftest.set_defaults(func=cmd_selftest)

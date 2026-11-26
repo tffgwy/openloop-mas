@@ -22,12 +22,12 @@ approval would take away:
 """
 
 try:  # pragma: no cover - the two import styles cover two runners
-    from ._isolation import ISOLATION_ACTIVE  # noqa: F401
+    from ._isolation import ISOLATION_ACTIVE, full_selftest  # noqa: F401
 except ImportError:  # pragma: no cover - loaded as a top-level module
     import os
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from _isolation import ISOLATION_ACTIVE  # noqa: F401
+    from _isolation import ISOLATION_ACTIVE, full_selftest  # noqa: F401
 
 import json
 import os
@@ -431,9 +431,9 @@ class ForceCostGateTest(unittest.TestCase):
         self.assertTrue(result["ok"], result)
 
     def test_the_full_gate_still_passes(self):
-        from mas.selftest import EXPECTED_CHECKS, run_selftest
+        from mas.selftest import EXPECTED_CHECKS
 
-        result = run_selftest(iterations=1)
+        result = full_selftest(iterations=3)
         self.assertTrue(result["ok"], result)
         self.assertEqual(len(result["checks"]), EXPECTED_CHECKS)
 

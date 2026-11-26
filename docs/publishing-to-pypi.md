@@ -20,7 +20,7 @@ PyPI 拿它换成一个短期的上传 token。**仓库里不需要存任何长�
    - Environment name: 留空
 3. 保存。
 
-## 当前待补发：v0.11.3
+## 当前待补发：v0.11.4
 
 **PyPI 上还没有 `openloop-mas`**。GitHub Release 一直正常发布
 （CI 四绿，wheel / sdist 都在），但 `release.yml` 的 Trusted Publishing
@@ -35,7 +35,7 @@ invalid-publisher: valid token, but no corresponding publisher
 所以走的不是 token 路径）。登记完成后补发：
 
 ```bash
-gh workflow run release.yml -f tag=v0.11.3
+gh workflow run release.yml -f tag=v0.11.4
 ```
 
 或者按上面的「一次性登记」把 Trusted Publisher 挂好，让**下一次**打 tag

@@ -15,6 +15,11 @@ import sys
 import unittest
 from pathlib import Path
 
+try:
+    from ._isolation import full_selftest
+except ImportError:  # pragma: no cover - the top-level discovery layout
+    from _isolation import full_selftest
+
 REPO = Path(__file__).resolve().parents[1]
 
 
@@ -28,27 +33,23 @@ class SelftestModuleTest(unittest.TestCase):
         self.assertIn("check_a_run_keeps_its_files_with_the_deliverable", names)
 
     def test_every_check_states_an_invariant_and_a_title(self):
-        from mas.selftest import CHECKS
-
-        for check in CHECKS:
-            row = check(iterations=2)
-            self.assertTrue(row.get("title"), check.__name__)
-            self.assertTrue(row.get("invariant"), check.__name__)
+        rows = full_selftest(iterations=3)["checks"]
+        self.assertTrue(rows)
+        for row in rows:
+            name = row.get("name") or ""
+            self.assertTrue(row.get("title"), name)
+            self.assertTrue(row.get("invariant"), name)
             self.assertIn("ok", row)
             self.assertIsInstance(row.get("failures"), list)
 
     def test_a_short_run_passes(self):
-        from mas.selftest import run_selftest
-
-        result = run_selftest(iterations=3)
+        result = full_selftest(iterations=3)
         self.assertTrue(result["ok"], result)
         self.assertEqual(result["failed"], [])
         self.assertGreaterEqual(len(result["checks"]), 3)
 
     def test_the_result_is_json_serialisable(self):
-        from mas.selftest import run_selftest
-
-        payload = json.dumps(run_selftest(iterations=2), ensure_ascii=False)
+        payload = json.dumps(full_selftest(iterations=3), ensure_ascii=False)
         self.assertIn("checks", payload)
 
     def test_an_unknown_check_name_is_refused(self):
@@ -65,9 +66,9 @@ class SelftestModuleTest(unittest.TestCase):
         self.assertEqual(result["checks"][0]["name"], "provider_usage")
 
     def test_the_report_is_readable(self):
-        from mas.selftest import format_selftest, run_selftest
+        from mas.selftest import format_selftest
 
-        text = format_selftest(run_selftest(iterations=2))
+        text = format_selftest(full_selftest(iterations=3))
         self.assertIn("\u7ed3\u8bba", text)
         self.assertIn("\u4fdd\u8bc1", text)
 
@@ -90,16 +91,20 @@ class SelftestCliTest(unittest.TestCase):
         self.assertIn("selftest", proc.stdout)
 
     def test_the_command_runs_and_exits_zero(self):
-        proc = self._run("selftest", "--iterations", "3")
+        # One real end-to-end run of the command, on one gate: the
+        # command has to work, not just be listed. Running the whole
+        # suite here would prove the same thing several hundred times
+        # over - and every other module already does the whole run.
+        proc = self._run("selftest", "--only", "provider_usage", "--iterations", "1")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         self.assertIn("\u7ed3\u8bba", proc.stdout)
 
     def test_the_json_form_is_machine_readable(self):
-        proc = self._run("selftest", "--iterations", "2", "--json")
+        proc = self._run("selftest", "--only", "provider_usage", "--iterations", "1", "--json")
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         payload = json.loads(proc.stdout)
         self.assertTrue(payload["ok"])
-        self.assertGreaterEqual(len(payload["checks"]), 3)
+        self.assertEqual(len(payload["checks"]), 1)
 
     def test_it_runs_without_a_model_endpoint(self):
         """The gate is offline: no endpoint, no key, no network."""
@@ -114,7 +119,10 @@ class SelftestCliTest(unittest.TestCase):
         for key in ("MAS_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"):
             env.pop(key, None)
         proc = subprocess.run(
-            [sys.executable, "-X", "utf8", "-m", "mas", "selftest", "--iterations", "2"],
+            [
+                sys.executable, "-X", "utf8", "-m", "mas", "selftest",
+                "--only", "provider_usage", "--iterations", "1",
+            ],
             cwd=str(REPO), env=env, capture_output=True, text=True, encoding="utf-8",
         )
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
