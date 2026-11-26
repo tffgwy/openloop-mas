@@ -43,8 +43,14 @@ How the leak is seen
 Without a third-party dependency (this project ships zero), the
 counting is done by the operating system itself:
 
-* Linux and the BSDs publish a directory of processes, each of which
-  names its parent, so the children are counted by reading it;
+* Linux publishes a directory of processes, each of which names its
+  parent, so the children are counted by reading it;
+* macOS publishes no such directory, but it does publish the same
+  two facts - the process id and the parent's id - through ``ps``,
+  which every macOS has had for thirty years. The process doing the
+  counting is one of the children ``ps`` reports, so it is excluded
+  by its own pid: a counter that counted itself would report a leak
+  on every single call;
 * Windows publishes the same information through the tool-help
   snapshot API, which is reached through ``ctypes`` - the standard
   library, not a new dependency.
@@ -167,6 +173,80 @@ def _process_table_on_windows() -> Optional[Dict[int, int]]:
     return table
 
 
+def _parse_ps_output(text: str, ignore_pid: Optional[int] = None) -> Dict[int, int]:
+    """Read the ``pid ppid`` pairs out of ``ps`` output.
+
+    The output is one pair of numbers per line, with no header: the
+    ``=`` after each format word is what asks ``ps`` for the bare
+    numbers. Lines that do not hold two numbers are skipped rather
+    than guessed at.
+    """
+    table: Dict[int, int] = {}
+    for line in (text or "").splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            pid = int(parts[0])
+            ppid = int(parts[1])
+        except ValueError:
+            continue
+        if ignore_pid is not None and pid == ignore_pid:
+            continue
+        table[pid] = ppid
+    return table
+
+
+def _process_table_on_ps() -> Optional[Dict[int, int]]:
+    """Every process and its parent, read from ``ps``.
+
+    macOS has no ``/proc``, and this project ships no third-party
+    dependency, so the count comes from the tool that every macOS
+    already has. ``ps`` is asked for exactly the two fields that
+    matter, without a header, so the answer is one pair of numbers
+    per line.
+
+    ``None`` means "this platform does not offer a way to look", which
+    is different from "there are none".
+    """
+    # Two spellings of the same question. The first is the BSD one
+    # that macOS answers; the second is the portable one, used when
+    # the first is refused. A counter that gives up on the first
+    # refusal would be blind on exactly the platform it was written
+    # for, so it asks again in another way.
+    for command in (
+        ["ps", "-A", "-o", "pid=", "-o", "ppid="],
+        ["ps", "-eo", "pid=,ppid="],
+    ):
+        table = _read_ps(command)
+        if table:
+            return table
+    return None
+
+
+def _read_ps(command: List[str]) -> Dict[int, int]:
+    """Run one ``ps`` command and read the table it printed."""
+    try:
+        proc = subprocess.Popen(
+            list(command),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+        )
+    except OSError:
+        return {}
+    try:
+        stdout, _ = proc.communicate(timeout=30)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        return {}
+    # The counter is itself a parent while it counts, and ``ps`` is
+    # its child. Counting ``ps`` would report a leak on every call.
+    return _parse_ps_output(stdout, ignore_pid=proc.pid)
+
+
 def _count_descendants() -> Optional[int]:
     """How many processes descend from this one, right now.
 
@@ -179,7 +259,7 @@ def _count_descendants() -> Optional[int]:
         except Exception:  # noqa: BLE001 - the platform may refuse
             return None
     else:
-        table = _process_table_on_proc()
+        table = _process_table()
     if table is None:
         return None
     me = os.getpid()
@@ -248,7 +328,14 @@ def _process_table() -> Optional[Dict[int, int]]:
             return _process_table_on_windows()
         except Exception:  # noqa: BLE001 - the platform may refuse
             return None
-    return _process_table_on_proc()
+    if sys.platform.startswith("linux"):
+        table = _process_table_on_proc()
+        if table is not None:
+            return table
+    # macOS and the other BSDs publish no process directory, so the
+    # count comes from ``ps``. It is a child process of the counter,
+    # and it excludes itself from the answer.
+    return _process_table_on_ps()
 
 
 def _alive(pid: int) -> bool:

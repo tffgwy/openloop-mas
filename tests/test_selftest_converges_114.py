@@ -185,5 +185,77 @@ class TheCatalogueIsFreeTest(unittest.TestCase):
             self.assertTrue(row["function"])
 
 
+class TheProcessTableIsReadableTest(unittest.TestCase):
+    """The counter has to work on the platform it is shipped to.
+
+    macOS publishes no process directory, so the count comes from
+    ``ps``. The parsing is a pure function, so it is tested here on
+    every platform - including the ones where ``/proc`` is the real
+    source, because a gate that only works where it was written is a
+    gate that fails on a release night.
+    """
+
+    def test_the_ps_output_is_parsed_into_pid_parent_pairs(self):
+        from mas.selftest_convergence import _parse_ps_output
+
+        text = "    1     0\n   42     1\n  100    42\n"
+        self.assertEqual(
+            _parse_ps_output(text),
+            {1: 0, 42: 1, 100: 42},
+        )
+
+    def test_a_line_that_is_not_two_numbers_is_skipped(self):
+        from mas.selftest_convergence import _parse_ps_output
+
+        text = "PID PPID\n    1     0\ngarbage line\n  42\n"
+        self.assertEqual(_parse_ps_output(text), {1: 0})
+
+    def test_the_counter_excludes_its_own_helper(self):
+        # ``ps`` is a child of the process that runs it, so a counter
+        # that counted it would report a leak on every call.
+        from mas.selftest_convergence import _parse_ps_output
+
+        text = "  100    1\n  101  100\n"
+        self.assertEqual(
+            _parse_ps_output(text, ignore_pid=101),
+            {100: 1},
+        )
+
+    def test_this_platform_can_see_its_own_children(self):
+        from mas.selftest_convergence import _children_of_self
+
+        self.assertIsNotNone(_children_of_self())
+
+    def test_the_ps_command_is_asked_for_two_bare_numbers(self):
+        # The command itself is checked, because a counter that asks
+        # ``ps`` the wrong question gets an answer it cannot read:
+        # with a header, the first line is not a pair of numbers.
+        from mas.selftest_convergence import _read_ps
+
+        recorded = []
+        real_popen = subprocess.Popen
+
+        def fake_popen(command, **kwargs):
+            recorded.append(list(command))
+
+            class FakeProc:
+                pid = 999999
+                returncode = 0
+
+                def communicate(self, timeout=None):
+                    return "  1     0\n  42     1\n", ""
+
+            return FakeProc()
+
+        subprocess.Popen = fake_popen
+        try:
+            table = _read_ps(["ps", "-A", "-o", "pid=", "-o", "ppid="])
+        finally:
+            subprocess.Popen = real_popen
+
+        self.assertEqual(recorded, [["ps", "-A", "-o", "pid=", "-o", "ppid="]])
+        self.assertEqual(table, {1: 0, 42: 1})
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

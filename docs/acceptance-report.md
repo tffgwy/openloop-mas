@@ -3142,3 +3142,27 @@ v0.11.2 之后，**只有报告和 `mas seal` 会说这件事**。
 | MCP 门禁残留进程 | `before=0 after=0` |
 | 门禁自证 | 坏套件 `children_left=1` -> `ok=false`；好套件 `children_left=0` -> `ok=true` |
 | `tests/test_selftest_converges_114.py` | **6 passed** |
+
+### Z.2 v0.11.5 —— macOS 上，门禁看得见了
+
+**实测**：v0.11.4 推上去后，CI 的 **macOS 腿是红的**，
+Linux 与 Windows 全绿。门禁给出的失败理由是它自己发现的：
+
+    这个平台没法让一个进程看见自己的孩子，门禁无法证明自己不是瞎的
+
+**根因**：第 56 项门禁只会两种读法 —— Linux 的 `/proc` 和
+Windows 的 tool-help 快照。**macOS 不发布 `/proc`**，
+于是进程表读出来是「不可用」，门禁只能承认自己瞎了。
+
+**修法**：macOS 发布同样两个事实（进程号、父进程号），通过 `ps`：
+
+    ps -A -o pid= -o ppid=
+
+`=` 让 `ps` 不要表头；带表头的话第一行不是一对数字。
+**坑**：`ps` 自己是计数器的孩子，不按它自己的 pid 剔掉，
+每次调用都会误报一次泄漏。另加 `ps -eo pid=,ppid=` 作退路。
+
+**这类 bug 的共同点**：在写它的机器上是隐形的。
+门禁在 Windows 上写、在 Windows 上跑，Windows 有 tool-help，一切正常。
+它在 macOS 上第一次说话时，说的是「我看不见」而不是「我没有问题」——
+**平台看不见时它没有假装看见**，这正是第 56 项门禁该有的行为。

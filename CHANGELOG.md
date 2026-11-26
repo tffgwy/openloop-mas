@@ -4,7 +4,66 @@ All notable changes to OpenLoop MAS are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.5] - 2026-11-26
+
+### macOS 上，第 56 项门禁看得见了
+
+v0.11.4 的第 56 项门禁在 Linux 和 Windows 上是绿的，**在 macOS 上是红的**。
+它给出的理由很诚实：
+
+    这个平台没法让一个进程看见自己的孩子，门禁无法证明自己不是瞎的
+
+这不是门禁的判断错了，是**平台的能力本来就不一样**，而上一版
+只实现了两种读法：
+
+| 平台 | 进程表怎么读 |
+| --- | --- |
+| Linux | `/proc/<pid>/stat` —— 每个进程写着父进程号 |
+| Windows | tool-help 快照 API —— 通过 `ctypes` 调标准库 |
+| macOS / BSD | **没有实现** —— 于是门禁「看不见」，只能承认自己瞎了 |
+
+macOS 不发布 `/proc`。但它发布**同样的两个事实** —— 进程号和父进程号 ——
+通过 `ps`。这个工具每个 macOS 都有，而且三十年前就有了。
+
+### 修法
+
+`ps` 被问了一个明确的问题，只要两个裸数字：
+
+    ps -A -o pid= -o ppid=
+
+`=` 是关键：它让 `ps` 不要表头。带表头的话，第一行就不是一对数字。
+
+有一个坑必须处理：**`ps` 自己是计数器的孩子**。
+计数器在数的时候，`ps` 就是它起的进程 —— 不排除掉它，
+**每次调用都会报一次泄漏**。所以解析时按 `ps` 自己的 pid 把它剔掉。
+
+另外加了第二种写法 `ps -eo pid=,ppid=` 作为退路：
+第一种被拒绝时再问一次，而不是直接放弃。**一个在它被写出来的
+平台上瞎掉的计数器，比没有计数器更糟**。
+
+### 这次修的是什么类型的 bug
+
+这类 bug 有个共同点：**在写它的机器上是隐形的**。
+
+门禁在 Windows 上写、在 Windows 上跑，Windows 有 tool-help，
+一切正常。它被推到 macOS 上才第一次说话 —— 说的是
+「我看不见」，而不是「我没有问题」。
+
+门禁在这里做对了它该做的事：**平台看不见时，它没有假装自己看见了**，
+而是把「我瞎了」当成一次失败报出来。Linux 腿慢 31 分钟也是同一类：
+**看不见的泄漏，看不见的截断**。
+
+### 改了什么
+
+* `mas/selftest_convergence.py`：新增 `_process_table_on_ps()`、
+  `_read_ps()`、`_parse_ps_output()`；`_process_table()` 在非 Linux
+  平台改走 `ps`。零第三方依赖不变。
+* `tests/test_selftest_converges_114.py`：新增 5 项 ——
+  `ps` 输出的解析、坏行被跳过、计数时排除自己的助手、
+  本平台能看见自己的孩子、`ps` 被问对了问题（用假 `ps` 钉住 argv）。
+
 ## [0.11.4] - 2026-11-26
+
 
 ### 套件会收敛，而且截断时会如实说
 
