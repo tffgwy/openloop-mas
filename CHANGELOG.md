@@ -1,3 +1,73 @@
+## [0.12.0] - 2026-11-27
+
+### 主线的话必须到得了报告面
+
+这一版修的是闭环里**顾问的话最后一个没到达的地方**。
+
+前两版让引擎**读到了**主线的决定，又让主线的判定**变成了下一轮
+要改什么**。但顾问自己的**原话**在**报告面**上仍然读不到 ——
+人复盘时真正读的是报告，而报告里没有它。
+
+用探针 provider 实测：
+
+    === does the ledger hold the advisor's own words? ===
+      lead rows: 2
+        has LEAD_REASON: True
+        has LEAD_NOTE  : True
+    === does the REPORT show the advisor's own words? ===
+      report has LEAD_REASON: False     <-- 报告面缺失
+      report has LEAD_NOTE  : True      <-- 逐条 note 通过 issues 间接出现
+    === ticket has LEAD_REASON: True ===
+    === replay has LEAD_REASON: True ===
+
+**账本里有、工单里有、回放里有，唯独报告里没有。**
+
+### 根因
+
+`mas/report.py` 的 `run_summary()` **只收集 `reflector` 行**（用来做
+每轮的反思），**从不收集 `lead` 行**。顾问的回答在报告里**没有
+落脚点**，于是它不被渲染 —— 而一份不提到顾问的报告，读起来和
+「从没问过顾问」的运行**一模一样**。
+
+这正是「**能力存在，但主视图不消费它**」的老洞：能力等于没有。
+
+### 修法
+
+* `run_summary()` 现在**收集 `lead` 行**，把顾问的回答**挂到它
+  被给出的那一轮**（`advisor` / `advisor_decision` / `advisor_reason` /
+  `advisor_judgements`），并新增运行级 `advisories` / `advisories_count`；
+* 渲染时**每轮**在反思旁边多印一行 `🧭 主线的建议：…`；
+  单轮运行走另一条分支，**同样**印这一行；
+* 运行级兜底段**只在时间线里没有任何顾问时**才出现 —— 否则同一句
+  答案会被印两遍。
+
+### 顺手修掉的一个口径分裂
+
+引擎用 `_as_bool()` 读顾问的判定，所以模型回答字符串 `"true"`
+会被记成「已满足」；而报告面此前用**严格的 `is True`**，同一份数据
+会印成「未表态」 —— **一个决定，两套读法**。报告现在跟引擎**读法
+完全一致**：同一个判定，账本说已满足，报告就必须说已满足。
+
+### 没有被改变的：顾问仍然不是法官
+
+报告现在会**说出**顾问说了什么，但这**不改变**引擎做过的任何事：
+机检失败仍然是事实，主线的 `close` 依然不能盖掉未通过的检查。
+
+### 新门禁
+
+第 **61** 项门禁 `report_shows_the_advisor`，8 条观察，两套独立判定
+（读渲染后的 Markdown / 读 `run_summary()` 的结构化 payload），
+并且**自证能失败**（掐掉顾问行的收集 → 必须变红）。
+
+### 本轮实测证据
+
+| 检查 | 结果 |
+| --- | --- |
+| `pytest tests -q` | **1995 passed, 5 skipped, 95 subtests** |
+| `mas selftest --iterations 2` | **61 项全绿** |
+| `ruff check mas tests tools` | All checks passed! |
+| 门禁自证失败（回退 `mas/report.py`） | **6 条观察同时变红** |
+
 ## [0.11.9] - 2026-11-27
 
 ### 主线的判断必须变成下一轮要改什么

@@ -87,6 +87,7 @@ EXPECTED_GATE_NAMES = (
     "plan_reaches_the_first_worker",
     "lead_decision_is_honoured",
     "lead_reaches_the_next_worker",
+    "report_shows_the_advisor",
 )
 
 

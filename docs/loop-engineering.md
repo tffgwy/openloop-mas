@@ -2725,3 +2725,100 @@ mas ledger --tail 50
 「有人回答过了」和「回答被用上了」之间，隔着的正是这条不变量。
 一个说清楚了「缺什么」却没人听的顾问，和一个没被问过的顾问，
 在闭环上是**一样的**：下一轮还是不知道要改什么。
+
+## 第四十一条不变量：主线的话必须到得了报告面（v0.12.0）
+
+### 顾问的话走了很多路，唯独没走到人眼前
+
+这一条讲的是同一个能力在**不同视图**里的**不一致**。
+
+顾问（主线）被问的问题是「有标准没有任何判定，缺什么」。它的回答
+是整个循环里**唯一一句说「缺什么」而不是「缺一个答案」**的话。
+
+前两版已经做到了：
+
+* 引擎**读到了**主线的决定（v0.11.8）—— 不再是空话；
+* 主线的判定**变成了下一轮要改什么**（v0.11.9）—— 不再是只写给
+  账本看。
+
+但这一版之前，**顾问的原话在报告面上读不到**。
+
+实测（探针 provider，修复前）：
+
+    === does the ledger hold the advisor's own words? ===
+      lead rows: 2
+        has LEAD_REASON: True
+        has LEAD_NOTE  : True
+    === does the REPORT show the advisor's own words? ===
+      report has LEAD_REASON: False     <-- 报告面缺失
+      report has LEAD_NOTE  : True      <-- 逐条 note 通过 issues 间接出现
+    === ticket has LEAD_REASON: True ===
+    === replay has LEAD_REASON: True ===
+
+**账本里有、工单里有、回放里有，唯独报告里没有。**
+
+### 根因：一个视图不消费的能力，等于没有的能力
+
+`mas/report.py` 的 `run_summary()` **只收集 `reflector` 行**（用来做
+每轮的反思），**从不收集 `lead` 行**。
+
+顾问的回答在报告里**没有落脚点**，于是它不被渲染 —— 而一份**不提到
+顾问**的报告，读起来和「**从没问过顾问**」的运行**一模一样**。
+
+这就是闭环工程里最常见的假闭环：**能力存在，但主视图不消费它**。
+主视图是人读的那一个，所以它读到的地方，才是能力真正存在的地方。
+
+### 修法
+
+* `run_summary()` **收集 `lead` 行**，把顾问的回答**挂到它被给出的
+  那一轮** —— 和那一轮的反思**并排**，因果挨在一起；
+* 渲染时每轮多印一行 `🧭 主线的建议：…`，单轮运行的另一条分支
+  **同样**印；
+* 运行级兜底段**只在时间线里没有任何顾问时**才出现，否则同一句
+  答案会被印**两遍** —— 一份把同一句话说两遍的报告，人是不会再信它的。
+
+### 顺手修掉的口径分裂：同一个决定，不能有两套读法
+
+引擎用 `_as_bool()` 读顾问的判定，所以模型回答字符串 `"true"`
+**会被记成「已满足」**。报告面此前用**严格的 `is True`**，同一份数据
+会印成「**未表态**」。
+
+**账本说已满足，报告说未表态** —— 这不是显示细节，这是**两个关于
+同一个决定的答案**。报告现在跟引擎**读法完全一致**。
+
+### 没有被改变的：顾问仍然不是法官
+
+报告现在会**说出**顾问说了什么，但这**不改变**引擎做过的任何事：
+机检失败仍然是事实，主线的 `close` 依然不能盖掉未通过的检查，
+主线依然只能**叫停**循环而不能**宣布通过**。
+
+### 这条不变量怎么被证明
+
+第 61 项门禁 `report_shows_the_advisor` 盯着这件事，8 条观察：
+
+| 观察项 | 它在问什么 |
+| --- | --- |
+| `the report shows the advisor's own reason` | 报告里有主线的原话吗 |
+| `the report shows what the advisor decided` | 报告说出了主线的决定吗 |
+| `the report shows the advisor's judgement of the criterion` | 报告说出了主线对标准的判定吗 |
+| `the report attaches the advice to the round it was given in` | 建议挂在它被给出的那一轮吗 |
+| `the report shows the advisor's answer when the loop did not iterate` | 单轮运行也印得出来吗 |
+| `a run without an advisor says nothing about one` | 没问过顾问时报告会编造吗 |
+| `the advisor's answer reaches the report once per round, not twice` | 同一句答案不会被印两遍吗 |
+| `the advisor's answer does not appear in a run that never consulted one` | 没问过顾问时顾问的字会漏进来吗 |
+
+它用**两套独立实现**判定同一件事：一套读**渲染后的 Markdown**
+（人读的那一半），一套读 **`run_summary()` 的结构化 payload**
+（脚本读的那一半）。
+
+并且**自证失败** —— 掐掉顾问行的收集，门禁必须变红。
+
+### 为什么值得单列一条
+
+前两条不变量问的是「**答案有没有被用上**」。这一条问的是
+「**人有没有看见答案**」。
+
+一个**说了**、**记了**、**传了**，但**没被展示**的答案，在人的
+复盘里等于**不存在** —— 而复盘正是人决定「要不要信这个循环」的
+那一刻。闭环的最后这一格不是「算出来」，是「**被看见**」。
+

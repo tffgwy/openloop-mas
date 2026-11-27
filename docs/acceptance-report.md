@@ -3517,3 +3517,93 @@ Windows 的 tool-help 快照。**macOS 不发布 `/proc`**，
 **顾问最有用的时候，是它说清了「缺什么」的那一刻 —— 不是它给出
 判定的那一刻。** 判定只是账本里的一行；「缺什么」才是下一轮唯一
 能照着改的东西。
+
+## AE. v0.12.0 -- 主线的话必须到得了报告面
+
+### 这次修的是什么
+
+前两版让引擎**读到了**主线的决定，又让主线的判定**变成了下一轮要改
+什么**。这一版修的是**顾问原话的最后一个到达不了的地方**：**报告面**。
+
+人复盘时真正读的是报告，而报告里没有顾问说过的话。
+
+用探针 provider 实测（修复前）：
+
+    === does the ledger hold the advisor's own words? ===
+      lead rows: 2
+        has LEAD_REASON: True
+        has LEAD_NOTE  : True
+    === does the REPORT show the advisor's own words? ===
+      report has LEAD_REASON: False     <-- 报告面缺失
+      report has LEAD_NOTE  : True      <-- 逐条 note 通过 issues 间接出现
+    === ticket has LEAD_REASON: True ===
+    === replay has LEAD_REASON: True ===
+
+账本里有、工单里有、回放里有，**唯独报告里没有**。
+
+### 根因
+
+`mas/report.py` 的 `run_summary()` **只收集 `reflector` 行**，
+**从不收集 `lead` 行** —— 顾问的回答在报告里没有落脚点，于是不被
+渲染。而一份不提到顾问的报告，读起来和「从没问过顾问」的运行
+**一模一样**。
+
+### 改了什么
+
+| 文件 | 改动 |
+| --- | --- |
+| `mas/report.py` | 新增 `_advisor_payload` / `_advisor_decision` / `_advisor_reason` / `_advisor_judgements` / `_advisor_text` / `_advisor_for`；`run_summary()` 收集 `lead` 行、时间线新增四个顾问键、运行级新增 `advisories` / `advisories_count`；渲染新增 `🧭 主线的建议`（多轮分支 + 单轮分支）与不重复的运行级兜底；判定改用引擎同一套 `_as_bool()` |
+| `mas/selftest_report_advisor.py` | 新增，第 61 项门禁 |
+| `mas/selftest.py` | 接线：import + `CHECKS` 末尾追加 |
+| `tests/test_engine_lead_120.py` | 新增，17 项回归测试 |
+| `tests/test_gate_count_is_pinned.py` | 门禁名末尾追加 `report_shows_the_advisor` |
+| `docs/loop-engineering.md` | 新增第四十一条不变量 |
+| `CHANGELOG.md` | 新增 `[0.12.0]` |
+
+### 新增门禁
+
+第 **61** 项门禁 `report_shows_the_advisor`，8 条观察：
+
+| 观察项 | 它在问什么 |
+| --- | --- |
+| `the report shows the advisor's own reason` | 报告里有主线的原话吗 |
+| `the report shows what the advisor decided` | 报告说出了主线的决定吗 |
+| `the report shows the advisor's judgement of the criterion` | 报告说出了主线对标准的判定吗 |
+| `the report attaches the advice to the round it was given in` | 建议挂在它被给出的那一轮吗 |
+| `the report shows the advisor's answer when the loop did not iterate` | 单轮运行也印得出来吗 |
+| `a run without an advisor says nothing about one` | 没问过顾问时报告会编造吗 |
+| `the advisor's answer reaches the report once per round, not twice` | 同一句答案不会被印两遍吗 |
+| `the advisor's answer does not appear in a run that never consulted one` | 没问过顾问时顾问的字会漏进来吗 |
+
+两套独立判定（读渲染后的 Markdown / 读 `run_summary()` 的结构化
+payload），并且**自证能失败**：掐掉顾问行的收集 → 门禁必须变红。
+
+### 一个被顺手修掉的口径分裂
+
+引擎用 `_as_bool()` 读顾问的判定 —— 模型回答字符串 `"true"` 会被记成
+「已满足」；报告面此前用**严格的 `is True`**，同一份数据会印成
+「未表态」。**一个决定，两套读法**。报告现在跟引擎完全一致。
+
+### 没有被改变的
+
+顾问**仍然只是顾问，不是法官**：机检失败仍然是事实，主线的 `close`
+**不能**盖掉未通过的检查。报告现在会**说出**顾问说了什么，但这
+**不改变**引擎做过的任何事。
+
+### 本轮实测证据
+
+| 检查 | 结果 |
+| --- | --- |
+| `mas selftest --only report_shows_the_advisor --iterations 1` | **ok** |
+| `tests/test_engine_lead_120.py` | **17 passed** |
+| `pytest tests -q` | **1995 passed, 5 skipped, 95 subtests** |
+| `mas selftest --iterations 2` | **61 项全绿** |
+| `ruff check mas tests tools` | All checks passed! |
+| 门禁自证失败（回退 `mas/report.py` 后重跑） | **6 条观察同时变红** |
+
+### 一个反直觉的点
+
+**顾问最有用的时候，是它说清了「缺什么」的那一刻 —— 不是它给出
+判定的那一刻。** 判定只是账本里的一行；「缺什么」才是下一轮唯一
+能照着改的东西。
+

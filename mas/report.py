@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from mas.drafts_reading import draft_reading, is_waiting_for_human
 from mas.reason_text import continuation_command, reason_hint, reason_text
-from mas.util import now_iso
+from mas.util import _as_bool, now_iso
 from mas.verdict_text import (
     decision_reading,
     issue_reading,
@@ -358,6 +358,116 @@ def _reflection_for(
     return None
 
 
+def _advisor_payload(row: Dict[str, Any] | None) -> Dict[str, Any]:
+    """The advisor's own answer, whatever shape the ledger row has.
+
+    The advisor's answer is nested under ``lead`` in the ledger. The
+    reader must not guess: a row that holds no answer reads as no
+    answer, and the report says nothing rather than something invented.
+    """
+    if not row:
+        return {}
+    payload = row.get("lead")
+    if isinstance(payload, dict):
+        return payload
+    return {}
+
+
+def _advisor_decision(row: Dict[str, Any] | None) -> str:
+    """What the advisor decided, in one word."""
+    payload = _advisor_payload(row)
+    for key in ("decision", "verdict"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _advisor_reason(row: Dict[str, Any] | None) -> str:
+    """The advisor's own sentence about what is missing.
+
+    This is the one line that says *what* is missing rather than
+    *that* something is missing. It is the reason the advisor was
+    consulted at all, so it must not be clipped away by a helper
+    that is looking for a summary.
+    """
+    payload = _advisor_payload(row)
+    for key in ("reason", "advice", "summary"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _advisor_judgements(row: Dict[str, Any] | None) -> List[Dict[str, str]]:
+    """The criteria the advisor judged, in its own words."""
+    payload = _advisor_payload(row)
+    judgements: List[Dict[str, str]] = []
+    for item in payload.get("judged") or []:
+        if not isinstance(item, dict):
+            continue
+        cid = str(item.get("id") or "").strip()
+        if not cid:
+            continue
+        # The same reading the engine used when it folded the advisor's
+        # answer into the criteria. A model that answers the string
+        # "true" was recorded as a satisfied criterion by the engine -
+        # reading it strictly here would print the very same run as
+        # "not met", which is a second, competing truth about one
+        # decision.
+        met = _as_bool(item.get("met"))
+        if met is True:
+            mark = "已满足 / met"
+        elif met is False:
+            mark = "未满足 / not met"
+        else:
+            mark = "未表态 / no answer"
+        judgements.append(
+            {
+                "id": cid,
+                "met": "yes" if met is True else ("no" if met is False else ""),
+                "mark": mark,
+                "note": str(item.get("note") or "").strip(),
+            }
+        )
+    return judgements
+
+
+def _advisor_text(row: Dict[str, Any] | None) -> str:
+    """The advisor's answer, ready to be printed."""
+    decision = _advisor_decision(row)
+    reason = _advisor_reason(row)
+    parts: List[str] = []
+    if decision:
+        parts.append("主线判断 / the advisor decided: %s" % decision)
+    if reason:
+        parts.append(reason)
+    judgements = _advisor_judgements(row)
+    if judgements:
+        parts.append(
+            "；".join(
+                "[%s] %s%s"
+                % (
+                    item["id"],
+                    item["mark"],
+                    ("（%s）" % item["note"]) if item["note"] else "",
+                )
+                for item in judgements
+            )
+        )
+    return "　".join(parts)
+
+
+def _advisor_for(
+    advisors: List[Dict[str, Any]], iteration: int
+) -> Dict[str, Any] | None:
+    """The advisor's answer that belongs to a given iteration, if any."""
+    for index, row in enumerate(advisors, start=1):
+        if _iteration_of(row, index) == iteration:
+            return row
+    return None
+
+
 def group_runs(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Group ledger rows into runs, keeping the order of first appearance.
 
@@ -533,6 +643,13 @@ def run_summary(
     # attempt must change; it is the one role whose answer explains
     # the loop's own behaviour, and the report never mentioned it.
     reflections: List[Dict[str, Any]] = []
+    # The advisor's own answers, in order. The advisor is consulted
+    # when a criterion has no verdict at all, and it says *what* is
+    # missing - the one line in the loop that speaks about the gap
+    # instead of about the absence of an answer. The report showed
+    # the reflector and never the advisor, so the run's own reading
+    # of itself was missing exactly where it was most specific.
+    advisors: List[Dict[str, Any]] = []
     for row in rows:
         role = str(row.get("role", "unknown"))
         roles[role] = roles.get(role, 0) + 1
@@ -551,6 +668,8 @@ def run_summary(
             errors.append(str(row.get("error", "")))
         elif role == "reflector":
             reflections.append(row)
+        elif role == "lead":
+            advisors.append(row)
         elif role == "handback":
             handback = row
 
@@ -686,6 +805,20 @@ def run_summary(
                 "reflection_summary": _reflection_summary(
                     _reflection_for(reflections, iteration)
                 ),
+                # The advisor's answer for this round, if the advisor
+                # was consulted in it. It is attached to the round it
+                # was given in, next to the reflection it produced -
+                # cause and effect next to each other.
+                "advisor": _advisor_text(_advisor_for(advisors, iteration)),
+                "advisor_decision": _advisor_decision(
+                    _advisor_for(advisors, iteration)
+                ),
+                "advisor_reason": _advisor_reason(
+                    _advisor_for(advisors, iteration)
+                ),
+                "advisor_judgements": _advisor_judgements(
+                    _advisor_for(advisors, iteration)
+                ),
             }
         )
 
@@ -738,6 +871,21 @@ def run_summary(
             }
             for index, row in enumerate(reflections, start=1)
         ],
+        # The advisor's answers, in order, for the whole run. A run
+        # whose advisor asked for a human has to be able to say so
+        # from its own page - the words it was handed over with are
+        # the handover.
+        "advisories": [
+            {
+                "iteration": _iteration_of(row, index),
+                "decision": _advisor_decision(row),
+                "reason": _advisor_reason(row),
+                "judgements": _advisor_judgements(row),
+                "text": _advisor_text(row),
+            }
+            for index, row in enumerate(advisors, start=1)
+        ],
+        "advisories_count": len(advisors),
         # Whether the deliverable passed every check, independently of
         # whether the run closed. ``None`` means the run never said -
         # which is not the same as "the deliverable was bad".
@@ -3136,6 +3284,13 @@ def render_markdown(report: Dict[str, Any]) -> str:
                         f"    - 💭 反思："
                         f"{_reflection_reading(entry, criteria)}"
                     )
+                # The advisor's own words for this round. The report
+                # showed the reflection and never the advice, so the
+                # reader saw the loop's mood and not its diagnosis -
+                # and the advisor's sentence is the diagnosis.
+                advisor = entry.get("advisor") or ""
+                if advisor:
+                    lines.append(f"    - 🧭 主线的建议：{advisor}")
         elif timeline:
             # A single round: the loop did not iterate, so say that
             # instead of pretending there was a process.
@@ -3149,6 +3304,24 @@ def render_markdown(report: Dict[str, Any]) -> str:
             reflection = entry.get("reflection") or ""
             if reflection:
                 lines.append(f"  - 💭 反思：{reflection}")
+            advisor = entry.get("advisor") or ""
+            if advisor:
+                lines.append(f"  - 🧭 主线的建议：{advisor}")
+        # The advisor's answers for the whole run - but only when the
+        # round-by-round view did not already show them. The timeline
+        # hangs each answer on the round it was given in, which is
+        # where cause and effect belong; this fallback covers the
+        # runs whose timeline carries no round to hang them on.
+        advisories = run.get("advisories") or []
+        if advisories and not any(
+            entry.get("advisor") for entry in (timeline or [])
+        ):
+            lines.append("- 主线的建议：")
+            for item in advisories:
+                text = item.get("text") or ""
+                if not text:
+                    continue
+                lines.append(f"  - {text}")
         if run.get("plan"):
             summary = (run.get("plan") or {}).get("summary") or ""
             lines.append(f"- 规划：{summary}")

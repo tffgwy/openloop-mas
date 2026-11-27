@@ -105,6 +105,9 @@ from mas.selftest_queue_brief import (
 from mas.selftest_replay_queue import (
     check_the_replay_listens_to_the_queue_too,
 )
+from mas.selftest_report_advisor import (
+    check_the_report_shows_the_advisor,
+)
 from mas.selftest_report_audit import (
     check_the_report_reads_the_decision_chains,
 )
@@ -5658,6 +5661,7 @@ CHECKS = (
     check_plan_reaches_the_first_worker,
     check_lead_decision_is_honoured,
     check_lead_reaches_the_next_worker,
+    check_the_report_shows_the_advisor,
 )
 
 #: How many gates the suite is expected to hold.
