@@ -1,3 +1,77 @@
+## [0.11.7] - 2026-11-27
+
+### 计划终于到达了第一轮工人手里
+
+这一版修的是闭环里**最靠前**的一段：**第一轮那一次尝试，到底
+是不是照着计划写的**。
+
+用探针 provider（记录每一次 prompt）实测同一轮运行内的多次迭代，
+测出一个此前一直没人注意的静默浪费：
+
+    call order: ['planner', 'worker', 'verifier', 'reflector', 'worker', ...]
+    worker#1  sees PLAN_SUMMARY=False  sees PLAN_STEP=False
+       state.plan.summary=None
+    worker#4  sees PLAN_SUMMARY=True   sees PLAN_STEP=True
+
+**第一个工人是盲写。**
+
+整个循环里最关键的那一次 —— 从零开始写出交付物的那一次 ——
+手里**没有计划**。计划算出来了、付了钱了、记了账了，然后送给了
+**第二轮**的工人。
+
+### 根因
+
+不是缺功能，是**顺序错了**：
+
+* 迭代的 state 是**迭代运行之前**构造的（`mas/engine.py` 的 `state`）；
+* 规划角色（planner）是**迭代内部**才被调用的。
+
+所以 state 构造出来的时候，里面装的是**一个还没跑过的规划角色的
+计划** —— 一个空 dict。规划角色的答案进了 `plan_payload`，
+**从来没有回填进 state**。
+
+最坏的情况更难看：`max_iterations=1` 时，规划角色被调用了、
+钱花了，**答案一个工人也到不了**。
+
+### 修法
+
+`mas/engine.py`：规划角色答完之后、剥离内部字段之后、写账本之前，
+加了一行：
+
+    state["plan"] = plan_payload
+
+一次写入覆盖所有下游：worker、verifier、reflector、lead 全都
+从 state 里读计划。
+
+### 新增门禁
+
+第 **58** 项门禁 `plan_reaches_the_first_worker`，5 条观察：
+
+| 观察项 | 它在问什么 |
+| --- | --- |
+| `the first attempt sees the plan summary` | 第一个工人看得见计划摘要吗 |
+| `the first attempt sees the plan steps` | 第一个工人看得见计划步骤吗 |
+| `the plan is in the state, not only in the prose` | 计划是 state 里的事实，不只是简报里的一行字 |
+| `a single-iteration run still reaches its worker with the plan` | 只跑一轮时，计划还到得了工人吗 |
+| `the second attempt still sees the plan` | 修第一轮的时候，没有把第二轮弄丢 |
+
+两套独立判定（读 prompt 文本 / 解析 state 块里的 JSON），
+并且**自证能失败**：把规划角色的答案掐掉，门禁必须变红。
+
+### 已验证事实（本轮真实输出）
+
+| 检查 | 结果 |
+| --- | --- |
+| `pytest tests -q` | 见下方发布提交记录 |
+| `mas.cli selftest` | **58 项门禁全绿** |
+| `ruff check mas tests tools` | All checks passed! |
+
+### 口径提醒
+
+* 「四个小 Skills 400+ 星」的说法**无法核实**，不要当事实转述
+  （此前实测 OpenMausBot 为 22,078 stars；两个项目不是同一个）。
+* 「Grok Bot 的免费平替」是第三方描述口径，引用须标明归属。
+* MOKI / DeepSeek Harness 的能力与兼容性以其官方仓库为准。
 ## [0.11.6] - 2026-11-26
 
 ### 反馈终于到达了下一轮的工人手里

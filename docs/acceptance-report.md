@@ -3268,3 +3268,87 @@ Windows 的 tool-help 快照。**macOS 不发布 `/proc`**，
 （版本钉住 ≠ 运行版本）。跑一次 `tools/sync_packaged_docs.py` 即可 ——
 **这类漂移正是 `packaged_docs` 门禁存在的意义**：它让
 「仓库里改了、包里没改」变成一次 CI 失败，而不是一次用户的困惑。
+
+## AB. v0.11.7 -- 计划必须到达第一轮工人手里
+
+### 洞在哪里
+
+用探针 provider（记录每一次 prompt）实测同一轮 `LoopEngine.run()`
+内的多轮迭代，测出一个此前一直没人注意的静默浪费：
+
+    call order: ['planner', 'worker', 'verifier', 'reflector', 'worker', ...]
+    worker#1  sees PLAN_SUMMARY=False  sees PLAN_STEP=False
+       state.plan.summary=None
+    worker#4  sees PLAN_SUMMARY=True   sees PLAN_STEP=True
+
+**第一个工人是盲写。**
+
+整个循环里最关键的那一次 —— 从零开始写出交付物的那一次 ——
+手里**没有计划**。计划算出来了、付了钱了、记了账了，然后送给了
+**第二轮**的工人。
+
+根因不是缺功能，是**顺序错了**：
+
+* 迭代的 state 是**迭代运行之前**构造的（`mas/engine.py`）；
+* 规划角色（planner）是**迭代内部**才被调用的。
+
+所以 state 构造出来的时候，里面装的是**一个还没跑过的规划角色的
+计划** —— 一个空 dict。规划角色的答案进了 `plan_payload`，
+**从来没有回填进 state**。
+
+最坏的情况更难看：`max_iterations=1` 时，规划角色被调用了、
+钱花了，**答案一个工人也到不了**。
+
+### 修法
+
+`mas/engine.py`：规划角色答完之后、剥离内部字段之后、写账本之前，
+加了一行 `state["plan"] = plan_payload`。
+
+一次写入覆盖所有下游：worker、verifier、reflector、lead 全都
+从 state 里读计划。
+
+### 新增门禁
+
+第 **58** 项门禁 `plan_reaches_the_first_worker`，5 条观察：
+
+| 观察项 | 它在问什么 |
+| --- | --- |
+| `the first attempt sees the plan summary` | 第一个工人看得见计划摘要吗 |
+| `the first attempt sees the plan steps` | 第一个工人看得见计划步骤吗 |
+| `the plan is in the state, not only in the prose` | 计划是 state 里的事实，不只是简报里的一行字 |
+| `a single-iteration run still reaches its worker with the plan` | 只跑一轮时，计划还到得了工人吗 |
+| `the second attempt still sees the plan` | 修第一轮的时候，没有把第二轮弄丢 |
+
+两套独立判定（读 prompt 文本 / 解析 state 块里的 JSON），
+并且**自证能失败**：把规划角色的答案掐掉，门禁必须变红。
+
+### 改动文件
+
+| 文件 | 改什么 |
+| --- | --- |
+| `mas/engine.py` | 规划角色的答案写回 `state["plan"]` |
+| `mas/selftest_plan_reaches_first_worker.py` | 新增，第 58 项门禁 |
+| `mas/selftest.py` | 接线：import + `CHECKS` 末尾追加 |
+| `tests/test_engine_plan_117.py` | 新增，9 项回归测试 |
+| `tests/test_gate_count_is_pinned.py` | 门禁名末尾追加 `plan_reaches_the_first_worker` |
+| `docs/loop-engineering.md` | 新增第三十八条不变量 |
+| `CHANGELOG.md` | 新增 `[0.11.7]` |
+
+### 本轮实测证据
+
+| 检查 | 结果 |
+| --- | --- |
+| `mas selftest --only plan_reaches_the_first_worker --iterations 2` | **[OK  ] 计划真的到达了第一轮工人手里**，打了 2 次 |
+| `tests/test_engine_plan_117.py` + `tests/test_gate_count_is_pinned.py` | **14 passed** |
+| `mas selftest --iterations 2` | **58 项全绿** |
+| `pytest tests -q` | 全量通过 |
+| `ruff check mas tests tools` | All checks passed! |
+| `twine check` | PASSED |
+
+### 一个反直觉的点
+
+**账本里有一笔账，不等于那笔钱买到的东西被用上了。**
+规划角色的调用记在账本里、成本可查、看起来一切正常 ——
+但那笔账买来的东西，只到了第二轮的工人手里。
+闭环的最后一格，往往不是「有没有算」，而是
+「算出来的东西有没有到得了要用它的那一步」。

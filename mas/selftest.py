@@ -90,6 +90,9 @@ from mas.selftest_onboarding import (
 from mas.selftest_packaged_docs import (
     check_the_documents_the_beginner_reads_travel_with_the_wheel,
 )
+from mas.selftest_plan_reaches_first_worker import (
+    check_plan_reaches_the_first_worker,
+)
 from mas.selftest_queue_brief import (
     check_the_ticket_queue_is_a_handover_everywhere,
 )
@@ -5646,6 +5649,7 @@ CHECKS = (
     check_the_takeover_is_visible_everywhere,
     check_the_selftest_converges_and_says_so,
     check_feedback_reaches_worker,
+    check_plan_reaches_the_first_worker,
 )
 
 #: How many gates the suite is expected to hold.

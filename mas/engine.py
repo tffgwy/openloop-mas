@@ -859,6 +859,28 @@ class LoopEngine:
                         for key, value in plan_payload.items()
                         if key not in INTERNAL_KEYS
                     }
+                    # The plan goes back into the state, so the *first*
+                    # attempt's worker sees it too.
+                    #
+                    # The state of an iteration is built before the
+                    # iteration runs, and the planner runs *inside* the
+                    # iteration - so the state was built with the plan
+                    # of a planner that had not run yet: an empty dict.
+                    # The planner's answer was paid for, booked in the
+                    # ledger, and then handed to the worker of the
+                    # second attempt only. The first attempt - the one
+                    # that actually produces the deliverable - was
+                    # written blind, with no plan at all.
+                    #
+                    # In a run that allows a single iteration the plan
+                    # reached *no* worker: the planner was called, the
+                    # money was spent, and the answer was thrown away.
+                    #
+                    # Every prompt built from this state afterwards -
+                    # the worker, the verifier, the reflector, the lead
+                    # - reads the plan from the state, so writing it
+                    # back once is enough.
+                    state["plan"] = plan_payload
                     # The ledger still shows what the planner call cost -
                     # the audit trail has to carry the spend of every
                     # call, not only the ones that produced an artifact.
