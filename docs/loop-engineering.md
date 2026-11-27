@@ -2638,3 +2638,90 @@ mas ledger --tail 50
 - **闭合轮数**：从第一次执行到通过用了几轮（轮数越少，标准写得越清楚）；
 - **判定来源分布**：`source` 里 `rule` 占比越高，结论越可复现；
 - **是否升级过**：`escalated` 说明标准或目标还需要人介入，这是信息不是失败。
+
+## 第四十条不变量：主线的判断必须变成下一轮要改什么（v0.11.9）
+
+前三十九条不变量管的是**证据**和**反馈**。这一条管的是**顾问的
+判定落到哪儿**。
+
+### 顾问写的判定，和顾问写的理由，是两件事
+
+上一版让引擎**读到了**主线的决定：主线说 `escalate`，循环就真的
+停下来交出去。但顾问**自己写下的理由** —— 那一句话说明
+「到底缺什么」—— 仍然只停在账本里。
+
+它漏掉的时候，闭环里是这样的：
+
+    === the advisor judged c1 as NOT met ===
+      result.issues : ['c1: unjudged: 评审没有给出该标准的判定']
+      -> the issue says 'unjudged' even though the advisor judged it: True
+      -> the advisor's own note is nowhere in the issues: True
+
+    === worker #2 (the one after the advisor spoke) ===
+      sees lead NOTE     : False
+      sees lead REASON   : False
+      sees 'unjudged'    : True
+
+三件事同时错了，而且它们其实是**一件事**：
+
+1. **`issues` 在主线发言之前就定稿了。** 它本来是「机检 + 评审
+   都没给出判定」的清单；主线补上判定之后，这张清单**不重算**。
+   于是工人收到的是一句**关于答案缺失**的指控，而这条标准
+   恰恰已经有了判定 —— 只是是主线给的。工人被要求去补一个
+   它根本补不上的东西。
+2. **主线自己的话没走过去。** 下一轮带走的是交付物和复盘的反思，
+   主线那段话不在里面。
+3. **复盘也不知道主线说了什么。** 而复盘恰恰是那个负责说
+   「该怎么改」的角色。
+
+### 顺序是根因
+
+主线被咨询得太晚 —— 在复盘**之后**；而 `issues` 在两者**之前**
+就算好了。所以主线的判断**永远追不上**那张清单。
+
+这一版把主线咨询**前移到复盘之前**，让 `issues` 从**主线发言之后**
+的 scores 重算，并且让主线的 `decision` / `reason` / `judged`
+经由 `lead_advice` **随下一轮和复盘一起走**。
+
+### 没有被改变的：顾问仍然不是法官
+
+这是必须一起说清楚的部分。README 里写着「主线是顾问，不是法官」
+「机检失败是事实」「引擎保留最终否决权」—— 这条契约
+**没有**被这一版削弱：
+
+* 主线说 `close`，**不能**盖掉未通过的机检；
+* 主线只能**叫停**循环，不能**宣布通过**；
+* 唯一它能决定的是「没人能判的标准，它来判」。
+
+新门禁把这两条当成**回归**盯着 —— 修好一条路，不许踩坏另一条。
+
+### 这条不变量怎么被证明
+
+第 60 项门禁 `lead_reaches_the_next_worker` 盯着这件事，8 条观察：
+
+| 观察项 | 它在问什么 |
+| --- | --- |
+| `the issues carry the advisor's own note` | 清单里带的是主线自己的说明吗 |
+| `the issues no longer claim that nobody judged the criterion` | 清单还会说「没人判过」吗 |
+| `the next attempt is shown the advisor's section` | 下一轮拿到主线的那一段吗 |
+| `the next attempt sees the advisor's own reason` | 下一轮读到主线的原话吗 |
+| `the next attempt sees the advisor's judgement of the criterion` | 下一轮读到主线对标准的判定吗 |
+| `the reflector is shown the advisor's words` | 复盘读到主线的原话吗 |
+| `the advisor's escalation still stops the run early` | 顾问叫停还是叫停得早吗（**回归**） |
+| `a criterion the advisor judged as met still closes the loop` | 顾问判「达标」还能闭合吗（**回归**） |
+
+它用**两套独立实现**判定同一件事：一套读**简报**（人能读的那半），
+一套读 **`<<MAS_STATE>>` 原始状态** —— 因为简报和状态是**两条
+不同的通道**，只到了一条的事实必须被看见。
+
+并且**自证失败** —— 把 `_apply_lead_judgement` 掐掉、把
+`lead_advice` 掐掉，门禁必须变红。
+
+### 为什么值得单列一条
+
+这一版修的其实是一个**很常见的假闭环**：判定**发生了**，也**记下来了**，
+但它**没有变成行动指令**。
+
+「有人回答过了」和「回答被用上了」之间，隔着的正是这条不变量。
+一个说清楚了「缺什么」却没人听的顾问，和一个没被问过的顾问，
+在闭环上是**一样的**：下一轮还是不知道要改什么。

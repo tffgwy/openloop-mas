@@ -19,6 +19,16 @@ PREVIOUS_ARTIFACT_CHARS = 12000
 #: The same cap for the reflector's own summary.
 REFLECTION_CHARS = 4000
 
+#: The same cap for the advisor's own words.
+#:
+#: The advisor's reason travels into the next prompt twice - once in
+#: the readable brief and once in the raw state block - and an advisor
+#: that writes an essay would put both copies into every later call.
+#: The text is clipped; the structured list of judgements is kept as
+#: it is, because dropping one would drop a verdict rather than a
+#: repetition.
+LEAD_ADVICE_CHARS = 4000
+
 
 def clip_text(text: str, limit: int) -> str:
     """The last ``limit`` characters of ``text``, with a marker.
@@ -199,6 +209,40 @@ class Roles:
             for item in (reflection.get("issues") or [])
             if str(item).strip()
         ]
+        # The advisor's own words about the criteria it judged.
+        #
+        # The advisor is a paid call: it is booked in the ledger, its
+        # answer is printed in the report - and until this release it
+        # reached no worker at all. The next attempt was told to
+        # "rewrite the deliverable to address the issues above" while
+        # the issues above still said "unjudged: the review gave no
+        # verdict for this criterion" - a complaint about a *missing
+        # answer*, thrown at a worker who could not possibly produce a
+        # verdict. The advisor had already looked at the artifact and
+        # said what was wrong with it, and that sentence was dropped.
+        lead_advice = state.get("lead_advice") or {}
+        if not isinstance(lead_advice, dict):
+            lead_advice = {}
+        lead_reason = str(
+            lead_advice.get("reason") or lead_advice.get("advice") or ""
+        ).strip()
+        lead_decision = str(lead_advice.get("decision") or "").strip()
+        lead_judged = []
+        for item in lead_advice.get("judged") or []:
+            if not isinstance(item, dict):
+                continue
+            cid = str(item.get("id") or "").strip()
+            if not cid:
+                continue
+            met = item.get("met")
+            mark = (
+                "已满足 / met" if met is True
+                else ("未满足 / not met" if met is False else "未判定 / undecided")
+            )
+            note = str(item.get("note") or "").strip()
+            lead_judged.append(
+                "- [%s] %s%s" % (cid, mark, ("：" + note) if note else "")
+            )
 
         out: list[str] = []
 
@@ -329,6 +373,39 @@ class Roles:
                 out.append(_tail(reflection_summary, REFLECTION_CHARS))
             for item in reflection_issues:
                 out.append(f"- {item}")
+
+        if lead_decision or lead_reason or lead_judged:
+            # The advisor's own words, and the criteria it judged.
+            #
+            # The advisor exists for exactly one situation: some
+            # acceptance criterion had no verdict at all. It looks at
+            # the artifact and says what is missing. That sentence used
+            # to stop at the ledger - the next attempt was told to
+            # "fix the issues above" while the issues above said
+            # "unjudged", which is a complaint about a missing answer
+            # and not a task anybody can carry out.
+            #
+            # The block is rendered for the worker and for the
+            # reflector: both of them write the next attempt, and both
+            # of them need to know what the advisor concluded. The
+            # advisor's decision itself is *not* an instruction - it
+            # may only stop the loop, never close it - so it is
+            # rendered as an observation, not as an order.
+            out.append("")
+            out.append(
+                "### 主线的建议 / THE ADVISOR'S ADVICE" if zh
+                else "### THE ADVISOR'S ADVICE"
+            )
+            if lead_decision:
+                out.append(
+                    f"主线判断 / the advisor decided: {lead_decision}"
+                )
+            if lead_reason:
+                out.append(_tail(lead_reason, LEAD_ADVICE_CHARS))
+            if lead_judged:
+                out.append("")
+                for item in lead_judged:
+                    out.append(item)
 
         if human_note:
             out.append("")

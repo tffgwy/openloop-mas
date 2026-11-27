@@ -3439,3 +3439,81 @@ Windows 的 tool-help 快照。**macOS 不发布 `/proc`**，
 **顾问说「交给人工」的时候，最省钱的做法反而是立刻停下来。**
 继续跑不但没用，还会把「这里需要人」这件事埋掉 —— 用户看到的是
 一份跑完了的循环，而不是一个等人接手的交接单。
+
+## AD. v0.11.9 -- 主线的判断必须变成下一轮要改什么
+
+### 这一版修的是什么
+
+上一版让引擎**读到了**主线的决定（`close` / `revise` / `escalate`），
+但主线**自己写下的判定理由**仍然只停在账本里 —— 它没有变成
+下一轮要改的东西。
+
+探针 provider 实测：
+
+    === the advisor judged c1 as NOT met ===
+      result.issues : ['c1: unjudged: 评审没有给出该标准的判定']
+      -> the issue says 'unjudged' even though the advisor judged it: True
+      -> the advisor's own note is nowhere in the issues: True
+
+    === worker #2 (the one after the advisor spoke) ===
+      sees lead NOTE     : False
+      sees lead REASON   : False
+      sees 'unjudged'    : True
+
+**根因是顺序**：主线被咨询得太晚（在复盘之后），而 `issues`
+在两者之前就算好了，之后从不重算。
+
+### 修法
+
+| 位置 | 改什么 |
+| --- | --- |
+| `mas/engine.py` | 主线咨询**前移到复盘之前**；`issues` 从主线之后的 scores 重算；新增 `_bounded_lead_advice()` 与 `last_lead`，`lead_advice` 随下一轮和复盘一起走 |
+| `mas/roles.py` | 新增 `LEAD_ADVICE_CHARS`；简报里新增 `### 主线的建议 / THE ADVISOR'S ADVICE` 一段（决定 + 理由 + 逐条判定） |
+| `mas/selftest_lead_reaches_the_next_worker.py` | 新增，第 60 项门禁 |
+| `mas/selftest.py` | 接线：import + `CHECKS` 末尾追加 |
+| `tests/test_engine_lead_119.py` | 新增，15 项回归测试 |
+| `tests/test_gate_count_is_pinned.py` | 门禁名末尾追加 `lead_reaches_the_next_worker` |
+| `docs/loop-engineering.md` | 新增第四十条不变量 |
+| `CHANGELOG.md` | 新增 `[0.11.9]` |
+
+### 新增门禁
+
+第 **60** 项门禁 `lead_reaches_the_next_worker`，8 条观察：
+
+| 观察项 | 它在问什么 |
+| --- | --- |
+| `the issues carry the advisor's own note` | 清单里带的是主线自己的说明吗 |
+| `the issues no longer claim that nobody judged the criterion` | 清单还会说「没人判过」吗 |
+| `the next attempt is shown the advisor's section` | 下一轮拿到主线的那一段吗 |
+| `the next attempt sees the advisor's own reason` | 下一轮读到主线的原话吗 |
+| `the next attempt sees the advisor's judgement of the criterion` | 下一轮读到主线对标准的判定吗 |
+| `the reflector is shown the advisor's words` | 复盘读到主线的原话吗 |
+| `the advisor's escalation still stops the run early` | 顾问叫停还是叫停得早吗（**回归**） |
+| `a criterion the advisor judged as met still closes the loop` | 顾问判「达标」还能闭合吗（**回归**） |
+
+两套独立判定（`_verdicts` 读简报 / `_verdicts_independent` 读
+`<<MAS_STATE>>` 原始状态），并且**自证能失败**：把
+`_apply_lead_judgement` 掐掉、把 `lead_advice` 掐掉，门禁必须变红。
+
+### 没有被改变的
+
+主线**仍然只是顾问，不是法官**：机检失败仍然是事实，主线的
+`close` **不能**盖掉未通过的检查。这条契约在 README 里写着，
+这一版没有削弱它 —— 新门禁把这两条当作**回归**盯着。
+
+### 本轮实测证据
+
+| 检查 | 结果 |
+| --- | --- |
+| `mas selftest --only lead_reaches_the_next_worker --iterations 1` | **ok** |
+| `tests/test_engine_lead_119.py` | **15 passed** |
+| `pytest tests -q` | 全量通过 |
+| `mas selftest --iterations 2` | **60 项全绿** |
+| `ruff check mas tests tools` | All checks passed! |
+| `twine check` | PASSED |
+
+### 一个反直觉的点
+
+**顾问最有用的时候，是它说清了「缺什么」的那一刻 —— 不是它给出
+判定的那一刻。** 判定只是账本里的一行；「缺什么」才是下一轮唯一
+能照着改的东西。

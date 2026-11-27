@@ -71,7 +71,13 @@ from mas.providers import (
     TruncatedAnswer,
     build_provider_chain,
 )
-from mas.roles import PREVIOUS_ARTIFACT_CHARS, REFLECTION_CHARS, Roles, clip_text
+from mas.roles import (
+    LEAD_ADVICE_CHARS,
+    PREVIOUS_ARTIFACT_CHARS,
+    REFLECTION_CHARS,
+    Roles,
+    clip_text,
+)
 from mas.tickets import TicketStore
 from mas.util import (
     _as_bool,
@@ -127,21 +133,68 @@ def _bounded_reflection(
     return bounded
 
 
+def _bounded_lead_advice(
+    lead: Dict[str, Any],
+) -> Dict[str, Any]:
+    """The advisor's own words, with a ceiling on the prose.
+
+    The advisor's answer travels into the next prompt twice - once in
+    the readable brief and once in the raw state block - and an
+    advisor that writes an essay would put both copies into every
+    later call. The prose is clipped; the structured list of
+    judgements is kept as it is, because dropping one would drop a
+    verdict rather than a repetition.
+
+    Only the three fields that carry meaning travel. The advisor's
+    bookkeeping (its token count, which endpoint answered) is read by
+    the ledger and has no business in a worker's brief.
+    """
+    bounded: Dict[str, Any] = {}
+    decision = str(lead.get("decision") or "").strip()
+    if decision:
+        bounded["decision"] = decision
+    reason = str(lead.get("reason") or lead.get("advice") or "").strip()
+    if reason:
+        bounded["reason"] = clip_text(reason, LEAD_ADVICE_CHARS)
+    judged: List[Dict[str, Any]] = []
+    for item in lead.get("judged") or []:
+        if not isinstance(item, dict):
+            continue
+        cid = str(item.get("id") or "").strip()
+        if not cid:
+            continue
+        judged.append(
+            {
+                "id": cid,
+                "met": item.get("met"),
+                "note": str(item.get("note") or "")[:600],
+            }
+        )
+    if judged:
+        bounded["judged"] = judged
+    return bounded
+
+
 def _carry_feedback(
     state: Dict[str, Any],
     last_artifact: str,
     last_reflection: Dict[str, Any],
     previous_artifact: str,
+    last_lead: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Put the last round's work into the state of the next one.
 
-    Two facts have to travel, and both used to travel nowhere:
+    Three facts have to travel, and all of them used to travel nowhere:
 
     * the deliverable the last iteration produced, so the next
       iteration has something to improve on instead of starting from
       nothing;
     * what the reflector said about it, so the next iteration knows
       *how* to improve it and not merely *that* it is wrong.
+    * what the advisor concluded about the criteria it judged, so the
+      next iteration knows what the *advisor* thought was missing -
+      in the advisor's own words, not in the machine's complaint that
+      nobody had answered at all.
 
     The deliverable of an earlier iteration of this run wins over the
     one a resumed run was handed: it is the newer work, and the next
@@ -157,6 +210,8 @@ def _carry_feedback(
         state["previous_artifact"] = clip_text(carried, PREVIOUS_ARTIFACT_CHARS)
     if last_reflection:
         state["reflection"] = _bounded_reflection(last_reflection, REFLECTION_CHARS)
+    if last_lead:
+        state["lead_advice"] = _bounded_lead_advice(last_lead)
 
 
 def _required_flag(value: Any) -> bool:
@@ -734,6 +789,13 @@ class LoopEngine:
         # them.
         last_artifact = ""
         last_reflection: Dict[str, Any] = {}
+        # What the advisor said, the last time it was consulted. It
+        # travels to the next attempt together with the deliverable
+        # and the reflection: without it the next attempt is told to
+        # "fix the issues above" while the issues above are the
+        # machine's one-line complaint and the advisor's own sentence
+        # - the part that says *what* is missing - is nowhere.
+        last_lead: Dict[str, Any] = {}
         # The decision of the last scoring round. A run that never
         # reached a scoring round - it hit the budget ceiling on its
         # first iteration - still has to be described in the ledger, so
@@ -829,7 +891,11 @@ class LoopEngine:
             # second attempt wrote a fresh deliverable from scratch
             # and the reflector's words reached nobody at all.
             _carry_feedback(
-                state, last_artifact, last_reflection, previous_artifact
+                state,
+                last_artifact,
+                last_reflection,
+                previous_artifact,
+                last_lead,
             )
             # A criterion that demands a file creates an obligation the
             # worker has to know about: without this the worker only ever
@@ -998,15 +1064,100 @@ class LoopEngine:
                 # reported, but it never keeps the loop open forever.
                 blocking = [s for s in scores if s.get("blocking", True)]
                 passed = bool(scores) and all(bool(s["pass"]) for s in blocking)
+                # Whether the loop passed *before* the advisor had a
+                # say. The advisor may only fill a gap, so it can turn
+                # an unjudged criterion into a judged one - and the
+                # engine's own stop (stagnation) has to be judged
+                # against the state the engine itself observed, not
+                # against a verdict the advisor supplied afterwards.
+                # A run whose deliverable stopped changing is stopped
+                # by that fact, whether or not the advisor later said
+                # the criterion was met.
+                passed_before_lead = passed
+
+                # The advisor is consulted *before* the reflector, and
+                # the order is the whole point.
+                #
+                # The advisor exists for exactly one situation: some
+                # acceptance criterion has no verdict at all. It looks
+                # at the artifact and says what is missing - and that
+                # sentence used to arrive too late to be of any use.
+                # The reflector was asked first, with the machine's
+                # complaint, and the issues list was built before the
+                # advisor had spoken at all - so the list said
+                # "unjudged: the review gave no verdict for this
+                # criterion" even after the advisor had judged it and
+                # said *not met*.
+                #
+                # Two facts fell out of that order. The advisor's
+                # judgement reached the scores but never the issues,
+                # so the ledger and the next attempt both kept saying
+                # that nobody had answered - a complaint about a
+                # missing answer, thrown at a worker who cannot
+                # produce a verdict. And the advisor's own words never
+                # travelled to the next attempt at all.
+                #
+                # The advisor is consulted when nobody could decide.
+                # It is not consulted when the machine checks already
+                # did: a failed check is a fact, and an advisor that
+                # disagrees with a fact does not get to overrule it.
+                if not passed and self._lead_is_consulted(scores):
+                    lead_verdict = self._consult_lead(
+                        verify_state, scores, checks
+                    )
+                    # The advisor is a paid call. Its tokens belong to
+                    # the budget like every other call's - a run whose
+                    # spend is understated is a run whose budget is a
+                    # fiction.
+                    lead_usage = dict(lead_verdict.get("_usage") or {})
+                    tokens += int(
+                        lead_usage.get("total_tokens", 0) or 0
+                    )
+                    # The advisor's judgement fills in the criteria
+                    # nobody could judge. It can only *unblock* a
+                    # criterion the machine checks did not speak about
+                    # - it can never turn a failed machine check into
+                    # a pass, and it can never overrule the user's
+                    # budget. The engine keeps the final word.
+                    if lead_verdict:
+                        scores = self._apply_lead_judgement(
+                            scores, checks, lead_verdict
+                        )
+                        blocking = [
+                            s for s in scores if s.get("blocking", True)
+                        ]
+                        passed = bool(scores) and all(
+                            bool(s["pass"]) for s in blocking
+                        )
 
                 reflection: Dict[str, Any] = {}
                 if not passed:
                     # Only blocking failures become issues: an optional
                     # failure is information, not a reason to revise.
+                    #
+                    # The list is built from the scores *as they are
+                    # now* - and the scores have already been through
+                    # the advisor. Before this release the list was
+                    # built first and never rebuilt, so a criterion
+                    # the advisor had judged "not met" still showed up
+                    # as "unjudged: the review gave no verdict for this
+                    # criterion" - the advisor's own note nowhere in
+                    # the list, and the next attempt told to fix a
+                    # complaint that was no longer true.
                     failed = [s for s in blocking if not s["pass"]]
                     issues = [f"{s['id']}: {s['note']}" for s in failed]
                     reflect_state = dict(state)
                     reflect_state["issues"] = issues
+                    # The advisor's own words reach the reflector too.
+                    # The reflector is the role that says *how* to fix
+                    # what failed - and it used to be asked with the
+                    # machine's one-line complaint while the advisor's
+                    # sentence, which says what is actually missing,
+                    # was nowhere in its brief.
+                    if lead_verdict:
+                        reflect_state["lead_advice"] = _bounded_lead_advice(
+                            lead_verdict
+                        )
                     # The deliverable the reflector is reflecting
                     # *on*. Without it the reflector is asked "which
                     # criteria failed and what must the next attempt
@@ -1060,29 +1211,26 @@ class LoopEngine:
                 # ledger happens to contain.
                 last_artifact = artifact
                 last_reflection = dict(reflection)
+                # The advisor's own words travel too - and only the
+                # parts that carry meaning. An advisor that was not
+                # consulted leaves nothing behind: the next attempt
+                # sees no advice block at all, and it should not see
+                # an empty one.
+                if lead_verdict:
+                    last_lead = {
+                        key: value
+                        for key, value in lead_verdict.items()
+                        if key not in INTERNAL_KEYS
+                    }
+                else:
+                    last_lead = {}
 
                 art_sha = sha256_text(artifact)
                 stagnant = stagnant + 1 if art_sha == last_sha else 0
                 last_sha = art_sha
 
-                # The lead is consulted when nobody could decide. It is
-                # not consulted when the machine checks already did:
-                # a failed check is a fact, and a lead that disagrees
-                # with a fact does not get to overrule it.
-                if not passed and self._lead_is_consulted(scores):
-                    lead_verdict = self._consult_lead(
-                        verify_state, scores, checks
-                    )
-                    # The lead is a paid call. Its tokens belong to the
-                    # budget like every other call's - a run whose spend
-                    # is understated is a run whose budget is a fiction.
-                    lead_usage = dict(lead_verdict.get("_usage") or {})
-                    tokens += int(
-                        lead_usage.get("total_tokens", 0) or 0
-                    )
-
                 decision = "close" if passed else "revise"
-                if not passed and stagnant >= stagnation_limit:
+                if not passed_before_lead and stagnant >= stagnation_limit:
                     decision = "escalate"
                     # The escalation has to name its cause. A ticket that
                     # only says "the loop could not close itself" sends
@@ -1106,22 +1254,15 @@ class LoopEngine:
                     engine_escalated = True
                 else:
                     engine_escalated = False
-                # The lead's judgement fills in the criteria nobody could
-                # judge. It can only *unblock* a criterion the machine
-                # checks did not speak about - it can never turn a failed
-                # machine check into a pass, and it can never overrule the
-                # user's budget. The engine keeps the final word.
+                # The advisor's judgement has already been folded into
+                # the scores - it happened *before* the reflector, so
+                # that the issues the reflector was shown were the
+                # advisor's issues and not the machine's. What is left
+                # here is the decision that follows from it.
                 if lead_verdict:
-                    scores = self._apply_lead_judgement(
-                        scores, checks, lead_verdict
-                    )
-                    blocking = [s for s in scores if s.get("blocking", True)]
-                    passed = bool(scores) and all(
-                        bool(s["pass"]) for s in blocking
-                    )
                     # The engine's own stop is a fact about the run:
                     # the deliverable stopped changing while the
-                    # checks kept failing. A lead that judged some
+                    # checks kept failing. An advisor that judged some
                     # criteria does not erase that - it can fill
                     # gaps, not undo a stop the engine already
                     # justified. The run stays escalated, and the

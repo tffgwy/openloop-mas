@@ -1,3 +1,67 @@
+## [0.11.9] - 2026-11-27
+
+### 主线的判断必须变成下一轮要改什么
+
+这一版修的是闭环里**顾问的话往哪儿去**。上一版让引擎**读到了**
+主线的决定（`close` / `revise` / `escalate`），但顾问**自己写下的
+判定理由**仍然只停在账本里 —— 它没有变成下一轮要改的东西。
+
+用探针 provider 实测：
+
+    === the advisor judged c1 as NOT met ===
+      result.issues : ['c1: unjudged: 评审没有给出该标准的判定']
+      -> the issue says 'unjudged' even though the advisor judged it: True
+      -> the advisor's own note is nowhere in the issues: True
+
+    === worker #2 (the one after the advisor spoke) ===
+      sees lead NOTE     : False
+      sees lead REASON   : False
+      sees 'unjudged'    : True
+
+**两处都是同一个事实的两面。**
+
+* **主线的判断没有变成「要改什么」。** `issues` 是在咨询主线**之前**
+  算好的，之后从不重算。于是主线判了「不达标」并附上自己的说明，
+  那一行却仍然写着「unjudged：评审没有给出该标准的判定」——
+  一句关于**答案缺失**的指控，扔给一个**根本没法给出判定**的工人。
+* **主线自己的话没走过去。** 下一轮只带走了交付物和复盘的反思，
+  主线那句「到底缺什么」被丢在地上。
+
+### 根因
+
+**顺序错了**：主线被咨询得太晚（在复盘之后），而 `issues`
+在两者之前就算好了。
+
+### 修法
+
+* 主线咨询**前移到复盘之前**；
+* `issues` 改为从**主线发言之后**的 scores 重算，
+  于是那一行变成主线自己的说明：`c1: <主线的 note>`；
+* 主线的 `decision` / `reason` / `judged` 经由 `lead_advice`
+  **随下一轮和复盘一起走**，在简报里有**自己的一段**
+  （`### 主线的建议 / THE ADVISOR'S ADVICE`）。
+
+### 没有被改变的
+
+主线**仍然只是顾问，不是法官**：机检失败仍然是事实，
+主线的 `close` **不能**盖掉未通过的检查。这条契约在 README 里
+写着，这一版没有削弱它 —— 新门禁把这两条当作**回归**盯着。
+
+### 新增门禁
+
+第 **60** 项门禁 `lead_reaches_the_next_worker`，8 条观察：
+`the issues carry the advisor's own note` /
+`the issues no longer claim that nobody judged the criterion` /
+`the next attempt is shown the advisor's section` /
+`the next attempt sees the advisor's own reason` /
+`the next attempt sees the advisor's judgement of the criterion` /
+`the reflector is shown the advisor's words` /
+`the advisor's escalation still stops the run early` /
+`a criterion the advisor judged as met still closes the loop`。
+
+两套独立判定（读简报 / 读 `<<MAS_STATE>>` 原始状态），
+并且**自证能失败**：把 `_apply_lead_judgement` 掐掉、把
+`lead_advice` 掐掉，门禁必须变红。
 ## [0.11.8] - 2026-11-27
 
 ### 主线的决定必须真的被读到
