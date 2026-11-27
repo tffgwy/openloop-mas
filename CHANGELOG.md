@@ -1,3 +1,72 @@
+## [0.11.8] - 2026-11-27
+
+### 主线的决定必须真的被读到
+
+这一版修的是闭环里**顾问**那一格：**主线（lead）说「交给人工」，
+循环到底会不会真的停下来交出去**。
+
+用探针 provider 实测三种不同的主线回答：
+
+    === lead says: escalate ===
+      status: budget_exhausted  closed: False
+      history decisions: ['revise', 'revise', 'revise']
+    === lead says: close ===      <- 完全一样
+    === lead says: revise ===     <- 完全一样
+
+**三个不同的回答，同一种行为。**
+
+更糟的是第二层：顾问说「escalate」不但没被听见，运行还会**继续烧完
+剩余的每一轮**，直到撞上迭代上限 —— 顾问请求人工的那一次，让用户
+多付了**所有剩余轮次的钱**。
+
+### 根因
+
+* `mas/engine.py` 里 `lead.get("decision")` **零命中** —— 引擎只取
+  顾问答案里的 `judged`；
+* `mas/engine.py:1109` 那句 `decision = "close" if passed else "revise"`
+  把引擎自己因停滞判定的 `escalate` **降级**回 `revise`。
+
+### 修法
+
+* 引擎读取并遵守 `lead_decision` / `lead_reason`；当顾问判定
+  `escalate` 且检查未通过时，循环**当场停下**，票据记为
+  `loop_escalation`，并把顾问自己的理由写进票据；
+* 引擎自身的停滞升级**不再被顾问分支降级**；
+* 顾问的完整回答（`decision` / `reason` / `judged`）随票据落盘为
+  `lead_verdict`，事后可查。
+
+### 新增门禁
+
+第 **59** 项门禁 `lead_decision_is_honoured`，7 条观察：
+
+| 观察项 | 它在问什么 |
+| --- | --- |
+| `a lead that says escalate stops the run early` | 顾问说交给人工，运行会提前停吗 |
+| `the run does not burn its remaining rounds after the escalation` | 停下之后还会继续烧轮次吗 |
+| `the ticket says the advisor asked for a human` | 票据上写明是顾问要求的人工介入吗 |
+| `the ticket carries the advisor's own reason` | 票据带着顾问自己的理由吗 |
+| `the ticket carries the advisor's structured answer` | 票据带着顾问结构化的完整回答吗 |
+| `a lead that says close does not close a failed check` | 顾问说 close 不会盖掉未通过的检查 |
+| `the engine's own stagnation stop is not demoted by the advisor` | 引擎自己的停滞升级不会被降级 |
+
+两套独立判定（读运行结果 / 读票据），并且**自证能失败**：把顾问
+答案里的 `decision` 掐掉，门禁必须变红。
+
+### 已验证事实（本轮真实输出）
+
+| 检查 | 结果 |
+| --- | --- |
+| `pytest tests -q` | 见下方发布提交记录 |
+| `mas.cli selftest` | **59 项门禁全绿** |
+| `ruff check mas tests tools` | All checks passed! |
+
+### 口径提醒
+
+* 「四个小 Skills 400+ 星」的说法**无法核实**，不要当事实转述
+  （此前实测 OpenMausBot 为 22,078 stars；两个项目不是同一个）。
+* 「Grok Bot 的免费平替」是第三方描述口径，引用须标明归属。
+* MOKI / DeepSeek Harness 的能力与兼容性以其官方仓库为准。
+
 ## [0.11.7] - 2026-11-27
 
 ### 计划终于到达了第一轮工人手里

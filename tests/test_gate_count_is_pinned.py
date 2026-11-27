@@ -85,6 +85,7 @@ EXPECTED_GATE_NAMES = (
     "selftest_converges",
     "feedback_reaches_worker",
     "plan_reaches_the_first_worker",
+    "lead_decision_is_honoured",
 )
 
 

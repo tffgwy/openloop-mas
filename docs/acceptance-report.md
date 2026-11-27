@@ -3352,3 +3352,90 @@ Windows 的 tool-help 快照。**macOS 不发布 `/proc`**，
 但那笔账买来的东西，只到了第二轮的工人手里。
 闭环的最后一格，往往不是「有没有算」，而是
 「算出来的东西有没有到得了要用它的那一步」。
+## AC. v0.11.8 -- 主线的决定必须真的被读到
+
+### 洞在哪里
+
+用探针 provider 实测三种不同的主线（lead）回答，跑同一轮
+`LoopEngine.run()`：
+
+    === lead says: escalate ===
+      status: budget_exhausted  closed: False
+      history decisions: ['revise', 'revise', 'revise']
+    === lead says: close ===      <- 完全一样
+    === lead says: revise ===     <- 完全一样
+
+**三个不同的回答，同一种行为。**
+
+更糟的是第二层：顾问说「escalate」不但没被听见，运行还会**继续烧完
+剩余的每一轮**，直到撞上迭代上限 —— 顾问请求人工的那一次，让用户
+多付了**所有剩余轮次的钱**。
+
+根因有两处：
+
+* `mas/engine.py` 里 `lead.get("decision")` **零命中** —— 引擎只取
+  顾问答案里的 `judged`，`decision` 与 `reason` 从来没被读过；
+* `mas/engine.py:1109` 那句 `decision = "close" if passed else "revise"`
+  把引擎自己因停滞判定的 `escalate` **降级**回 `revise`。
+
+### 修法
+
+`mas/engine.py`：
+
+* 引擎读取并遵守 `lead_decision` / `lead_reason`；当顾问判定
+  `escalate` 且检查未通过时，循环**当场停下**，票据记为
+  `loop_escalation`，`stopped_by` 记为 `lead_escalation`，并把顾问
+  自己的理由写进票据与错误信息；
+* 引擎自身的停滞升级（`engine_escalated`）**不再被顾问分支降级**；
+* 顾问的完整回答（`decision` / `reason` / `judged`）随票据落盘为
+  `lead_verdict`，事后可查。
+
+`mas/verdict_text.py`：新增 `lead_escalation` 的中文口径。
+
+### 新增门禁
+
+第 **59** 项门禁 `lead_decision_is_honoured`，7 条观察：
+
+| 观察项 | 它在问什么 |
+| --- | --- |
+| `a lead that says escalate stops the run early` | 顾问说交给人工，运行会提前停吗 |
+| `the run does not burn its remaining rounds after the escalation` | 停下之后还会继续烧轮次吗 |
+| `the ticket says the advisor asked for a human` | 票据上写明是顾问要求的人工介入吗 |
+| `the ticket carries the advisor's own reason` | 票据带着顾问自己的理由吗 |
+| `the ticket carries the advisor's structured answer` | 票据带着顾问结构化的完整回答吗 |
+| `a lead that says close does not close a failed check` | 顾问说 close 不会盖掉未通过的检查 |
+| `the engine's own stagnation stop is not demoted by the advisor` | 引擎自己的停滞升级不会被降级 |
+
+两套独立判定（`_verdicts` 读运行结果 / `_verdicts_independent` 读票据），
+并且**自证能失败**：把顾问答案里的 `decision` / `reason` 掐掉，门禁
+必须变红。
+
+### 改动文件
+
+| 文件 | 改什么 |
+| --- | --- |
+| `mas/engine.py` | 读取并遵守主线决定；停滞升级不再被降级；票据携带 `lead_verdict` |
+| `mas/verdict_text.py` | 新增 `lead_escalation` 的中文口径 |
+| `mas/selftest_lead_decision_is_honoured.py` | 新增，第 59 项门禁 |
+| `mas/selftest.py` | 接线：import + `CHECKS` 末尾追加 |
+| `tests/test_engine_lead_118.py` | 新增，16 项回归测试 |
+| `tests/test_gate_count_is_pinned.py` | 门禁名末尾追加 `lead_decision_is_honoured` |
+| `docs/loop-engineering.md` | 新增第三十九条不变量 |
+| `CHANGELOG.md` | 新增 `[0.11.8]` |
+
+### 本轮实测证据
+
+| 检查 | 结果 |
+| --- | --- |
+| `mas selftest --only lead_decision_is_honoured --iterations 1` | **ok: True** |
+| `tests/test_engine_lead_118.py` | **16 passed** |
+| `mas selftest --iterations 2` | **59 项全绿** |
+| `pytest tests -q` | 全量通过 |
+| `ruff check mas tests tools` | All checks passed! |
+| `twine check` | PASSED |
+
+### 一个反直觉的点
+
+**顾问说「交给人工」的时候，最省钱的做法反而是立刻停下来。**
+继续跑不但没用，还会把「这里需要人」这件事埋掉 —— 用户看到的是
+一份跑完了的循环，而不是一个等人接手的交接单。

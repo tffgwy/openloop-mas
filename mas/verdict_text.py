@@ -76,6 +76,11 @@ STOPPED_BY_READING: Dict[str, str] = {
     "max_tokens": "\u4ee4\u724c\u7528\u5b8c\u4e86\uff08\u82b1\u94b1\u5230\u4e86\u5929\u82b1\u677f\uff09",
     "provider_error": "\u540e\u7aef\u62a5\u9519\uff08\u4e0d\u662f\u5929\u82b1\u677f\u51fb\u7ebf\u7684\uff0c\u662f\u63a5\u53e3\u81ea\u5df1\u51fa\u9519\uff09",
     "internal_error": "\u5faa\u73af\u81ea\u8eab\u62a5\u9519\uff08\u4e0d\u662f\u5929\u82b1\u677f\uff09",
+    # The advisor asked for a human. This is neither a ceiling nor a
+    # provider failure - the run stopped because the lead judged that
+    # the remaining work needs a person, and it stopped *earlier* than
+    # the budget would have.
+    "lead_escalation": "\u4e3b\u7ebf\u4ea4\u7ed9\u4eba\u5de5\uff08\u4e3b\u7ebf\u5224\u65ad\u5269\u4f59\u5de5\u4f5c\u9700\u8981\u4eba\uff09",
 }
 
 

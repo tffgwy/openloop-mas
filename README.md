@@ -118,11 +118,11 @@ bash install.sh
 想装固定版本（而不是"最新版"）：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.11.7
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.11.8
 ```
 
 ```bash
-MAS_VERSION=0.11.7 bash install.sh
+MAS_VERSION=0.11.8 bash install.sh
 ```
 
 > 脚本默认会往 `PATH` 里加一条 `~/.mas/bin`（Windows 写当前用户的注册表）。

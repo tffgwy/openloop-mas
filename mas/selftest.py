@@ -81,6 +81,9 @@ from mas.selftest_feedback_reaches_worker import (
 from mas.selftest_isolation import (
     check_the_selftest_leaves_the_machine_alone,
 )
+from mas.selftest_lead_decision_is_honoured import (
+    check_lead_decision_is_honoured,
+)
 from mas.selftest_mcp_artifacts import (
     check_the_deliverables_reach_the_mcp_caller,
 )
@@ -5650,6 +5653,7 @@ CHECKS = (
     check_the_selftest_converges_and_says_so,
     check_feedback_reaches_worker,
     check_plan_reaches_the_first_worker,
+    check_lead_decision_is_honoured,
 )
 
 #: How many gates the suite is expected to hold.

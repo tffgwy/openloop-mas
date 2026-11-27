@@ -759,6 +759,11 @@ class LoopEngine:
         # Empty means "the run did not stop on a ceiling" - it
         # closed, or it escalated, or it died on a provider error.
         stopped_by = ""
+        # What the advisor said, the last time it was consulted. It is
+        # kept across the loop so that whichever ending the run has, the
+        # handover can tell the human whether an advisor had already
+        # asked for a person - and what it said.
+        lead_verdict: Dict[str, Any] = {}
 
         while True:
             if attempt >= max_iterations:
@@ -1064,7 +1069,6 @@ class LoopEngine:
                 # not consulted when the machine checks already did:
                 # a failed check is a fact, and a lead that disagrees
                 # with a fact does not get to overrule it.
-                lead_verdict: Dict[str, Any] = {}
                 if not passed and self._lead_is_consulted(scores):
                     lead_verdict = self._consult_lead(
                         verify_state, scores, checks
@@ -1093,6 +1097,15 @@ class LoopEngine:
                         f"{stagnant} consecutive attempts "
                         f"(stagnation_limit={stagnation_limit})"
                     )
+                    # The engine escalated on its own evidence. That
+                    # decision has to survive whatever happens next -
+                    # see the lead branch below, which used to reset
+                    # ``decision`` to "revise" and so silently turned a
+                    # stagnation stop into one more round of the very
+                    # loop that was already stuck.
+                    engine_escalated = True
+                else:
+                    engine_escalated = False
                 # The lead's judgement fills in the criteria nobody could
                 # judge. It can only *unblock* a criterion the machine
                 # checks did not speak about - it can never turn a failed
@@ -1106,7 +1119,55 @@ class LoopEngine:
                     passed = bool(scores) and all(
                         bool(s["pass"]) for s in blocking
                     )
-                    decision = "close" if passed else "revise"
+                    # The engine's own stop is a fact about the run:
+                    # the deliverable stopped changing while the
+                    # checks kept failing. A lead that judged some
+                    # criteria does not erase that - it can fill
+                    # gaps, not undo a stop the engine already
+                    # justified. The run stays escalated, and the
+                    # reason stays the stagnation.
+                    decision = (
+                        "escalate" if engine_escalated
+                        else ("close" if passed else "revise")
+                    )
+                    # The lead's own decision is read here - and only
+                    # here. It used to be ignored entirely: the role
+                    # contract asks for a decision, the report printed
+                    # it, and the engine never looked at it. A lead
+                    # that said "escalate" and a lead that said
+                    # "close" produced byte-identical runs, so the
+                    # word "escalate" in the role prompt was a lie.
+                    #
+                    # What the lead may do is *stop* the loop, not
+                    # close it. The lead cannot turn a failed machine
+                    # check into a pass (that is the machine's fact),
+                    # and it cannot switch a budget stop into a
+                    # success (the ceilings are the user's). What it
+                    # can do is say "the rest of this needs a human"
+                    # - which is exactly what "escalate" means in the
+                    # role contract - and then the run hands the
+                    # problem over with that reason attached.
+                    lead_decision = str(
+                        lead_verdict.get("decision") or ""
+                    ).strip().lower()
+                    lead_reason = str(
+                        lead_verdict.get("reason") or ""
+                    ).strip()
+                    if (
+                        lead_decision == "escalate"
+                        and not passed
+                        and not engine_escalated
+                    ):
+                        # Only a run that is *not* already closing may
+                        # be escalated by the lead. A run that passed
+                        # every check has nothing for a human to do.
+                        decision = "escalate"
+                        stopped_by = "lead_escalation"
+                        error = (
+                            "lead escalation: the advisor judged that the "
+                            "remaining work needs a human"
+                            + (f" ({lead_reason})" if lead_reason else "")
+                        )
 
                 if tokens >= max_tokens:
                     decision = "escalate"
@@ -1223,6 +1284,7 @@ class LoopEngine:
                         status=(stop_status or STATUS_ESCALATED),
                         reason=error or last_error or "loop could not close itself",
                         budget=effective_budget,
+                        lead_verdict=lead_verdict,
                     )
                     # The status of this run is settled here, before
                     # anything records it, so the reason written on
@@ -1388,6 +1450,7 @@ class LoopEngine:
                 parent_ticket_id=parent_ticket_id,
                 budget=effective_budget,
                 workspace=self._run_workspace_path(),
+                lead_verdict=lead_verdict,
             )
 
         self._log(
@@ -3193,6 +3256,7 @@ class LoopEngine:
         reason: str,
         budget: Optional[Dict[str, Any]] = None,
         workspace: str = "",
+        lead_verdict: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Build the context a human needs to take a failed run over.
 
@@ -3228,6 +3292,21 @@ class LoopEngine:
             "stagnation": stagnant,
             "reason": reason,
             "status": status,
+            # What the advisor said, when there was one. The lead's
+            # decision is now read by the engine - but a human who
+            # takes the problem over needs to know that the loop was
+            # stopped *by the advisor's judgement* and not by a
+            # ceiling, and needs the advisor's own words to go with
+            # it. The reason string carries the words; this carries
+            # the structured answer behind them.
+            "lead_verdict": (
+                {
+                    key: value
+                    for key, value in dict(lead_verdict).items()
+                    if key not in INTERNAL_KEYS
+                }
+                if lead_verdict else {}
+            ),
             # The budget this run ran under. A ticket that says "it
             # stopped" but not "it stopped *here*" leaves the reader
             # guessing which ceiling to raise.
@@ -3256,6 +3335,7 @@ class LoopEngine:
         parent_ticket_id: Optional[str] = None,
         budget: Optional[Dict[str, Any]] = None,
         workspace: str = "",
+        lead_verdict: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Open a human ticket for a run that did not close.
 
@@ -3291,6 +3371,7 @@ class LoopEngine:
             reason=reason,
             budget=budget,
             workspace=workspace,
+            lead_verdict=lead_verdict,
         )
         if parent_ticket_id:
             # A resumed loop keeps the ticket it already has: one
