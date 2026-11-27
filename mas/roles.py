@@ -29,6 +29,16 @@ REFLECTION_CHARS = 4000
 #: repetition.
 LEAD_ADVICE_CHARS = 4000
 
+#: The same cap for the human's own note about an approval they took
+#: back.
+#:
+#: The note is the only part of the undo a machine cannot produce: it
+#: is the person saying **why**. It travels into the next prompt
+#: twice - once in the readable brief and once in the raw state
+#: block - so it needs a ceiling, and the ceiling is generous because
+#: a human who bothers to explain is worth listening to.
+UNDO_NOTE_CHARS = 2000
+
 
 def clip_text(text: str, limit: int) -> str:
     """The last ``limit`` characters of ``text``, with a marker.
@@ -244,6 +254,32 @@ class Roles:
                 "- [%s] %s%s" % (cid, mark, ("：" + note) if note else "")
             )
 
+        # The approvals a person took back from *this* run.
+        #
+        # This is the most expensive fact in the system and it used to
+        # reach nobody. A human approves a change, sees that it is
+        # wrong, pulls it back - and the loop, on its next attempt,
+        # proposes the very same change again, because nothing in its
+        # state said "a human already refused this". The refusal was
+        # immutable and visible to every *person*; it was invisible to
+        # every *model*.
+        #
+        # The note is the part that matters most: it is the person
+        # saying **why** in their own words, and no amount of machine
+        # reasoning can reconstruct it.
+        undone_advice = state.get("undone_advice") or {}
+        if not isinstance(undone_advice, dict):
+            undone_advice = {}
+        undone_count = int(undone_advice.get("taken_back") or 0)
+        undone_lines = int(undone_advice.get("reverted_lines") or 0)
+        undone_forced = int(undone_advice.get("forced") or 0)
+        undone_paths = [
+            str(item) for item in (undone_advice.get("paths") or []) if str(item)
+        ]
+        undone_notes = [
+            str(item) for item in (undone_advice.get("notes") or []) if str(item)
+        ]
+
         out: list[str] = []
 
         if role == "planner":
@@ -406,6 +442,61 @@ class Roles:
                 out.append("")
                 for item in lead_judged:
                     out.append(item)
+
+        if undone_count:
+            # A person pulled this back. The next attempt has to know
+            # it - otherwise it proposes the same change again, and the
+            # person has to refuse it again, and again.
+            out.append("")
+            out.append(
+                "### 人工撤回过的改动 / CHANGES A HUMAN TOOK BACK" if zh
+                else "### CHANGES A HUMAN TOOK BACK"
+            )
+            if zh:
+                detail = "%d 次" % undone_count
+                if undone_lines:
+                    detail += "，共退回 %d 行" % undone_lines
+                if undone_forced:
+                    detail += "（其中 %d 次是强制撤销，连同之后的新改动一起退回了）" % (
+                        undone_forced
+                    )
+            else:
+                detail = "%d times" % undone_count
+                if undone_lines:
+                    detail += ", %d lines given back" % undone_lines
+                if undone_forced:
+                    detail += (
+                        " (%d of them forced - newer work was thrown away too)"
+                        % undone_forced
+                    )
+            out.append(
+                "%s of this loop's earlier proposals were taken back by a "
+                "human. They were judged *wrong* - do not propose the same "
+                "change again unless you have a different approach and can "
+                "say why." % detail
+                if not zh
+                else
+                "这个循环之前提出的改动，有 %s 被人工撤回过。"
+                "这些改动是**人判断为错误**才退回来的——"
+                "不要原样再提一次，除非你换了做法并且能说清为什么。" % detail
+            )
+            if undone_paths:
+                out.append("")
+                out.append(
+                    "被撤回的文件 / the files involved:"
+                    if zh
+                    else "the files involved:"
+                )
+                for path in undone_paths:
+                    out.append("- %s" % path)
+            for note in undone_notes:
+                out.append("")
+                out.append(
+                    "人工撤回时写下的原因 / the human's own reason:"
+                    if zh
+                    else "the human's own reason for taking it back:"
+                )
+                out.append(_tail(note, UNDO_NOTE_CHARS))
 
         if human_note:
             out.append("")

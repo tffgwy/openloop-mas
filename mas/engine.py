@@ -75,6 +75,7 @@ from mas.roles import (
     LEAD_ADVICE_CHARS,
     PREVIOUS_ARTIFACT_CHARS,
     REFLECTION_CHARS,
+    UNDO_NOTE_CHARS,
     Roles,
     clip_text,
 )
@@ -181,6 +182,7 @@ def _carry_feedback(
     last_reflection: Dict[str, Any],
     previous_artifact: str,
     last_lead: Optional[Dict[str, Any]] = None,
+    undone_advice: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Put the last round's work into the state of the next one.
 
@@ -212,6 +214,48 @@ def _carry_feedback(
         state["reflection"] = _bounded_reflection(last_reflection, REFLECTION_CHARS)
     if last_lead:
         state["lead_advice"] = _bounded_lead_advice(last_lead)
+    if undone_advice:
+        state["undone_advice"] = _bounded_undone_advice(undone_advice)
+
+
+def _bounded_undone_advice(
+    advice: Dict[str, Any],
+) -> Dict[str, Any]:
+    """The human's own words about the approvals they took back.
+
+    This travels into the next prompt twice - once in the readable
+    brief and once in the raw state block - so it needs a ceiling on
+    its prose. The *counts* are kept as they are: a number is short by
+    nature, and dropping one would drop a fact rather than a
+    repetition.
+
+    The note is the part that cannot be produced by the machine: it is
+    the person saying **why** in their own words, and it is the only
+    thing that can tell a worker that the change was not merely
+    unwanted but unwanted *for a reason*.
+    """
+    bounded: Dict[str, Any] = {}
+    taken_back = int(advice.get("taken_back") or 0)
+    if taken_back:
+        bounded["taken_back"] = taken_back
+    reverted = int(advice.get("reverted_lines") or 0)
+    if reverted:
+        bounded["reverted_lines"] = reverted
+    forced = int(advice.get("forced") or 0)
+    if forced:
+        bounded["forced"] = forced
+    paths = [str(item) for item in (advice.get("paths") or []) if str(item)]
+    if paths:
+        bounded["paths"] = paths[:20]
+    notes = [str(item) for item in (advice.get("notes") or []) if str(item)]
+    if notes:
+        bounded["notes"] = [clip_text(note, UNDO_NOTE_CHARS) for note in notes[:10]]
+    draft_ids = [
+        str(item) for item in (advice.get("draft_ids") or []) if str(item)
+    ]
+    if draft_ids:
+        bounded["draft_ids"] = draft_ids[:20]
+    return bounded
 
 
 def _required_flag(value: Any) -> bool:
@@ -664,6 +708,7 @@ class LoopEngine:
         perspective: str = "",
         parent_ticket_id: Optional[str] = None,
         previous_artifact: str = "",
+        thread_runs: Optional[List[str]] = None,
         max_iterations: Optional[int] = None,
         deadline_sec: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -683,6 +728,16 @@ class LoopEngine:
         self._run_id = str(run_id)
         self._written_files = []
         self._workspace = None
+        # The runs that belong to this thread. A resumed loop is a new
+        # run with a new id, and the approvals a person took back are
+        # hung on the run that proposed them - so without the thread
+        # the fact would be invisible to the very run that is taking
+        # the problem over.
+        self._thread_runs: List[str] = [str(run_id)]
+        for item in thread_runs or []:
+            name = str(item or "")
+            if name and name not in self._thread_runs:
+                self._thread_runs.append(name)
         # From now on the file level checks look into the run's own
         # folder. Before this point they would have looked into the
         # caller's directory - a place the run does not write to.
@@ -896,6 +951,7 @@ class LoopEngine:
                 last_reflection,
                 previous_artifact,
                 last_lead,
+                self._undone_advice(),
             )
             # A criterion that demands a file creates an obligation the
             # worker has to know about: without this the worker only ever
@@ -2244,6 +2300,131 @@ class LoopEngine:
             "errors": errors,
             "skipped": skipped,
         }
+
+    def _undone_advice(self) -> Dict[str, Any]:
+        """What a person took back from *this* run, read from the disk.
+
+        The gap this closes
+        ------------------
+        The undo is a **human** action that happens **outside** the
+        loop: a person approves a change, realises it was wrong, and
+        pulls it back with ``mas drafts undo`` - usually minutes or
+        hours later, possibly while the loop is still running, and
+        certainly before the next attempt of the same problem.
+
+        The fact was recorded - immutably, in the audit chain and in
+        the ledger - and it reached every surface a *person* reads.
+        It reached no *model* at all. So the next attempt of the loop
+        was told "rewrite the deliverable to address the issues above"
+        and was handed the previous deliverable and the reflector's
+        own words, and it knew **nothing** about the fact that a human
+        had already refused this very change. The loop would propose
+        the same thing again, and the person would have to refuse it
+        again, and again.
+
+        Why the disk is read every time
+        -------------------------------
+        The undo is asynchronous: it may happen *after* the run
+        started, and even *during* it. So the fact is read from the
+        chain afresh on every iteration, not cached once at the start
+        of the run. A cache would freeze the answer at the moment the
+        run began - which is exactly the moment the answer did not yet
+        exist.
+
+        What is read
+        ------------
+        The audit chain of the run's own workspace, and - for a run
+        that was given a workspace of its own - the chain of that
+        workspace. The chain is the authoritative record; the ledger
+        copy is a duplicate of it, and reading the duplicate would be
+        reading a copy of the truth.
+
+        A broken chain is not an error
+        ------------------------------
+        A workspace with no chain simply has no decisions yet, and a
+        workspace whose chain cannot be read has no *usable* decision.
+        Neither of them may crash a run that is doing perfectly well.
+        """
+        wanted = [name for name in self._thread_runs if name]
+        if not wanted:
+            return {}
+        try:
+            from mas.undos import undo_advice_for_run
+        except Exception:  # noqa: BLE001 - a missing module must not kill a run
+            return {}
+
+        rows: List[Dict[str, Any]] = []
+        seen_chains: set[str] = set()
+        for root in self._decision_roots():
+            # The same chain can be reached twice: the run's own
+            # workspace is a sub-folder of the artifacts directory, and
+            # the chain walk looks into sub-folders. Reading it twice
+            # would count one undo twice - and a count that is twice
+            # the truth is worse than no count at all.
+            try:
+                from mas.audit import chains_in
+
+                chains = chains_in(root)
+            except Exception:  # noqa: BLE001 - a broken chain is not a crash
+                continue
+            for chain in chains:
+                path = getattr(chain, "path", None)
+                try:
+                    # The same file can be reached under two spellings
+                    # - a short path and a long one - so the identity
+                    # of a chain is its resolved path, not its text.
+                    key = str(pathlib.Path(path).resolve()) if path else ""
+                except Exception:  # noqa: BLE001 - a broken path is not a crash
+                    key = str(path or "")
+                if key and key in seen_chains:
+                    continue
+                if key:
+                    seen_chains.add(key)
+                workspace = str(getattr(chain, "workspace", "") or "")
+                for entry in chain.entries():
+                    row = dict(entry)
+                    row.setdefault("workspace", workspace)
+                    row["record_set"] = "chain"
+                    row.setdefault("audit_sha256", str(entry.get("sha256") or ""))
+                    rows.append(row)
+        if not rows:
+            return {}
+        try:
+            return undo_advice_for_run(rows, wanted)
+        except Exception:  # noqa: BLE001 - a broken reading is not a crash
+            return {}
+
+    def _decision_roots(self) -> List[pathlib.Path]:
+        """The folders that may hold this run's decision chain.
+
+        A run writes into ``<state_dir>/artifacts/<run_id>/`` and the
+        chain sits next to the drafts of that workspace, so the run's
+        own folder is the first candidate. A run that was *given* a
+        workspace of its own puts its chain there instead - and that
+        folder is not part of the saved configuration, so it cannot be
+        found by reading the configuration alone.
+
+        Both are offered to the reader, and the reader takes the rows
+        of every chain it finds. The rows name the run they belong to,
+        so a chain that belongs to another run cannot contribute a
+        fact about this one.
+        """
+        roots: List[pathlib.Path] = []
+        try:
+            own = pathlib.Path(self._run_workspace_path())
+            if own not in roots:
+                roots.append(own)
+        except Exception:  # noqa: BLE001 - a broken path is not a crash
+            pass
+        try:
+            from mas.config import state_dir
+
+            artifacts = pathlib.Path(state_dir(self.config)) / "artifacts"
+            if artifacts.exists() and artifacts not in roots:
+                roots.append(artifacts)
+        except Exception:  # noqa: BLE001 - a broken path is not a crash
+            pass
+        return roots
 
     def _draft_overlay(self) -> Dict[str, bytes]:
         """The pending drafts, as an overlay for the machine checks.
@@ -4153,6 +4334,23 @@ class LoopEngine:
         if ticket.get("decision") == "rejected":
             raise ValueError(f"ticket was rejected by a human: {ticket_id}")
         payload = ticket.get("payload") or {}
+        # The threads that belong to this ticket. A resumed loop is a
+        # **new run** with a new id, so a lookup of "the approvals a
+        # person took back" by the new run's id alone would find
+        # nothing - and the fact that a human had already refused
+        # this change would die exactly where it mattered most: at
+        # the moment somebody took the problem over.
+        #
+        # So the whole thread is carried, and the fact is read for
+        # every run of it.
+        thread_runs: List[str] = []
+        for item in [
+            *list(payload.get("runs") or []),
+            str(payload.get("run_id") or ""),
+        ]:
+            name = str(item or "")
+            if name and name not in thread_runs:
+                thread_runs.append(name)
         result = self.run(
             goal=str(payload.get("goal", "")),
             criteria=payload.get("criteria") or [],
@@ -4162,6 +4360,7 @@ class LoopEngine:
             # What the last attempt delivered. This is the difference
             # between taking a problem over and starting it again.
             previous_artifact=str(payload.get("last_artifact") or ""),
+            thread_runs=thread_runs,
             max_iterations=max_iterations,
             deadline_sec=deadline_sec,
             max_tokens=max_tokens,

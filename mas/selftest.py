@@ -162,6 +162,9 @@ from mas.selftest_status_grain import (
 from mas.selftest_ticket_brief import (
     check_a_ticket_a_human_can_act_on_an_agent_can_too,
 )
+from mas.selftest_undo_reaches_the_next_worker import (
+    check_undo_reaches_the_next_worker,
+)
 from mas.selftest_undo_visibility import (
     check_an_undo_is_visible_in_the_audit,
 )
@@ -5662,6 +5665,7 @@ CHECKS = (
     check_lead_decision_is_honoured,
     check_lead_reaches_the_next_worker,
     check_the_report_shows_the_advisor,
+    check_undo_reaches_the_next_worker,
 )
 
 #: How many gates the suite is expected to hold.

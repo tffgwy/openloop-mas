@@ -140,11 +140,11 @@ server and the skills, and finishes with an offline self-check.
 Pin a specific release instead of "the latest":
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.12.0
+powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 -Version 0.13.0
 ```
 
 ```bash
-MAS_VERSION=0.12.0 bash install.sh
+MAS_VERSION=0.13.0 bash install.sh
 ```
 
 > The script adds `~/.mas/bin` to `PATH` (on Windows it writes the current
@@ -902,9 +902,65 @@ MIT © OpenLoop MAS contributors
 
 ## Gate archaeology
 
-This project now holds **53 gates**, and every one of them grew out of a
+This project now holds **62 gates**, and every one of them grew out of a
 **real incident**. They are listed below newest first - if you just want to
 use the tool, skip this section.
+
+- **The 62nd gate `undo_reaches_the_next_worker`** - the fact that a human
+  took an approval back has to actually reach **the next worker**.
+
+  An undo is a **human** action that happens **outside** the loop: a person
+  approves a change, sees that it was wrong, and pulls it back with
+  `mas drafts undo` - usually minutes or hours later, possibly while the
+  loop is still running.
+
+  The fact **was recorded**: immutable, in the hash-linked audit chain, in
+  the ledger, on every surface a *person* reads. It reached **no model at
+  all**. Measured with a probe provider, before the fix:
+
+  ```
+  === the next worker ===
+    sees the human's own note    : False
+    sees that it was taken back : False
+  ```
+
+  So the loop was told "rewrite the deliverable to address the issues
+  above", was handed the previous deliverable and the reflector's own words,
+  and knew **nothing** about the fact that a human had already refused this
+  very change. The loop proposed the same thing again. The person refused it
+  again. And again.
+
+  The second gap is the same root cause seen from the other side: a resumed
+  loop is a **new run** with a **new run id**, and the undo is hung on the
+  run that proposed the draft. A lookup by the new run's id alone finds
+  nothing - so the fact dies at exactly the moment it mattered most: the
+  moment somebody takes the problem over.
+
+  Now the chain is read for the whole **thread** of a run, on **every**
+  iteration (the undo is asynchronous, so it cannot be cached - a cache
+  freezes the answer at the moment the answer did not yet exist), and the
+  fact travels into the next prompt in a block of its own: how many times,
+  how many lines, which files, and above all **the human's own note** - the
+  one part of the undo no machine can produce.
+
+  A takeover carries the whole thread forward in `thread_runs`, so the new
+  run reads the old run's undo.
+
+  The same chain can be reached from two folders (the run's own workspace
+  and the `artifacts` root), and the same file can be reached under a short
+  path and a long one - so a chain's identity is its **resolved** path, not
+  its text. **A count that is twice the truth is worse than no count.**
+
+  The gate watches seven things: the worker is shown the section, the worker
+  sees the human's reason, the raw state carries it too, it is counted
+  **once**, an unrelated run does not see it, a run that takes the thread
+  over does see it, and an approval that was taken back and then approved
+  again is still on the record - "once was wrong" is a fact about the
+  thread, not about the newest state of one file.
+
+  It proves it can fail: breaking the read turns it red - and an **empty**
+  reading counts as a failure too, because a gate that cannot prove it can
+  fail is a gate that watched nothing.
 
 - **The 53rd gate `a_run_knows_its_ceiling`** - no verdict means no conclusion,
   and no conclusion cannot drift. The run also has to name its own ceiling.

@@ -234,6 +234,130 @@ def draft_history(
     }
 
 
+def taken_back_for_run(
+    rows: Iterable[Dict[str, Any]],
+    run_id: Any,
+) -> List[Dict[str, Any]]:
+    """The approvals of *this* run that a person had to take back.
+
+    The gap this closes
+    ------------------
+    ``pair_decisions`` answers "which approvals were taken back" for a
+    whole ledger. The reader that matters most is **the worker of the
+    next attempt**: it is the one that is about to write the same
+    change again.
+
+    Until this release the undo stopped at the ledger. The fact was
+    immutable, it was on every surface a *human* reads - and it
+    reached no model at all. A run whose proposal was pulled back by
+    a person would go on to propose the very same change, because
+    nothing in the state of the next iteration said "a human already
+    refused this".
+
+    The run is the thread
+    ---------------------
+    A decision row names the run that proposed the draft, so the undo
+    is hung on that thread - the same way ``report.decisions_of_run``
+    reads it. A row with no run belongs to no thread and is not
+    spread over the others.
+
+    What is *not* decided here
+    --------------------------
+    The pairing itself is not re-implemented: this reads the answer
+    of ``pair_decisions`` and only keeps the records that belong to
+    this run. The undo takes back the most recent approval that is
+    still standing, and that question has exactly one answer, already
+    given by the module that owns it.
+
+    A record that carries no run is left alone
+    ------------------------------------------
+    An approval made outside any run - by a person in their own
+    editor - is a real decision, but it is not this run's mistake,
+    and claiming it would be a lie the worker would act on.
+    """
+    if isinstance(run_id, (str, bytes)) or run_id is None:
+        wanted = [str(run_id or "")]
+    else:
+        wanted = [str(item or "") for item in run_id]
+    wanted = [name for name in wanted if name]
+    if not wanted:
+        return []
+    records, _ = pair_decisions(rows)
+    mine: List[Dict[str, Any]] = []
+    for record in records:
+        if str(record.get("run_id") or "") not in wanted:
+            continue
+        mine.append(record)
+    return mine
+
+
+def undo_advice_for_run(
+    rows: Iterable[Dict[str, Any]],
+    run_id: Any,
+) -> Dict[str, Any]:
+    """What the next attempt has to know about this run's wrong approvals.
+
+    The block that travels into the next prompt is built here, once,
+    so the command line, the report and the model all read the same
+    facts.
+
+    The facts that travel
+    ---------------------
+    * how many of this run's approvals were taken back;
+    * how many lines were given back;
+    * how many of them were *forced* - the person undid them even
+      though the file had been changed since, so newer work was
+      thrown away on purpose. That is a louder signal than an
+      ordinary undo, and the worker is told so;
+    * which files were affected, and what the person wrote when they
+      did it. The note is the one part a machine cannot produce: it
+      is the human saying *why* in their own words.
+
+    What does not travel
+    --------------------
+    The hashes. They are for the audit, not for a prompt: a worker
+    cannot act on a digest, and carrying it would only fill the
+    context with noise.
+    """
+    records = taken_back_for_run(rows, run_id)
+    if not records:
+        return {}
+    reverted = 0
+    forced = 0
+    paths: List[str] = []
+    notes: List[str] = []
+    for record in records:
+        count = record.get("reverted_line_count")
+        if isinstance(count, (int, float)):
+            reverted += int(count)
+        if record.get("forced"):
+            forced += 1
+        path = str(record.get("path") or "")
+        if path and path not in paths:
+            paths.append(path)
+        note = str(record.get("undo_note") or "").strip()
+        if note and note not in notes:
+            notes.append(note)
+    return {
+        "run_id": str(run_id or "") if isinstance(run_id, (str, bytes)) else "",
+        "runs": [
+            str(item or "")
+            for item in (run_id if not isinstance(run_id, (str, bytes)) and run_id else [])
+            if str(item)
+        ],
+        "taken_back": len(records),
+        "reverted_lines": reverted,
+        "forced": forced,
+        "paths": paths,
+        "notes": notes,
+        "draft_ids": [
+            str(record.get("draft_id") or "")
+            for record in records
+            if str(record.get("draft_id") or "")
+        ],
+    }
+
+
 def draft_histories(
     roots: Iterable[Any],
     draft_ids: Iterable[Any],
